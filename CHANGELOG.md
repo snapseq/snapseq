@@ -1,5 +1,12 @@
 # snapseq
 
+## 0.2.0
+
+### Minor Changes
+
+- 7420641: `numbering` in the config sets the shape of a shot number: `"000"` (the default) gives `001.png`, `"0000"` gives `0001.png`.
+- dd1ee01: `replay` on an env answers listed requests from recorded files before every capture, and `--record` (`SNAPSEQ_RECORD`) fetches them live and writes the files.
+
 ## 0.1.0
 
 ### Minor Changes
