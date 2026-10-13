@@ -46,9 +46,9 @@ export interface OutStream {
 }
 
 // `001.png  http://host/path`: the file, then the URL it is taken at.
-const SHOT = /^\d{3,}\.png(?:  (.+))?$/;
+const SHOT = /^\d+\.png(?:  (.+))?$/;
 // The same, plus the teardown's `failed.png  <url>`: where a capture is, or died.
-const AT = /^(?:\d{3,}|failed)\.png  (.+)$/;
+const AT = /^(?:\d+|failed)\.png  (.+)$/;
 const SPINNER = ["|", "/", "-", "\\"];
 const GLYPH: Record<State, string> = {
   queued: ".",

@@ -145,9 +145,10 @@ async function ready(page: Page, notes: string[]): Promise<void> {
 }
 
 /**
- * Numbered screenshots (`001.png`, `002.png`, …) in `root/dir`, listed with
- * their URLs in `shots.txt`. The directory is wiped on creation so a run never
- * mixes with the previous run's files; it must lie inside `root`.
+ * Numbered screenshots (`001.png`, `002.png`, …; as wide as `numbering`) in
+ * `root/dir`, listed with their URLs in `shots.txt`. The directory is wiped on
+ * creation so a run never mixes with the previous run's files; it must lie
+ * inside `root`.
  */
 export function createSequence(
   page: Page,
@@ -156,6 +157,7 @@ export function createSequence(
   // Runs one shot; the fixture wraps it in a `test.step` titled `001.png  <url>`,
   // so the terminal view can count shots and say where the capture is.
   wrap: (title: string, shoot: () => Promise<void>) => Promise<void> = (_title, shoot) => shoot(),
+  numbering = "000",
 ): Sequence {
   const full = join(root, dir);
   // Wiped recursively, so it has to be the run's own: a run name or device
@@ -170,7 +172,7 @@ export function createSequence(
   let counter = 0;
   const take = async (options: SnapOptions | undefined, notes: string[]): Promise<string> => {
     counter += 1;
-    const name = `${String(counter).padStart(3, "0")}.png`;
+    const name = `${String(counter).padStart(numbering.length, "0")}.png`;
     const path = join(full, name);
     const url = page.url();
     await wrap(`${name}  ${url}`, async () => {

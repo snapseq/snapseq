@@ -46,6 +46,8 @@ export interface SnapseqConfig {
   capturesDir?: string;
   /** Where screenshots are written, relative to the config file. Default `.screenshots`. Self-gitignored. */
   screenshotsDir?: string;
+  /** The shape of a shot number: `"000"` (default) gives `001.png`, `"0000"` gives `0001.png`. Zeros only. */
+  numbering?: string;
 }
 
 const DEFAULT_DEVICES: Record<string, DeviceConfig> = {
@@ -60,6 +62,8 @@ export interface SnapseqMetadata {
   screenshotsDir: string;
   /** Run directory name, e.g. `2026-10-01 at 4.07.16 PM`. */
   run: string;
+  /** The shape of a shot number, e.g. `"000"`. */
+  numbering: string;
   /** The env's `replay` map, if any. */
   replay?: Record<string, string>;
   /** `--record`: fetch the replay requests live and write their files. */
@@ -133,6 +137,10 @@ export function defineConfig(
   // but workers inherit the env of the main process, which set it first.
   const run = (process.env.SNAPSEQ_RUN ||= runStamp());
   assertName("SNAPSEQ_RUN", run);
+  const numbering = config.numbering ?? "000";
+  if (!/^0+$/.test(numbering)) {
+    throw new Error(`snapseq: numbering must be zeros, like "000", not "${numbering}"`);
+  }
   const devices = config.devices ?? DEFAULT_DEVICES;
   for (const name of Object.keys(devices)) assertName("a device name", name);
   const metadata: SnapseqMetadata = {
@@ -140,6 +148,7 @@ export function defineConfig(
     host,
     screenshotsDir,
     run,
+    numbering,
     record: !!process.env.SNAPSEQ_RECORD,
     ...(env.replay ? { replay: env.replay } : {}),
   };

@@ -141,6 +141,7 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
           await shoot();
           if (idle > 0) testInfo.setTimeout(Math.ceil(performance.now() - started + idle));
         }),
+      meta.numbering,
     );
     await use(seq);
     // The page as it was when the capture died, beside the shots it did take.

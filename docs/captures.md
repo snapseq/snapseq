@@ -28,7 +28,8 @@ The file name is the capture name: `captures/pricing.capture.ts` writes to
 `.screenshots/<run>/campaign/pricing/<device>/`.
 
 One `capture()` per file. A shot's number is its position in the file, so a
-second capture is a second file. Files that do not end in `.capture.ts` are
+second capture is a second file. The number is three digits wide unless the
+config's `numbering` says otherwise. Files that do not end in `.capture.ts` are
 not captures; helpers can live in `captures/helpers/`.
 
 ## Fixtures

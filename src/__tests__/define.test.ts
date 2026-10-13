@@ -100,4 +100,14 @@ describe("defineConfig", () => {
     vi.stubEnv("SNAPSEQ_RECORD", "1");
     expect(meta(defineConfig({ envs })).record).toBe(true);
   });
+
+  it("takes a numbering of zeros, 000 by default, and carries it in the metadata", () => {
+    const numbering = (c: ReturnType<typeof defineConfig>) =>
+      (c.metadata as { snapseq: { numbering: string } }).snapseq.numbering;
+    expect(numbering(defineConfig({ envs }))).toBe("000");
+    expect(numbering(defineConfig({ envs, numbering: "0000" }))).toBe("0000");
+    for (const bad of ["", "00x", "1", "0 0"]) {
+      expect(() => defineConfig({ envs, numbering: bad })).toThrow(`numbering must be zeros, like "000", not "${bad}"`);
+    }
+  });
 });

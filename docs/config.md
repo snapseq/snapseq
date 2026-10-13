@@ -32,6 +32,7 @@ export default defineConfig({
 | `devices`        | desktop and mobile as above            | One Playwright project per key. See "Devices".                          |
 | `capturesDir`    | `"captures"`                           | Relative to the config file. Matches `*.capture.ts`.                    |
 | `screenshotsDir` | `".screenshots"`                       | Relative to the config file. Snapseq writes a `.gitignore` inside it. |
+| `numbering`      | `"000"`                                | The shape of a shot number: `"000"` gives `001.png`, `"0000"` gives `0001.png`. Zeros only. Wide enough for the longest capture: `100.png` sorts before `99.png`. |
 
 ## Envs
 

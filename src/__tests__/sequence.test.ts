@@ -59,6 +59,20 @@ describe("createSequence", () => {
     );
   });
 
+  it("pads shot numbers to the numbering's width", async () => {
+    const two = createSequence(makePageStub().page, root, join("two", "d"), undefined, "00");
+    const four = createSequence(makePageStub().page, root, join("four", "d"), undefined, "0000");
+    for (let i = 0; i < 10; i++) await two.snap();
+    await four.snap();
+    expect(readdirSync(two.dir).sort()).toEqual([
+      ...Array.from({ length: 9 }, (_, i) => `0${i + 1}.png`),
+      "10.png",
+      "shots.txt",
+    ]);
+    expect(readdirSync(four.dir).sort()).toEqual(["0001.png", "shots.txt"]);
+    expect(readFileSync(join(four.dir, "shots.txt"), "utf8")).toBe("0001.png  http://x/p\n");
+  });
+
   it("snapPage grows the viewport to the document height and restores it, also when the shot fails", async () => {
     const { page, viewports } = makePageStub(900);
     const seq = createSequence(page, root, join("cap", "desktop"));

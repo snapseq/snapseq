@@ -71,6 +71,17 @@ afterEach(() => {
 });
 
 describe("SnapseqReporter", () => {
+  it("counts a shot whatever the width of its number", () => {
+    const tty = fakeTty(10);
+    const r = new SnapseqReporter({ stream: tty.stream });
+    const a = fakeTest("t0", "c0.capture.ts", ["capture"], []);
+    r.onBegin(config, { allTests: () => [a] } as unknown as Suite);
+    r.onTestBegin(a);
+    r.onStepEnd(a, result("passed"), shotStep("01.png  http://h/a"));
+    r.onStepEnd(a, result("passed"), shotStep("0002.png  http://h/b"));
+    expect(plain(tty.text())).toContain("2 shots");
+  });
+
   it("clips the live frame, counts completed shots, and prints a complete static summary", () => {
     const tty = fakeTty(10);
     const r = new SnapseqReporter({ stream: tty.stream });
