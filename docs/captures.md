@@ -145,3 +145,13 @@ and the widget stays a skeleton. Re-serve those responses through
 adds the missing header and answers preflights itself. Routed requests bypass
 the HTTP cache, which does not matter for screenshots.
 [Example 9](examples.md#9-an-api-without-cors-on-dev) is the complete file.
+
+## A backend that rejects every request
+
+A widget whose backend the capture cannot use, because it sits behind a bot
+check, charges per call or is down, cannot be fixed from the browser. Give the
+env a `replay` entry for that request ([Config](config.md#replay)): snapseq
+answers it from a recorded file before the first shot, and the capture stays
+what a user does.
+[Example 12](examples.md#12-a-backend-that-rejects-every-request) is the
+complete file.

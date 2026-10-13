@@ -43,6 +43,7 @@ An env is a host and what it takes to reach it.
 | `httpCredentials` | HTTP basic auth, offered to the host's origin only (an overridden host counts). Playwright's `origin` field sends them somewhere else instead, e.g. a host that redirects to a second origin behind the same password. |
 | `webServer`       | The command that serves `host`. See "Dev server".                                                                                                                                                                      |
 | `use`             | This env's Playwright options, merged over the defaults below. A token in `extraHTTPHeaders`, a login in `storageState`, a `locale`: whatever Playwright takes, in its own words.                                       |
+| `replay`          | Requests answered from recorded files instead of this env's backend, e.g. `{ "**/api/search": "captures/replay/search.json" }`. See "Replay".                                                                       |
 
 An option that differs per env goes on the env, not in a composed override:
 
@@ -73,6 +74,38 @@ starts, with up to 120 s to become ready, and is stopped when the run ends,
 Ctrl-C included. An overridden host (`--host`, `SNAPSEQ_HOST`) never starts
 the command; point it at a server you run yourself. The server's stdout is
 hidden and its stderr shown; `DEBUG=pw:webserver` shows everything.
+
+### Replay
+
+A page state that depends on a request this env cannot answer, such as a
+backend behind a bot check that rejects automated sessions, one that charges
+per call, or one that is simply down, comes from a recorded response instead:
+
+```ts
+prod: {
+  host: "https://www.example.com",
+  replay: { "**/api/search": "captures/replay/search.json" },
+},
+```
+
+Each key is a Playwright `page.route` URL pattern and each value a file
+relative to the config file. Before every capture, snapseq routes the pattern
+and answers it with the file's contents as JSON. The request never reaches the
+backend; the rest of the page stays live. A run whose file is missing fails
+before its first shot and names the file.
+
+`pnpm screenshot --record` (or `SNAPSEQ_RECORD=1`) fetches each request live
+instead, writes its file, and answers with it. Record against a host where the
+request succeeds, check the shot, and commit the file; every later run replays
+it. `--host` points the env at such a host for the recording run:
+
+```bash
+pnpm screenshot --env prod --record --host https://staging.example.com
+pnpm screenshot --env prod
+```
+
+Only an env with `replay` is affected. JSON bodies only; anything else goes
+through Playwright's `page.routeFromHAR` in the capture.
 
 ## Devices
 

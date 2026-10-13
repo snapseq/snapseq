@@ -16,6 +16,7 @@ const USAGE = `snapseq [filter...] [options]
   --env <name>       env from snapseq.config (same as SNAPSEQ_ENV)
   --host <url>       override that env's host (same as SNAPSEQ_HOST)
   --device <name>    only this device; repeatable (Playwright's --project)
+  --record           fetch the env's replay responses live and save them (same as SNAPSEQ_RECORD=1)
   -c, --config <p>   config file (default: ./snapseq.config.{ts,js,...})
 
 Every other flag goes to \`playwright test\`: --headed, --ui, --debug,
@@ -45,6 +46,9 @@ function translateArgs(argv: string[]): string[] {
         break;
       case "--device":
         out.push("--project", value());
+        break;
+      case "--record":
+        process.env.SNAPSEQ_RECORD = "1";
         break;
       case "-c":
       case "--config":

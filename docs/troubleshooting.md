@@ -146,6 +146,13 @@ reporter instead.
 run in a terminal without piping. Words instead of marks (`ok`, `FAIL`) mean
 the terminal cannot draw them; `NO_COLOR` drops colors on purpose.
 
+## `snapseq: no replay file for …`
+
+The env has a `replay` entry whose file does not exist yet. Record it with
+`pnpm screenshot --record` against a host where the request succeeds
+(`--host` points the env there for that one run), check the shot, and keep
+the file. See [Config](config.md#replay).
+
 ## The whole widget is missing on dev, present on staging
 
 **Cause.** CORS. The dev page on localhost calls an API that sends no

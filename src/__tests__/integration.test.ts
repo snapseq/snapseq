@@ -52,6 +52,8 @@ const VH_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:
 
 // A lazy image 2000 px down whose bytes arrive 1.5 s after they are asked for; 100 px tall once loaded.
 const LAZY_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:2000px"></div><img id="lazy" loading="lazy" src="/slow.png" style="display:block;width:100px"></body></html>`;
+// Renders one field of a JSON response, so a replayed body shows in the page.
+const WIDGET_PAGE = `<!doctype html><html><body><h1 id="v"></h1><script>fetch("/api").then((r) => r.json()).then((j) => { document.getElementById("v").textContent = j.v; });</script></body></html>`;
 const PNG_1x1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 
 interface Hit {
@@ -80,6 +82,11 @@ function startServer() {
       }, 1500);
       return;
     }
+    if (url.startsWith("/api")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ v: "live" }));
+      return;
+    }
     if (url.startsWith("/protected") && req.headers.authorization !== AUTH) {
       res.writeHead(401, { "WWW-Authenticate": 'Basic realm="t"' });
       res.end("unauthorized");
@@ -89,6 +96,8 @@ function startServer() {
     res.end(
       url.startsWith("/sticky")
         ? STICKY_PAGE
+        : url.startsWith("/widget")
+          ? WIDGET_PAGE
         : url.startsWith("/font")
           ? FONT_PAGE
           : url.startsWith("/vh")
@@ -770,6 +779,48 @@ capture(async ({ page, seq }) => {
     const z = await playwright(p, ["stuck\\.capture", "--timeout", "0"]);
     expect(z.status).toBe(0);
     expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["001.png", "002.png", "shots.txt"]);
+  });
+});
+
+describe("replay", () => {
+  it("fails without a file, records one with --record, then answers from it without calling the backend", async () => {
+    const dir = makeProject({
+      esm: true,
+      config: `import { defineConfig } from "snapseq";
+export default defineConfig({ envs: { dev: { host: ${JSON.stringify(server.url)}, replay: { "**/api": "captures/replay/api.json" } } }, devices: { d1: {} } });`,
+      captures: {
+        "w.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq }) => {
+  await page.goto("/widget");
+  await page.locator("#v:not(:empty)").waitFor();
+  const v = await page.locator("#v").textContent();
+  if (v !== process.env.EXPECT_V) throw new Error("rendered " + v);
+  await seq.snap();
+});`,
+      },
+    });
+    dirs.push(dir);
+    const file = join(dir, "captures/replay/api.json");
+    const apiHits = () => server.hits.filter((h) => h.url.startsWith("/api")).length;
+
+    const missing = await playwright(dir, [], { EXPECT_V: "live" });
+    expect(missing.status).not.toBe(0);
+    expect(missing.out).toContain("snapseq: no replay file for **/api: captures/replay/api.json");
+    expect(existsSync(file)).toBe(false);
+
+    let hits = apiHits();
+    const rec = await snapseq(dir, ["--record"], { EXPECT_V: "live" });
+    expect(rec.status, rec.out).toBe(0);
+    expect(apiHits()).toBe(hits + 1);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ v: "live" });
+
+    writeFileSync(file, JSON.stringify({ v: "replayed" }));
+    hits = apiHits();
+    const rep = await playwright(dir, [], { EXPECT_V: "replayed" });
+    expect(rep.status, rep.out).toBe(0);
+    expect(apiHits()).toBe(hits);
+    expect(existsSync(join(dir, ".screenshots/run1/w/d1/001.png"))).toBe(true);
   });
 });
 

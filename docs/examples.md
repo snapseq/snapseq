@@ -354,3 +354,53 @@ passed ones keep their shots. A rerun starts from `001.png` again, so it
 replaces the failed attempt whole. From a monorepo root the same commands go
 through `pnpm --filter <app> screenshot …`. To run every capture regardless of
 failures, pass `--max-failures 0`.
+
+## 12. A backend that rejects every request
+
+A search form posts to a backend the capture cannot use: it sits behind a bot
+check that rejects automated sessions, charges per call, or is down. Nothing
+the browser sends can fix that. The prod env replays a recorded response for
+that one request; the rest of the page, images included, stays live. The
+capture is what a user does, and shows three things such forms often need:
+validation that runs on blur, a checkbox whose `<input>` is invisible, and a
+result that lands after the DOM-quiet wait.
+
+```ts
+// snapseq.config.ts
+import { defineConfig } from "snapseq";
+
+export default defineConfig({
+  envs: {
+    staging: { host: "https://staging.example.com" },   // the search works here
+    prod: {
+      host: "https://www.example.com",
+      replay: { "**/api/search": "captures/replay/search.json" },
+    },
+  },
+});
+```
+
+```ts
+// captures/search.capture.ts
+import { capture, disableTransitions } from "snapseq";
+
+capture(async ({ page, seq }) => {
+  await disableTransitions(page);
+  await page.goto("/");
+  const form = page.locator(".search-form");
+  await form.locator("input[name=q]").fill("lamps");
+  await form.locator("input[name=q]").press("Tab");     // the form validates on blur
+  await form.locator(".consent label").click();         // the <input> is 0x0; the label takes the click
+  await form.getByRole("button", { name: "Search" }).click();
+  await form.locator(".results li").first().waitFor(); // arrives seconds later; not a DOM-quiet state
+  await seq.snapPage();
+});
+```
+
+```bash
+pnpm screenshot --env prod --record --host https://staging.example.com   # records the file from staging
+pnpm screenshot --env prod                                               # replays it against prod
+```
+
+The recorded file is one response as the backend sent it, so the page renders
+real content. Commit it with the capture.

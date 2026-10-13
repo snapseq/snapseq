@@ -7,7 +7,14 @@ import {
   type PlaywrightWorkerOptions,
   type TestInfo,
 } from "@playwright/test";
-import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { SnapseqMetadata } from "./define.js";
 import { createSequence, type Sequence } from "./sequence.js";
@@ -30,6 +37,8 @@ export interface CaptureFixtures {
   host: string;
   device: string;
   ctx: CaptureContext;
+  /** Auto fixture: the env's `replay` routes, set up before the capture runs. */
+  replay: void;
 }
 
 interface WorkerFixtures {
@@ -46,6 +55,12 @@ export type CaptureArgs = PlaywrightTestArgs &
 export type CaptureFn = (args: CaptureArgs, testInfo: TestInfo) => Promise<void> | void;
 
 const DEFAULT_TITLE = "capture";
+
+function configDirOf(testInfo: TestInfo): string {
+  return testInfo.config.configFile
+    ? dirname(testInfo.config.configFile)
+    : testInfo.config.rootDir;
+}
 
 function metadataOf(testInfo: TestInfo): SnapseqMetadata {
   const meta = (testInfo.config.metadata as { snapseq?: SnapseqMetadata }).snapseq;
@@ -103,11 +118,8 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
         "snapseq: --repeat-each and retries are not supported; a second run would overwrite the first run's screenshots",
       );
     }
-    const configDir = testInfo.config.configFile
-      ? dirname(testInfo.config.configFile)
-      : testInfo.config.rootDir;
     const meta = metadataOf(testInfo);
-    const root = resolve(configDir, meta.screenshotsDir);
+    const root = resolve(configDirOf(testInfo), meta.screenshotsDir);
     mkdirSync(root, { recursive: true });
     const ignore = join(root, ".gitignore");
     if (!existsSync(ignore)) writeFileSync(ignore, "*\n");
@@ -148,6 +160,41 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
   ctx: async ({ page, seq, env, host, device }, use) => {
     await use({ page, seq, env, host, device });
   },
+
+  // The env's `replay` requests, answered from their files before the capture
+  // runs; with --record, fetched live and written first. A missing file fails
+  // here, before any shot, rather than silently replaying nothing.
+  replay: [
+    async ({ page }, use, testInfo) => {
+      const meta = metadataOf(testInfo);
+      const configDir = configDirOf(testInfo);
+      for (const [pattern, rel] of Object.entries(meta.replay ?? {})) {
+        const file = resolve(configDir, rel);
+        if (meta.record) {
+          await page.route(pattern, async (route) => {
+            const response = await route.fetch();
+            const body = await response.text();
+            mkdirSync(dirname(file), { recursive: true });
+            writeFileSync(file, body);
+            await route.fulfill({ response, body });
+          });
+        } else {
+          if (!existsSync(file)) {
+            throw new Error(
+              `snapseq: no replay file for ${pattern}: ${rel}. Record it with --record against a host where the request succeeds.`,
+            );
+          }
+          // ponytail: JSON only; a HAR via page.routeFromHAR covers anything else.
+          const body = readFileSync(file, "utf8");
+          await page.route(pattern, (route) =>
+            route.fulfill({ body, contentType: "application/json" }),
+          );
+        }
+      }
+      await use();
+    },
+    { auto: true },
+  ],
 });
 
 /**

@@ -26,6 +26,7 @@ current directory (or takes `-c <path>`), and hands everything else to
 | `--env <name>`        | `SNAPSEQ_ENV`  | The env from the config. Default: `defaultEnv`, else `dev`, else the first.                   |
 | `--host <url>`        | `SNAPSEQ_HOST` | Override that env's host for this run. Its `webServer` is then not started.                   |
 | `--device <name>`     |                   | Only this device; repeatable. Playwright's `--project`.                                       |
+| `--record`            | `SNAPSEQ_RECORD` | Fetch the env's `replay` requests live and write their files. See [Config](config.md#replay). |
 | `-c, --config <path>` |                   | The config file. Default: `./snapseq.config.{ts,mts,cts,js,mjs,cjs}`.                      |
 |                       | `SNAPSEQ_RUN`  | The run directory's name. Default: the local time the run started. A name, not a path.        |
 

@@ -22,6 +22,7 @@ beforeEach(() => {
   vi.stubEnv("SNAPSEQ_RUN", "run1");
   vi.stubEnv("SNAPSEQ_ENV", "");
   vi.stubEnv("SNAPSEQ_HOST", "");
+  vi.stubEnv("SNAPSEQ_RECORD", "");
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -88,5 +89,15 @@ describe("defineConfig", () => {
     expect(() => defineConfig({ envs })).not.toThrow();
     expect(() => defineConfig({ envs, devices: { "../d": {} } })).toThrow("a device name must be a directory name");
     expect(() => defineConfig({ envs, devices: { "300x250": { viewport: { width: 300, height: 250 } } } })).not.toThrow();
+  });
+
+  it("carries the env's replay map and the record flag to the fixtures", () => {
+    const meta = (c: ReturnType<typeof defineConfig>) =>
+      (c.metadata as { snapseq: { replay?: unknown; record: boolean } }).snapseq;
+    const replay = { "**/api": "captures/replay/api.json" };
+    expect(meta(defineConfig({ envs: { ...envs, dev: { ...envs.dev, replay } } }))).toMatchObject({ replay, record: false });
+    expect(meta(defineConfig({ envs }))).not.toHaveProperty("replay");
+    vi.stubEnv("SNAPSEQ_RECORD", "1");
+    expect(meta(defineConfig({ envs })).record).toBe(true);
   });
 });

@@ -23,6 +23,14 @@ export interface EnvConfig {
    * Whatever Playwright takes, in its own words; nothing here is auth-specific.
    */
   use?: DeviceConfig;
+  /**
+   * Requests answered from files instead of this env's backend: a URL glob
+   * (Playwright's `page.route` pattern) to a file path relative to the config
+   * file, e.g. `{ "**\/api/search": "captures/replay/search.json" }`.
+   * `--record` fetches each one live and writes its file; every other run
+   * fulfills from the file, as JSON, before the capture starts.
+   */
+  replay?: Record<string, string>;
 }
 
 /** Playwright `use` options for one project, e.g. `{ viewport, deviceScaleFactor, hasTouch }` or `devices["iPhone 14"]`. */
@@ -52,6 +60,10 @@ export interface SnapseqMetadata {
   screenshotsDir: string;
   /** Run directory name, e.g. `2026-10-01 at 4.07.16 PM`. */
   run: string;
+  /** The env's `replay` map, if any. */
+  replay?: Record<string, string>;
+  /** `--record`: fetch the replay requests live and write their files. */
+  record: boolean;
 }
 
 /** One directory name, since the directory it names is wiped: no separators, not `.` or `..`. */
@@ -97,7 +109,8 @@ function defaultReporter(
  * Build a Playwright Test config for screenshot captures. Extra arguments are
  * overrides, merged the way Playwright's own `defineConfig` merges them.
  * Env vars: `SNAPSEQ_ENV` picks the env, `SNAPSEQ_HOST` overrides its host,
- * `SNAPSEQ_RUN` names the run directory (default: the time the run started).
+ * `SNAPSEQ_RUN` names the run directory (default: the time the run started),
+ * `SNAPSEQ_RECORD` records the env's `replay` responses.
  */
 export function defineConfig(
   config: SnapseqConfig,
@@ -122,7 +135,14 @@ export function defineConfig(
   assertName("SNAPSEQ_RUN", run);
   const devices = config.devices ?? DEFAULT_DEVICES;
   for (const name of Object.keys(devices)) assertName("a device name", name);
-  const metadata: SnapseqMetadata = { env: envName, host, screenshotsDir, run };
+  const metadata: SnapseqMetadata = {
+    env: envName,
+    host,
+    screenshotsDir,
+    run,
+    record: !!process.env.SNAPSEQ_RECORD,
+    ...(env.replay ? { replay: env.replay } : {}),
+  };
   // An overridden host points at a server the user runs; the configured command
   // would come up elsewhere and the readiness wait would hang until timeout.
   const server =
