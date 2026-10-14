@@ -1,6 +1,7 @@
 import { defineConfig as definePlaywrightConfig, type PlaywrightTestConfig } from "@playwright/test";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Plugin } from "./plugin.js";
 import type { ShotFormat } from "./sequence.js";
 
 export interface EnvConfig {
@@ -51,6 +52,8 @@ export interface SnapseqConfig {
   numbering?: string;
   /** Playwright's screenshot `type` (`"png"`, the default, or `"jpeg"`) and `quality` (JPEG only, 0 to 100). */
   format?: ShotFormat;
+  /** Addons such as `label()` from `snapseq-label`. Their hooks run in this order. */
+  plugins?: Plugin[];
 }
 
 const DEFAULT_DEVICES: Record<string, DeviceConfig> = {
@@ -163,7 +166,9 @@ export function defineConfig(
   const server =
     env.webServer && host === env.host ? { host, command: env.webServer } : undefined;
 
-  return definePlaywrightConfig(
+  // In `use`, not `metadata`: a use value reaches the workers live, functions
+  // intact; metadata arrives as a JSON copy.
+  return definePlaywrightConfig<{ snapseq: { plugins: Plugin[] } }>(
     {
     testDir: config.capturesDir ?? "captures",
     testMatch: /\.capture\.[cm]?[jt]s$/,
@@ -201,6 +206,8 @@ export function defineConfig(
         ? { httpCredentials: { origin: new URL(host).origin, ...env.httpCredentials } }
         : {}),
       ...env.use,
+      // After the env's own options, so an env cannot replace it.
+      snapseq: { plugins: config.plugins ?? [] },
     },
     projects: Object.entries(devices).map(([name, use]) => ({
       name,

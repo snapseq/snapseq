@@ -14,6 +14,7 @@ import { connect, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PDFDocument } from "@cantoo/pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Drives the BUILT package through the real Playwright CLI, the way a consumer would.
@@ -151,6 +152,10 @@ function makeProject(opts: {
     join(PKG, "node_modules", "@playwright", "test"),
     join(dir, "node_modules", "@playwright", "test"),
   );
+  // The workspace's plugins, built by their own prepare/test scripts.
+  for (const name of ["label", "pdf"]) {
+    symlinkSync(resolve(PKG, "..", name), join(dir, "node_modules", `snapseq-${name}`));
+  }
   if (opts.esm) writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   writeFileSync(join(dir, "snapseq.config.ts"), opts.config);
   for (const [rel, src] of Object.entries(opts.captures)) {
@@ -210,6 +215,10 @@ function pngSize(file: string): [number, number] {
   const buf = readFileSync(file);
   return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
 }
+
+// Page sizes in pt. pdf-lib writes compressed object streams, so a grep for MediaBox sees nothing.
+const pdfPages = async (file: string) =>
+  (await PDFDocument.load(readFileSync(file))).getPages().map((p) => [p.getWidth(), p.getHeight()]);
 
 const captureA = `
 import { capture } from "snapseq";
@@ -823,6 +832,156 @@ capture(async ({ page, seq }) => {
     expect(rep.status, rep.out).toBe(0);
     expect(apiHits()).toBe(hits);
     expect(existsSync(join(dir, ".screenshots/run1/w/d1/01.png"))).toBe(true);
+  });
+});
+
+describe("plugins", () => {
+  it("runs begin before the body, afterSnap per shot, done once a capture passed and failed once it failed; a throwing hook fails the capture, naming the plugin", async () => {
+    const p = makeProject({
+      esm: true,
+      config: `
+import { appendFileSync, existsSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { defineConfig } from "snapseq";
+const log = (ctx, line) => appendFileSync(join(ctx.seq.dir, "hooks.txt"), line + "\\n");
+export default defineConfig({
+  envs: { dev: { host: "${server.url}" } },
+  devices: { d1: { viewport: { width: 320, height: 200 } } },
+  screenshotsDir: "out",
+  plugins: [
+    {
+      name: "probe",
+      begin: async (ctx) => ctx.page.route("**/marker", (route) => route.fulfill({ body: "ok" })),
+      afterSnap: async (shot, ctx) => log(ctx, \`shot \${shot.name} \${shot.options.tag ?? "-"} \${ctx.device}\`),
+      done: async (shots, ctx) => log(ctx, \`capture \${shots.map((s) => s.name).join(",")}\`),
+      failed: async (shots, ctx) => log(ctx, \`failed \${shots.map((s) => s.name).join(",")} png=\${existsSync(join(ctx.seq.dir, "failed.png"))}\`),
+    },
+    {
+      name: "boom",
+      begin: async (ctx) => { if (basename(dirname(ctx.seq.dir)) === "early") throw new Error("early"); },
+      afterSnap: async (shot) => { if (shot.url.endsWith("/boom")) throw new Error("kaput"); },
+      done: async (shots) => { if (shots[0]?.url.endsWith("/late")) throw new Error("late"); },
+    },
+  ],
+});
+`,
+      captures: {
+        "pass.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq }) => { await page.goto("/pass"); await seq.snap({ tag: "x" }); await seq.snap(); });
+`,
+        "fails.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq }) => { await page.goto("/fails"); await seq.snap(); throw new Error("after one shot"); });
+`,
+        "boom.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq }) => { await page.goto("/boom"); await seq.snap(); });
+`,
+        "late.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq }) => { await page.goto("/late"); await seq.snap(); });
+`,
+        "empty.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq }) => { await page.goto("/empty"); void seq; });
+`,
+        "marker.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq }) => {
+  const r = await page.goto("/marker");
+  if ((await r!.text()) !== "ok") throw new Error("begin did not run first");
+  await seq.snap();
+});
+`,
+        "early.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq }) => { await page.goto("/early"); await seq.snap(); });
+`,
+      },
+    });
+    dirs.push(p);
+
+    const r = await playwright(p, ["--max-failures", "0"]);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain("4 failed");
+    expect(r.out).toContain("3 passed");
+    const out = join(p, "out", "run1");
+    const read = (name: string, file: string) => readFileSync(join(out, name, "d1", file), "utf8");
+    expect(read("pass", "hooks.txt")).toBe("shot 01.png x d1\nshot 02.png - d1\ncapture 01.png,02.png\n");
+    expect(read("fails", "hooks.txt")).toBe("shot 01.png - d1\nfailed 01.png png=true\n"); // failed, not done, and after failed.png
+    expect(read("empty", "hooks.txt")).toBe("capture \n"); // used seq, took no shot: the hook still runs
+    expect(read("marker", "hooks.txt")).toBe("shot 01.png - d1\ncapture 01.png\n"); // the route begin set answered the body's goto
+    // A shot whose hook threw is written but not listed.
+    expect(r.out).toContain('snapseq: plugin "boom" threw in afterSnap on 01.png: kaput');
+    expect(existsSync(join(out, "boom", "d1", "01.png"))).toBe(true);
+    expect(read("boom", "shots.txt")).toBe(`failed.png  ${server.url}/boom\n`);
+    expect(r.out).toContain('snapseq: plugin "boom" threw in done: late');
+    // A begin that throws fails the capture before its body runs: no shot, no failed.png.
+    expect(r.out).toContain('snapseq: plugin "boom" threw in begin: early');
+    expect(readdirSync(join(out, "early", "d1"))).toEqual([]);
+  });
+
+  it("snapseq-label adds a strip to a labeled shot and snapseq-pdf binds the capture, labels included", async () => {
+    const p = makeProject({
+      esm: true,
+      config: `
+import { defineConfig } from "snapseq";
+import { label } from "snapseq-label";
+import { pdf } from "snapseq-pdf";
+export default defineConfig({
+  envs: { dev: { host: "${server.url}" } },
+  devices: {
+    d1: { viewport: { width: 400, height: 300 } },
+    // A phone: 2x, mobile layout. The plugins' own contexts must not inherit either.
+    d2: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
+  },
+  screenshotsDir: "out",
+  plugins: [label(), pdf()],
+});
+`,
+      captures: {
+        "home.capture.ts": `
+import { capture } from "snapseq";
+capture(async ({ page, seq, device }) => {
+  await page.goto("/home");
+  await seq.snap({ label: "0.0 Home" });
+  // The test page has no viewport meta tag, so mobile emulation scales it and snapPage refuses it.
+  if (device === "d1") await seq.snapPage({ label: "0.1 Home, whole page" });
+  await seq.snap();
+});
+`,
+      },
+    });
+    dirs.push(p);
+
+    const r = await playwright(p, []);
+    expect(r.out).toContain("2 passed");
+    expect(r.status).toBe(0);
+    const dir = join(p, "out", "run1", "home", "d1");
+    expect(readdirSync(dir).sort()).toEqual(["01.png", "02.png", "03.png", "home.pdf", "shots.txt"]);
+    expect(pngSize(join(dir, "01.png"))).toEqual([400, 324]); // 24 px strip
+    const [, full] = pngSize(join(dir, "02.png"));
+    expect(full).toBeGreaterThan(924); // the whole 900 px page, plus the strip
+    expect(pngSize(join(dir, "03.png"))).toEqual([400, 300]); // no label, untouched
+    expect(readFileSync(join(dir, "shots.txt"), "utf8").split("\n").filter(Boolean)).toHaveLength(3);
+    // One page per shot at the labeled size: 1 px is 0.75 pt.
+    expect(await pdfPages(join(dir, "home.pdf"))).toEqual([
+      [300, 243],
+      [300, full * 0.75],
+      [300, 225],
+    ]);
+    // The phone: 780 px wide at 2x, the strip 24 px of the file, nothing scaled.
+    // (Mobile emulation makes the 844 px viewport 1687 px tall, so measure, don't assume.)
+    const phone = join(p, "out", "run1", "home", "d2");
+    const [width, height] = pngSize(join(phone, "02.png")); // unlabeled
+    expect(width).toBe(780);
+    expect(pngSize(join(phone, "01.png"))).toEqual([width, height + 24]);
+    // Pages are the CSS size: the 2x file halved, so the phone page is phone-sized.
+    expect(await pdfPages(join(phone, "home.pdf"))).toEqual([
+      [(width / 2) * 0.75, ((height + 24) / 2) * 0.75],
+      [(width / 2) * 0.75, (height / 2) * 0.75],
+    ]);
   });
 });
 

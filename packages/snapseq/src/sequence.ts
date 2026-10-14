@@ -1,9 +1,17 @@
 import { appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { Page, PageScreenshotOptions } from "@playwright/test";
+import type { CaptureContext } from "./fixtures.js";
+import type { Plugin, Shot } from "./plugin.js";
 
-/** Playwright's screenshot options minus what the sequence owns: the numbered path, and the type and quality from the config's `format`. */
-export type SnapOptions = Omit<PageScreenshotOptions, "path" | "type" | "quality">;
+/**
+ * Playwright's screenshot options minus what the sequence owns: the numbered
+ * path, and the type and quality from the config's `format`. An interface, so
+ * a plugin can add its own keys: `declare module "snapseq" { interface SnapOptions { label?: string } }`.
+ * Playwright ignores the keys it does not know, so they reach the screenshot harmlessly.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface SnapOptions extends Omit<PageScreenshotOptions, "path" | "type" | "quality"> {}
 
 /** Playwright's screenshot type and quality, as the config's `format`; Playwright validates them at the first shot. */
 export type ShotFormat = Pick<PageScreenshotOptions, "type" | "quality">;
@@ -27,6 +35,8 @@ export interface Sequence {
   snapPage(options?: Omit<SnapOptions, "fullPage">): Promise<string>;
   /** Directory the screenshots are written to. */
   readonly dir: string;
+  /** Every shot listed so far, in order: each one's plugin `afterSnap` hooks passed. */
+  readonly shots: readonly Shot[];
 }
 
 const documentHeight = (page: Page): Promise<number> =>
@@ -149,7 +159,8 @@ async function ready(page: Page, notes: string[]): Promise<void> {
 
 /**
  * Numbered screenshots (`01.png`, `02.png`, …; as wide as `numbering`, in
- * `format`) in `root/dir`, listed with their URLs in `shots.txt`. The directory is wiped on
+ * `format`) in `root/dir`, listed with their URLs in `shots.txt` once every
+ * plugin's `afterSnap` hook passed. The directory is wiped on
  * creation so a run never mixes with the previous run's files; it must lie
  * inside `root`.
  */
@@ -157,11 +168,25 @@ export function createSequence(
   page: Page,
   root: string,
   dir: string,
-  // Runs one shot; the fixture wraps it in a `test.step` titled `01.png  <url>`,
-  // so the terminal view can count shots and say where the capture is.
-  wrap: (title: string, shoot: () => Promise<void>) => Promise<void> = (_title, shoot) => shoot(),
-  numbering = "00",
-  format: ShotFormat = {},
+  {
+    wrap = (_title, shoot) => shoot(),
+    numbering = "00",
+    format = {},
+    plugins = [],
+    ctx,
+    signal,
+  }: {
+    // Runs one shot; the fixture wraps it in a `test.step` titled `01.png  <url>`,
+    // so the terminal view can count shots and say where the capture is.
+    wrap?: (title: string, shoot: () => Promise<void>) => Promise<void>;
+    numbering?: string;
+    format?: ShotFormat;
+    plugins?: readonly Plugin[];
+    // What the hooks get; the fixture always passes it.
+    ctx?: CaptureContext;
+    // Aborted when the capture ends: a shot still in flight then is not listed.
+    signal?: AbortSignal;
+  } = {},
 ): Sequence {
   const full = join(root, dir);
   // Wiped recursively, so it has to be the run's own: a run name or device
@@ -174,14 +199,41 @@ export function createSequence(
   mkdirSync(full, { recursive: true });
 
   const ext = format.type === "jpeg" ? "jpg" : "png";
+  const shots: Shot[] = [];
   let counter = 0;
-  const take = async (options: SnapOptions | undefined, notes: string[]): Promise<string> => {
-    counter += 1;
-    const name = `${String(counter).padStart(numbering.length, "0")}.${ext}`;
-    const path = join(full, name);
-    const url = page.url();
+  // Device pixels per CSS pixel: fixed for the context, so read once, at the first shot.
+  let deviceScaleFactor: number | undefined;
+  const open = async (options: SnapOptions | undefined): Promise<Shot> => {
+    deviceScaleFactor ??= await page.evaluate(() => window.devicePixelRatio);
+    const index = counter + 1;
+    const name = `${String(index).padStart(numbering.length, "0")}.${ext}`;
+    return { name, path: join(full, name), url: page.url(), index, options: { ...options }, notes: [], format: { ...format }, deviceScaleFactor };
+  };
+  const hooks = async (kind: "beforeSnap" | "afterSnap", shot: Shot): Promise<void> => {
+    for (const plugin of plugins) {
+      try {
+        await plugin[kind]?.(shot, ctx as CaptureContext);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        throw new Error(`snapseq: plugin "${plugin.name}" threw in ${kind} on ${shot.name}: ${message}`, { cause });
+      }
+    }
+  };
+  const take = async (shot: Shot, notes: string[]): Promise<string> => {
+    // Claimed this late so a shot refused before its screenshot (snapPage's height check) gives its number back.
+    counter = shot.index;
+    // Locals: an afterSnap hook that edits the shot must not reach the step or the manifest.
+    const { name, path } = shot;
+    shot.url = page.url(); // a beforeSnap hook may have navigated
+    const url = shot.url;
+    shot.notes = [...notes];
     await wrap(`${name}  ${url}`, async () => {
-      await page.screenshot({ ...options, ...format, path });
+      // The config's type and quality (unset is PNG) and the numbered path win over anything a hook put in the options.
+      await page.screenshot({ ...shot.options, type: format.type, quality: format.quality, path });
+      // Inside the step, so the shot counts only once its hooks passed.
+      await hooks("afterSnap", shot);
+      if (signal?.aborted) throw new Error(`snapseq: the capture ended before ${name} was listed`);
+      shots.push(shot);
       const note = notes.length > 0 ? `  ${notes.join(", ")}` : "";
       appendFileSync(join(full, "shots.txt"), `${name}  ${url}${note}\n`);
       // Worker stderr reaches every reporter; the list reporter prints it under the step.
@@ -190,13 +242,32 @@ export function createSequence(
     return path;
   };
 
+  // One shot at a time: a second snap before the first resolved (a hook taking
+  // its own, a Promise.all in a capture) would number and list them out of order.
+  let busy = false;
+  const one = async <T>(shoot: () => Promise<T>): Promise<T> => {
+    if (busy) throw new Error("snapseq: a shot is already in progress; await each snap before the next");
+    busy = true;
+    try {
+      return await shoot();
+    } finally {
+      busy = false;
+    }
+  };
+
   return {
-    snap: async (options) => {
+    snap: (options) => one(async () => {
+      const shot = await open(options);
+      await hooks("beforeSnap", shot);
       const notes: string[] = [];
       await ready(page, notes);
-      return take(options, notes);
-    },
-    snapPage: async (options) => {
+      return take(shot, notes);
+    }),
+    snapPage: (options) => one(async () => {
+      // Before the viewport is read and grown, so what a hook changed is settled and measured.
+      const shot = await open(options);
+      await hooks("beforeSnap", shot);
+      delete shot.options.fullPage; // the grown viewport is the full page already
       const viewport = page.viewportSize();
       if (!viewport) throw new Error("snapPage: the page has no viewport size");
       const grow = (height: number) => page.setViewportSize({ width: viewport.width, height });
@@ -222,11 +293,12 @@ export function createSequence(
             `snapPage: the document grew from ${height} to ${after} px after the viewport was set to its height, so its layout follows the viewport (vh units, a loader at the page end). Use snap({ fullPage: true }) for this page.`,
           );
         }
-        return await take(options, notes);
+        return await take(shot, notes);
       } finally {
         await page.setViewportSize(viewport);
       }
-    },
+    }),
     dir: full,
+    shots,
   };
 }

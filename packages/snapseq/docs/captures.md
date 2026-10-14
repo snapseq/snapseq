@@ -38,11 +38,12 @@ Beyond Playwright's own (`page`, `context`, `browser`, …):
 
 | Fixture  | Value                                                                                   |
 | -------- | --------------------------------------------------------------------------------------- |
-| `seq`    | The shot sequence: `snap`, `snapPage`, `dir`.                                           |
+| `seq`    | The shot sequence: `snap`, `snapPage`, `dir`, `shots`.                                  |
 | `device` | The `devices` key this run is on, e.g. `"mobile"`.                                      |
 | `env`    | The active env name, e.g. `"dev"`.                                                      |
 | `host`   | The resolved base URL.                                                                  |
 | `ctx`    | All of the above plus `page` in one object, for helpers that take a `CaptureContext`.   |
+| `snapseq` | The config's `plugins`, as `defineConfig` set them. Read by `seq`; nothing for a capture to use. |
 
 ## Shots
 
@@ -62,8 +63,11 @@ viewport would never catch it.
 
 Both take Playwright's screenshot options (`mask`, `clip`, `style`,
 `omitBackground`, …) except the path, the image type and the quality, which
-the sequence takes from the config's `numbering` and `format`. Both resolve to
-the path of the file they wrote.
+the sequence takes from the config's `numbering` and `format`. A plugin can add
+keys of its own, such as `label` from `snapseq-label`:
+`seq.snap({ label: "0.0 Home" })`. See [Plugins](plugins.md). Both resolve to
+the path of the file they wrote. One shot runs at a time: a second `snap`
+before the first resolved throws, so await each.
 
 ## Readiness
 

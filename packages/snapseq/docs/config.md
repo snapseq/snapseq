@@ -34,6 +34,7 @@ export default defineConfig({
 | `screenshotsDir` | `".screenshots"`                       | Relative to the config file. Snapseq writes a `.gitignore` inside it. |
 | `numbering`      | `"00"`                                 | The shape of a shot number: `"00"` gives `01.png`, `"000"` gives `001.png`. Zeros only. Wide enough for the longest capture: `100.png` sorts before `99.png`. |
 | `format`         | `{}` (PNG)                             | Playwright's screenshot `type` and `quality`: `{ type: "jpeg", quality: 60 }` writes `01.jpg`, … Quality is 0 to 100 and JPEG only, as in Playwright. |
+| `plugins`        | none                                   | Addons such as `label()` and `pdf()`, run in the order listed. See "Plugins". |
 
 ## Envs
 
@@ -127,6 +128,24 @@ devices: {
 The key is the directory name under each capture (`pricing/phone/01.png`),
 the value of the `device` fixture, and what `--device` selects. It must be a
 directory name, not a path.
+
+## Plugins
+
+A plugin acts on a capture and the shots it takes: a label strip above each
+image, a PDF of the capture. List the instances in `plugins`; their hooks run
+in that order.
+
+```ts
+import { label } from "snapseq-label";
+import { pdf } from "snapseq-pdf";
+
+export default defineConfig({
+  envs: { dev: { host: "http://localhost:3000" } },
+  plugins: [label(), pdf()],
+});
+```
+
+[Plugins](plugins.md) covers installing them and writing your own.
 
 ## Playwright defaults
 

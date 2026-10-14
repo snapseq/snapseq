@@ -1,0 +1,60 @@
+{
+  "name": "snapseq-label",
+  "version": "0.0.0",
+  "description": "snapseq plugin: a labeled strip above each screenshot.",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/syantra/snapseq.git",
+    "directory": "packages/label"
+  },
+  "homepage": "https://github.com/syantra/snapseq/tree/main/packages/label#readme",
+  "bugs": {
+    "url": "https://github.com/syantra/snapseq/issues"
+  },
+  "keywords": [
+    "snapseq",
+    "playwright",
+    "screenshot",
+    "label",
+    "caption"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsup",
+    "prepare": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && vitest run",
+    "prepublishOnly": "pnpm typecheck && pnpm test"
+  },
+  "peerDependencies": {
+    "snapseq": ">=0.3.0 <1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "@types/node": "^25.6.0",
+    "snapseq": "workspace:*",
+    "tsup": "^8.5.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  },
+  "dependencies": {
+    "sharp": "0.35.5"
+  }
+}
