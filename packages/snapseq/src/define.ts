@@ -66,7 +66,7 @@ export interface SnapseqMetadata {
   env: string;
   host: string;
   screenshotsDir: string;
-  /** Run directory name, e.g. `2026-10-01 at 4.07.16 PM`. */
+  /** Run directory name, e.g. `2026-10-01 at 04.07.16 PM`. */
   run: string;
   /** The shape of a shot number, e.g. `"00"`. */
   numbering: string;
@@ -85,12 +85,12 @@ function assertName(what: string, name: string): void {
   }
 }
 
-/** Local time, the way Finder names screenshots: `2026-10-01 at 4.07.16 PM`. */
+/** Local time, the way Finder names screenshots, with a two-digit hour: `2026-10-01 at 04.07.16 PM`. */
 function runStamp(d = new Date()): string {
   const p = (n: number) => String(n).padStart(2, "0");
   const h = d.getHours();
   const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  return `${date} at ${h % 12 || 12}.${p(d.getMinutes())}.${p(d.getSeconds())} ${h < 12 ? "AM" : "PM"}`;
+  return `${date} at ${p(h % 12 || 12)}.${p(d.getMinutes())}.${p(d.getSeconds())} ${h < 12 ? "AM" : "PM"}`;
 }
 
 // Built as ESM (dist/reporter.js). The CJS build of this file sees __dirname;

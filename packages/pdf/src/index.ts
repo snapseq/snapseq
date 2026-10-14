@@ -1,12 +1,17 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { PDFDocument } from "@cantoo/pdf-lib";
 import type { Plugin } from "snapseq";
 
-/** One PDF per capture and device, one page per shot at its own size, beside the shots. */
+// The PDF sits next to the device folder and takes its name: <run>/home/desktop.pdf.
+const file = (dir: string) => join(dirname(dir), `${basename(dir)}.pdf`);
+
+/** One PDF per capture and device, one page per shot at its own size, next to the device folder. */
 export function pdf(): Plugin {
   return {
     name: "pdf",
+    // A rerun wipes the device folder, not the PDF beside it.
+    begin: (ctx) => rm(file(ctx.seq.dir), { force: true }),
     async done(shots, ctx) {
       if (shots.length === 0) return;
       const doc = await PDFDocument.create();
@@ -19,7 +24,7 @@ export function pdf(): Plugin {
         const page = doc.addPage([img.width * pt, img.height * pt]);
         page.drawImage(img, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
       }
-      await writeFile(join(ctx.seq.dir, `${basename(dirname(ctx.seq.dir))}.pdf`), await doc.save());
+      await writeFile(file(ctx.seq.dir), await doc.save());
     },
   };
 }

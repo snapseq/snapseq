@@ -35,11 +35,11 @@ The flag wins over the variable. An empty value (`--env ""`) means unset.
 ## Run directories
 
 Every run gets its own directory named for the local time it started
-(`2026-10-01 at 4.07.16 PM`), shared by all captures in that run:
+(`2026-10-01 at 04.07.16 PM`), shared by all captures in that run:
 
 ```
 .screenshots/
-  2026-10-01 at 4.07.16 PM/
+  2026-10-01 at 04.07.16 PM/
     pricing/desktop/01.png
     pricing/desktop/02.png
     pricing/desktop/shots.txt
@@ -71,7 +71,7 @@ included, and a rerun capture starts from `01.png` again. Set
 rerun capture's own directory is wiped.
 
 ```bash
-SNAPSEQ_RUN="2026-10-01 at 4.07.16 PM" pnpm screenshot --last-failed
+SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm screenshot --last-failed
 ```
 
 [Example 11](examples.md#11-rerun-one-capture-into-the-same-run) walks through it.
@@ -104,7 +104,7 @@ env, host, run and elapsed time; one line per capture and device in the order
 the run takes them, each changing in place like a todo list; and a footer.
 
 ```
-  snapseq  dev  http://localhost:3000  2026-10-01 at 4.07.16 PM  00:14
+  snapseq  dev  http://localhost:3000  2026-10-01 at 04.07.16 PM  00:14
 
   ✔ home / desktop     3 shots  4.2s
   ✔ home / mobile      3 shots  4.9s
@@ -112,7 +112,7 @@ the run takes them, each changing in place like a todo list; and a footer.
   . pricing / mobile   queued
   - landing / mobile   skipped  desktop only
 
-  2 passed, 1 skipped  8 shots  .screenshots/2026-10-01 at 4.07.16 PM
+  2 passed, 1 skipped  8 shots  .screenshots/2026-10-01 at 04.07.16 PM
 ```
 
 A row is queued, running (shots so far, how long, the path of the last shot),

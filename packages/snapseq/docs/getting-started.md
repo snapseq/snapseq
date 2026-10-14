@@ -88,14 +88,14 @@ the run directory opens in Finder (Explorer on Windows).
   ✔ pricing / desktop  2 shots  3.1s
   ✔ pricing / mobile   2 shots  3.4s
 
-  2 passed  4 shots  .screenshots/2026-10-01 at 4.07.16 PM
+  2 passed  4 shots  .screenshots/2026-10-01 at 04.07.16 PM
 ```
 
 ## 6. Find the shots
 
 ```
 .screenshots/                          gitignored by snapseq itself
-  2026-10-01 at 4.07.16 PM/            one directory per run, local time
+  2026-10-01 at 04.07.16 PM/            one directory per run, local time
     pricing/
       desktop/
         01.png

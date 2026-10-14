@@ -959,14 +959,15 @@ capture(async ({ page, seq, device }) => {
     expect(r.out).toContain("2 passed");
     expect(r.status).toBe(0);
     const dir = join(p, "out", "run1", "home", "d1");
-    expect(readdirSync(dir).sort()).toEqual(["01.png", "02.png", "03.png", "home.pdf", "shots.txt"]);
+    expect(readdirSync(dir).sort()).toEqual(["01.png", "02.png", "03.png", "shots.txt"]);
     expect(pngSize(join(dir, "01.png"))).toEqual([400, 324]); // 24 px strip
     const [, full] = pngSize(join(dir, "02.png"));
     expect(full).toBeGreaterThan(924); // the whole 900 px page, plus the strip
     expect(pngSize(join(dir, "03.png"))).toEqual([400, 300]); // no label, untouched
     expect(readFileSync(join(dir, "shots.txt"), "utf8").split("\n").filter(Boolean)).toHaveLength(3);
-    // One page per shot at the labeled size: 1 px is 0.75 pt.
-    expect(await pdfPages(join(dir, "home.pdf"))).toEqual([
+    // The PDFs sit next to the device folders. One page per shot at the labeled size: 1 px is 0.75 pt.
+    expect(readdirSync(join(p, "out", "run1", "home")).sort()).toEqual(["d1", "d1.pdf", "d2", "d2.pdf"]);
+    expect(await pdfPages(join(dir, "..", "d1.pdf"))).toEqual([
       [300, 243],
       [300, full * 0.75],
       [300, 225],
@@ -978,7 +979,7 @@ capture(async ({ page, seq, device }) => {
     expect(width).toBe(780);
     expect(pngSize(join(phone, "01.png"))).toEqual([width, height + 24]);
     // Pages are the CSS size: the 2x file halved, so the phone page is phone-sized.
-    expect(await pdfPages(join(phone, "home.pdf"))).toEqual([
+    expect(await pdfPages(join(phone, "..", "d2.pdf"))).toEqual([
       [(width / 2) * 0.75, ((height + 24) / 2) * 0.75],
       [(width / 2) * 0.75, (height / 2) * 0.75],
     ]);
@@ -991,7 +992,7 @@ describe("run directory", () => {
     expect(r.status).toBe(0);
     const out = join(project, "out");
     const runs = readdirSync(out).filter((n) =>
-      /^\d{4}-\d{2}-\d{2} at \d{1,2}\.\d{2}\.\d{2} [AP]M$/.test(n),
+      /^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} [AP]M$/.test(n),
     );
     expect(runs).toHaveLength(1);
     expect(readdirSync(join(out, runs[0]!, "a", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);

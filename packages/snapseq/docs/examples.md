@@ -339,14 +339,14 @@ pnpm screenshot
 #   . landing / desktop   not run
 #   . landing / mobile    not run
 #
-#   2 passed, 1 failed, 3 not run  8 shots  .screenshots/2026-10-01 at 4.07.16 PM
+#   2 passed, 1 failed, 3 not run  8 shots  .screenshots/2026-10-01 at 04.07.16 PM
 
 # Fix the capture, then rerun only the failed one, into the same run:
-SNAPSEQ_RUN="2026-10-01 at 4.07.16 PM" pnpm screenshot --last-failed
+SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm screenshot --last-failed
 
 # The ones that never ran, by name, same run:
-SNAPSEQ_RUN="2026-10-01 at 4.07.16 PM" pnpm screenshot pricing --device mobile
-SNAPSEQ_RUN="2026-10-01 at 4.07.16 PM" pnpm screenshot landing
+SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm screenshot pricing --device mobile
+SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm screenshot landing
 ```
 
 Only the rerun capture's own `<capture>/<device>` directory is wiped; the

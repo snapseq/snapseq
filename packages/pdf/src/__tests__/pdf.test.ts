@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,7 +46,7 @@ describe("pdf", () => {
 
     await pdf().done!(shots, ctx);
 
-    expect(await pageSizes(join(dir, "home.pdf"))).toEqual([
+    expect(await pageSizes(join(dir, "..", "desktop.pdf"))).toEqual([
       [300, 225],
       [300, 675],
       [225, 187.5],
@@ -59,7 +59,7 @@ describe("pdf", () => {
 
     await pdf().done!(shots, ctx);
 
-    expect(await pageSizes(join(dir, "home.pdf"))).toEqual([
+    expect(await pageSizes(join(dir, "..", "desktop.pdf"))).toEqual([
       [292.5, 633],
       [300, 225],
     ]);
@@ -71,15 +71,23 @@ describe("pdf", () => {
 
     await pdf().done!(shots, ctx);
 
-    expect(await pageSizes(join(dir, "home.pdf"))).toEqual([
+    expect(await pageSizes(join(dir, "..", "desktop.pdf"))).toEqual([
       [300, 225],
       [150, 600],
     ]);
   });
 
+  it("removes the previous run's PDF when a capture begins", async () => {
+    const { dir, ctx } = setup();
+    const file = join(dir, "..", "desktop.pdf");
+    writeFileSync(file, "stale");
+    await pdf().begin!(ctx);
+    expect(existsSync(file)).toBe(false);
+  });
+
   it("writes nothing for an empty capture", async () => {
     const { dir, ctx } = setup();
     await pdf().done!([], ctx);
-    expect(existsSync(join(dir, "home.pdf"))).toBe(false);
+    expect(existsSync(join(dir, "..", "desktop.pdf"))).toBe(false);
   });
 });

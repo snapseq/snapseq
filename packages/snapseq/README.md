@@ -47,10 +47,10 @@ pnpm screenshot   # "screenshot": "snapseq" in package.json
 ```
 
 ```
-.screenshots/2026-10-01 at 4.07.16 PM/pricing/desktop/01.png
-.screenshots/2026-10-01 at 4.07.16 PM/pricing/desktop/02.png
-.screenshots/2026-10-01 at 4.07.16 PM/pricing/mobile/01.png
-.screenshots/2026-10-01 at 4.07.16 PM/pricing/mobile/02.png
+.screenshots/2026-10-01 at 04.07.16 PM/pricing/desktop/01.png
+.screenshots/2026-10-01 at 04.07.16 PM/pricing/desktop/02.png
+.screenshots/2026-10-01 at 04.07.16 PM/pricing/mobile/01.png
+.screenshots/2026-10-01 at 04.07.16 PM/pricing/mobile/02.png
 ```
 
 ## Docs
