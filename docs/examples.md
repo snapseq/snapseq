@@ -15,12 +15,12 @@ import { capture, disableTransitions } from "snapseq";
 capture(async ({ page, seq }) => {
   await disableTransitions(page);
   await page.goto("/pricing");
-  await seq.snap();      // 001.png  the viewport
-  await seq.snapPage();  // 002.png  the whole page
+  await seq.snap();      // 01.png  the viewport
+  await seq.snapPage();  // 02.png  the whole page
 });
 ```
 
-Writes `pricing/desktop/001.png`, `002.png` and `shots.txt`, then the same
+Writes `pricing/desktop/01.png`, `02.png` and `shots.txt`, then the same
 under `pricing/mobile/`.
 
 ## 2. Several pages, one capture
@@ -48,10 +48,10 @@ capture(async ({ page, seq }) => {
 `shots.txt` says which page each number is:
 
 ```
-001.png  http://localhost:3000/
-002.png  http://localhost:3000/pricing
-003.png  http://localhost:3000/docs
-004.png  http://localhost:3000/blog
+01.png  http://localhost:3000/
+02.png  http://localhost:3000/pricing
+03.png  http://localhost:3000/docs
+04.png  http://localhost:3000/blog
 ```
 
 ## 3. A device-only state
@@ -66,11 +66,11 @@ import { capture, disableTransitions } from "snapseq";
 capture(async ({ page, seq, device }) => {
   await disableTransitions(page);
   await page.goto("/");
-  await seq.snap();                                 // 001.png  both devices
+  await seq.snap();                                 // 01.png  both devices
   if (device === "mobile") {
     await page.getByRole("button", { name: "Menu" }).click();
     await page.getByRole("navigation").waitFor();   // what the shot needs, then the shot
-    await seq.snap();                               // 002.png  mobile only
+    await seq.snap();                               // 02.png  mobile only
   }
 });
 ```
@@ -165,10 +165,10 @@ import { capture, disableTransitions } from "snapseq";
 capture(async ({ page, seq }) => {
   await disableTransitions(page);
   await page.goto("/landing");
-  await seq.snapPage();                // 001.png  the tray rests in its slot at the page end
+  await seq.snapPage();                // 01.png  the tray rests in its slot at the page end
 
   await page.goto("/landing/video");   // a 100vh hero: its height follows the viewport
-  await seq.snap({ fullPage: true });  // 002.png  native full page; sticky elements stay pinned
+  await seq.snap({ fullPage: true });  // 02.png  native full page; sticky elements stay pinned
 });
 ```
 
@@ -216,7 +216,7 @@ capture(async ({ page, seq }) => {
 
   // The chart lands after a fetch, once the DOM has already been quiet.
   await page.locator(".chart svg path").first().waitFor();
-  await seq.snap();   // 001.png
+  await seq.snap();   // 01.png
 
   // A video frame: seek, then wait for `seeked`, racing a 5 s timer so a video
   // that never seeks (no metadata, a blocked source) cannot hang the capture.
@@ -231,7 +231,7 @@ capture(async ({ page, seq }) => {
       new Promise<void>((done) => setTimeout(done, 5000)),
     ]),
   );
-  await seq.snap();   // 002.png
+  await seq.snap();   // 02.png
 });
 ```
 
@@ -350,7 +350,7 @@ SNAPSEQ_RUN="2026-10-01 at 4.07.16 PM" pnpm screenshot landing
 ```
 
 Only the rerun capture's own `<capture>/<device>` directory is wiped; the
-passed ones keep their shots. A rerun starts from `001.png` again, so it
+passed ones keep their shots. A rerun starts from `01.png` again, so it
 replaces the failed attempt whole. From a monorepo root the same commands go
 through `pnpm --filter <app> screenshot …`. To run every capture regardless of
 failures, pass `--max-failures 0`.

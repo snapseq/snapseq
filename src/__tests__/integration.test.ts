@@ -299,26 +299,26 @@ describe("snapseq via the Playwright CLI", () => {
     mkdirSync(join(out, "run1", "a", "d1"), { recursive: true });
     writeFileSync(join(out, "run1", "a", "d1", "999.png"), "stale");
     mkdirSync(join(out, "unrelated", "d1"), { recursive: true });
-    writeFileSync(join(out, "unrelated", "d1", "001.png"), "keep");
+    writeFileSync(join(out, "unrelated", "d1", "01.png"), "keep");
 
     const r = await playwright(project, []);
     expect(r.out).toContain("1 skipped");
     expect(r.out).toContain("5 passed");
-    expect(r.out).toContain(`001.png  ${server.url}/a?env=dev&device=d1`); // the list reporter's step line
+    expect(r.out).toContain(`01.png  ${server.url}/a?env=dev&device=d1`); // the list reporter's step line
     expect(r.status).toBe(0);
 
-    expect(readdirSync(join(out, "run1", "a", "d1")).sort()).toEqual(["001.png", "002.png", "shots.txt"]);
-    expect(readdirSync(join(out, "run1", "a", "d2")).sort()).toEqual(["001.png", "002.png", "shots.txt"]);
-    expect(readdirSync(join(out, "run1", "nested", "b", "d1")).sort()).toEqual(["001.png", "shots.txt"]);
+    expect(readdirSync(join(out, "run1", "a", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
+    expect(readdirSync(join(out, "run1", "a", "d2")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
+    expect(readdirSync(join(out, "run1", "nested", "b", "d1")).sort()).toEqual(["01.png", "shots.txt"]);
     // the skipped device has no dir
-    expect(readdirSync(join(out, "run1", "c", "d1")).sort()).toEqual(["001.png", "shots.txt"]);
+    expect(readdirSync(join(out, "run1", "c", "d1")).sort()).toEqual(["01.png", "shots.txt"]);
     expect(existsSync(join(out, "run1", "c", "d2"))).toBe(false);
-    expect(existsSync(join(out, "unrelated", "d1", "001.png"))).toBe(true);
+    expect(existsSync(join(out, "unrelated", "d1", "01.png"))).toBe(true);
     expect(readFileSync(join(out, ".gitignore"), "utf8")).toBe("*\n");
 
-    expect(pngSize(join(out, "run1", "a", "d1", "001.png"))).toEqual([400, 300]);
-    expect(pngSize(join(out, "run1", "a", "d2", "001.png"))[0]).toBe(500);
-    expect(pngSize(join(out, "run1", "a", "d1", "002.png"))[1]).toBeGreaterThan(300);
+    expect(pngSize(join(out, "run1", "a", "d1", "01.png"))).toEqual([400, 300]);
+    expect(pngSize(join(out, "run1", "a", "d2", "01.png"))[0]).toBe(500);
+    expect(pngSize(join(out, "run1", "a", "d1", "02.png"))[1]).toBeGreaterThan(300);
 
     const pageHits = server.hits.filter((h) => h.url.startsWith("/a") || h.url.startsWith("/b"));
     expect(pageHits.map((h) => h.url)).toContain("/a?env=dev&device=d1");
@@ -336,7 +336,7 @@ describe("snapseq via the Playwright CLI", () => {
     const r = await playwright(project, ["a\\.capture", "--project", "d1"]);
     expect(r.out).toContain("1 passed");
     expect(existsSync(join(out, "run1", "nested", "b", "d1", "stale.png"))).toBe(true);
-    expect(readdirSync(join(out, "run1", "a", "d1")).sort()).toEqual(["001.png", "002.png", "shots.txt"]);
+    expect(readdirSync(join(out, "run1", "a", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
   });
 
   it("SNAPSEQ_ENV picks the env and SNAPSEQ_HOST overrides its host", async () => {
@@ -370,6 +370,7 @@ import { defineConfig } from "snapseq";
 export default defineConfig({
   envs: { dev: { host: "${server.url}", httpCredentials: { username: "u", password: "p" } } },
   devices: { d1: { viewport: { width: 320, height: 200 } } },
+  format: { type: "jpeg", quality: 50 },
 });
 `,
       captures: {
@@ -396,7 +397,8 @@ capture(async ({ page, seq }) => {
     const r = await playwright(cjs, ["--reporter", REPORTER]);
     expect(r.out).toContain("1 passed  1 shot  .screenshots/run1");
     expect(r.status).toBe(0);
-    expect(existsSync(join(cjs, ".screenshots", "run1", "p", "d1", "001.png"))).toBe(true);
+    const shot = readFileSync(join(cjs, ".screenshots", "run1", "p", "d1", "01.jpg"));
+    expect([...shot.subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]); // a JPEG, by its magic bytes
     expect(server.hits.some((h) => h.url === "/protected/x" && h.auth === AUTH)).toBe(true);
     expect(other.hits.map((h) => h.url)).toContain("/protected/i.png");
     expect(other.hits.filter((h) => h.auth)).toEqual([]);
@@ -486,7 +488,7 @@ createServer((_, res) => { res.writeHead(200, { "content-type": "text/html" }); 
     expect(r.out).toContain("1 passed");
     expect(r.status).toBe(0);
     expect(existsSync(join(ws, "started"))).toBe(true);
-    expect(existsSync(join(ws, ".screenshots", "run1", "w", "d1", "001.png"))).toBe(true);
+    expect(existsSync(join(ws, ".screenshots", "run1", "w", "d1", "01.png"))).toBe(true);
     expect(await portClosed(port)).toBe(true);
 
     rmSync(join(ws, "started"));
@@ -595,24 +597,24 @@ capture(async ({ page, seq }) => {
     expect(r.out).toContain("5 passed  10 shots  out/run1");
 
     const out = join(p, "out", "run1");
-    expect(existsSync(join(out, "motion", "d1", "001.png"))).toBe(true);
-    expect(pngSize(join(out, "sticky", "d1", "001.png"))).toEqual([400, 960]); // native: not landed
-    expect(pngSize(join(out, "sticky", "d1", "002.png"))).toEqual([400, 1060]); // snapPage: landed, re-measured
-    expect(pngSize(join(out, "clip", "d1", "001.png"))).toEqual([100, 50]);
+    expect(existsSync(join(out, "motion", "d1", "01.png"))).toBe(true);
+    expect(pngSize(join(out, "sticky", "d1", "01.png"))).toEqual([400, 960]); // native: not landed
+    expect(pngSize(join(out, "sticky", "d1", "02.png"))).toEqual([400, 1060]); // snapPage: landed, re-measured
+    expect(pngSize(join(out, "clip", "d1", "01.png"))).toEqual([100, 50]);
     // the lazy image loaded before the height was measured: 2000 px of page plus the 100 px image
-    expect(pngSize(join(out, "lazy", "d1", "001.png"))).toEqual([400, 2100]);
-    expect(pngSize(join(out, "lazy", "d1", "002.png"))).toEqual([400, 2100]);
-    expect(readFileSync(join(out, "clip", "d1", "shots.txt"), "utf8")).toBe(`001.png  ${server.url}/clip\n`);
+    expect(pngSize(join(out, "lazy", "d1", "01.png"))).toEqual([400, 2100]);
+    expect(pngSize(join(out, "lazy", "d1", "02.png"))).toEqual([400, 2100]);
+    expect(readFileSync(join(out, "clip", "d1", "shots.txt"), "utf8")).toBe(`01.png  ${server.url}/clip\n`);
     // A cap that released a wait is on the shot's line and in the terminal; a shot that was ready says nothing.
     const shots = (name: string) => readFileSync(join(out, name, "d1", "shots.txt"), "utf8");
     expect(shots("settle")).toBe(
-      `001.png  ${server.url}/jsmotion\n002.png  ${server.url}/jsmotion?forever  DOM still changing after 3 s\n`,
+      `01.png  ${server.url}/jsmotion\n02.png  ${server.url}/jsmotion?forever  DOM still changing after 3 s\n`,
     );
     expect(shots("lazy")).toBe(
-      `001.png  ${server.url}/lazy\n002.png  ${server.url}/lazy?2\n003.png  ${server.url}/chain  1 image still loading after 5 s\n004.png  ${server.url}/stall  3 images still loading after 5 s\n`,
+      `01.png  ${server.url}/lazy\n02.png  ${server.url}/lazy?2\n03.png  ${server.url}/chain  1 image still loading after 5 s\n04.png  ${server.url}/stall  3 images still loading after 5 s\n`,
     );
-    expect(r.out).toContain(`snapseq: 004.png taken with  3 images still loading after 5 s  ${server.url}/stall`);
-    expect(r.out.match(/snapseq: \d{3}\.png taken with/g)).toHaveLength(3);
+    expect(r.out).toContain(`snapseq: 04.png taken with  3 images still loading after 5 s  ${server.url}/stall`);
+    expect(r.out.match(/snapseq: \d+\.png taken with/g)).toHaveLength(3);
   });
 });
 
@@ -676,8 +678,8 @@ capture(async ({ page, seq }) => {
     const r = await playwright(p, ["--reporter", REPORTER]);
     expect(r.out).toContain("1 passed  1 shot");
     expect(r.status).toBe(0);
-    expect(pngSize(join(p, "out", "run1", "vh", "d1", "001.png"))).toEqual([400, 800]);
-    expect(readFileSync(join(p, "out", "run1", "vh", "d1", "shots.txt"), "utf8")).toBe(`001.png  ${server.url}/vh\n`);
+    expect(pngSize(join(p, "out", "run1", "vh", "d1", "01.png"))).toEqual([400, 800]);
+    expect(readFileSync(join(p, "out", "run1", "vh", "d1", "shots.txt"), "utf8")).toBe(`01.png  ${server.url}/vh\n`);
   });
 });
 
@@ -767,18 +769,18 @@ capture(async ({ page, seq }) => {
     expect(r.out).not.toMatch(/[✔✖⠋⠙⠹]|waiting for|\r/);
     expect(r.out).toMatch(/FAIL\s+throws \/ d1\s+1 shot\s+[\d.]+s\s+\/throws-next\s+Error: button not found/); // the page it died on, not the last shot's
     const out = join(p, "out", "run1");
-    expect(readdirSync(join(out, "idle", "d1")).sort()).toEqual(["001.png", "002.png", "003.png", "shots.txt"]);
-    expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["001.png", "failed.png", "shots.txt"]);
-    expect(readdirSync(join(out, "throws", "d1")).sort()).toEqual(["001.png", "failed.png", "shots.txt"]);
+    expect(readdirSync(join(out, "idle", "d1")).sort()).toEqual(["01.png", "02.png", "03.png", "shots.txt"]);
+    expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["01.png", "failed.png", "shots.txt"]);
+    expect(readdirSync(join(out, "throws", "d1")).sort()).toEqual(["01.png", "failed.png", "shots.txt"]);
     expect(pngSize(join(out, "stuck", "d1", "failed.png"))).toEqual([320, 200]);
     expect(readFileSync(join(out, "throws", "d1", "shots.txt"), "utf8")).toBe(
-      `001.png  ${server.url}/throws\nfailed.png  ${server.url}/throws-next\n`,
+      `01.png  ${server.url}/throws\nfailed.png  ${server.url}/throws-next\n`,
     );
 
     // No timeout stays no timeout: the deadline is never touched.
     const z = await playwright(p, ["stuck\\.capture", "--timeout", "0"]);
     expect(z.status).toBe(0);
-    expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["001.png", "002.png", "shots.txt"]);
+    expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
   });
 });
 
@@ -820,7 +822,7 @@ capture(async ({ page, seq }) => {
     const rep = await playwright(dir, [], { EXPECT_V: "replayed" });
     expect(rep.status, rep.out).toBe(0);
     expect(apiHits()).toBe(hits);
-    expect(existsSync(join(dir, ".screenshots/run1/w/d1/001.png"))).toBe(true);
+    expect(existsSync(join(dir, ".screenshots/run1/w/d1/01.png"))).toBe(true);
   });
 });
 
@@ -833,7 +835,7 @@ describe("run directory", () => {
       /^\d{4}-\d{2}-\d{2} at \d{1,2}\.\d{2}\.\d{2} [AP]M$/.test(n),
     );
     expect(runs).toHaveLength(1);
-    expect(readdirSync(join(out, runs[0]!, "a", "d1")).sort()).toEqual(["001.png", "002.png", "shots.txt"]);
+    expect(readdirSync(join(out, runs[0]!, "a", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
     expect(existsSync(join(out, ".playwright"))).toBe(false);
     expect(existsSync(join(project, "node_modules", ".cache", "snapseq", ".last-run.json"))).toBe(
       true,

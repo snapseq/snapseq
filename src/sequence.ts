@@ -2,8 +2,11 @@ import { appendFileSync, mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { Page, PageScreenshotOptions } from "@playwright/test";
 
-/** Playwright's screenshot options minus what the sequence owns: the numbered PNG path and format. */
+/** Playwright's screenshot options minus what the sequence owns: the numbered path, and the type and quality from the config's `format`. */
 export type SnapOptions = Omit<PageScreenshotOptions, "path" | "type" | "quality">;
+
+/** Playwright's screenshot type and quality, as the config's `format`; Playwright validates them at the first shot. */
+export type ShotFormat = Pick<PageScreenshotOptions, "type" | "quality">;
 
 export interface Sequence {
   /**
@@ -145,8 +148,8 @@ async function ready(page: Page, notes: string[]): Promise<void> {
 }
 
 /**
- * Numbered screenshots (`001.png`, `002.png`, …; as wide as `numbering`) in
- * `root/dir`, listed with their URLs in `shots.txt`. The directory is wiped on
+ * Numbered screenshots (`01.png`, `02.png`, …; as wide as `numbering`, in
+ * `format`) in `root/dir`, listed with their URLs in `shots.txt`. The directory is wiped on
  * creation so a run never mixes with the previous run's files; it must lie
  * inside `root`.
  */
@@ -154,10 +157,11 @@ export function createSequence(
   page: Page,
   root: string,
   dir: string,
-  // Runs one shot; the fixture wraps it in a `test.step` titled `001.png  <url>`,
+  // Runs one shot; the fixture wraps it in a `test.step` titled `01.png  <url>`,
   // so the terminal view can count shots and say where the capture is.
   wrap: (title: string, shoot: () => Promise<void>) => Promise<void> = (_title, shoot) => shoot(),
-  numbering = "000",
+  numbering = "00",
+  format: ShotFormat = {},
 ): Sequence {
   const full = join(root, dir);
   // Wiped recursively, so it has to be the run's own: a run name or device
@@ -169,14 +173,15 @@ export function createSequence(
   rmSync(full, { recursive: true, force: true });
   mkdirSync(full, { recursive: true });
 
+  const ext = format.type === "jpeg" ? "jpg" : "png";
   let counter = 0;
   const take = async (options: SnapOptions | undefined, notes: string[]): Promise<string> => {
     counter += 1;
-    const name = `${String(counter).padStart(numbering.length, "0")}.png`;
+    const name = `${String(counter).padStart(numbering.length, "0")}.${ext}`;
     const path = join(full, name);
     const url = page.url();
     await wrap(`${name}  ${url}`, async () => {
-      await page.screenshot({ ...options, path, type: "png" });
+      await page.screenshot({ ...options, ...format, path });
       const note = notes.length > 0 ? `  ${notes.join(", ")}` : "";
       appendFileSync(join(full, "shots.txt"), `${name}  ${url}${note}\n`);
       // Worker stderr reaches every reporter; the list reporter prints it under the step.

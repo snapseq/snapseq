@@ -32,7 +32,8 @@ export default defineConfig({
 | `devices`        | desktop and mobile as above            | One Playwright project per key. See "Devices".                          |
 | `capturesDir`    | `"captures"`                           | Relative to the config file. Matches `*.capture.ts`.                    |
 | `screenshotsDir` | `".screenshots"`                       | Relative to the config file. Snapseq writes a `.gitignore` inside it. |
-| `numbering`      | `"000"`                                | The shape of a shot number: `"000"` gives `001.png`, `"0000"` gives `0001.png`. Zeros only. Wide enough for the longest capture: `100.png` sorts before `99.png`. |
+| `numbering`      | `"00"`                                 | The shape of a shot number: `"00"` gives `01.png`, `"000"` gives `001.png`. Zeros only. Wide enough for the longest capture: `100.png` sorts before `99.png`. |
+| `format`         | `{}` (PNG)                             | Playwright's screenshot `type` and `quality`: `{ type: "jpeg", quality: 60 }` writes `01.jpg`, … Quality is 0 to 100 and JPEG only, as in Playwright. |
 
 ## Envs
 
@@ -123,7 +124,7 @@ devices: {
 },
 ```
 
-The key is the directory name under each capture (`pricing/phone/001.png`),
+The key is the directory name under each capture (`pricing/phone/01.png`),
 the value of the `device` fixture, and what `--device` selects. It must be a
 directory name, not a path.
 

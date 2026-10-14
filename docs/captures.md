@@ -10,12 +10,12 @@ import { capture, disableTransitions } from "snapseq";
 capture(async ({ page, seq, device }) => {
   await disableTransitions(page);                  // once per capture; survives navigation
   await page.goto("/pricing");                     // baseURL-relative
-  await seq.snap();                                // 001.png  viewport
-  await seq.snapPage();                            // 002.png  full page
+  await seq.snap();                                // 01.png  viewport
+  await seq.snapPage();                            // 02.png  full page
   if (device === "mobile") {
     await page.getByRole("button", { name: "Menu" }).click();
     await page.getByRole("navigation").waitFor(); // what the shot needs, then the shot
-    await seq.snap();                              // 003.png  mobile only
+    await seq.snap();                              // 03.png  mobile only
   }
 });
 ```
@@ -28,8 +28,8 @@ The file name is the capture name: `captures/pricing.capture.ts` writes to
 `.screenshots/<run>/campaign/pricing/<device>/`.
 
 One `capture()` per file. A shot's number is its position in the file, so a
-second capture is a second file. The number is three digits wide unless the
-config's `numbering` says otherwise. Files that do not end in `.capture.ts` are
+second capture is a second file. The number is two digits wide and the file a
+PNG unless the config's `numbering` and `format` say otherwise. Files that do not end in `.capture.ts` are
 not captures; helpers can live in `captures/helpers/`.
 
 ## Fixtures
@@ -61,8 +61,9 @@ set and refuses such a page, with the viewport restored, because a taller
 viewport would never catch it.
 
 Both take Playwright's screenshot options (`mask`, `clip`, `style`,
-`omitBackground`, …) except the path and the image type, which the sequence
-owns. Both resolve to the path of the PNG they wrote.
+`omitBackground`, …) except the path, the image type and the quality, which
+the sequence takes from the config's `numbering` and `format`. Both resolve to
+the path of the file they wrote.
 
 ## Readiness
 
@@ -74,7 +75,7 @@ Every shot waits for the page to be ready first, in this order:
 4. **DOM quiet again**, because image loads run handlers of their own.
 
 A wait that ran out its cap is noted on the shot's line in `shots.txt`
-(`007.png  http://…  2 images still loading after 5 s`) and printed once in
+(`07.png  http://…  2 images still loading after 5 s`) and printed once in
 the terminal. A shot that was ready says nothing.
 
 The wait sees DOM mutations in the page's own document and runs on the page's

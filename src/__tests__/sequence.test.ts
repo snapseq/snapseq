@@ -41,21 +41,22 @@ describe("createSequence", () => {
     vi.restoreAllMocks();
   });
 
-  it("numbers screenshots 001, 002, …", async () => {
+  it("numbers screenshots 01, 02, … as PNGs", async () => {
     const { page, calls } = makePageStub();
     const seq = createSequence(page, root, join("cap", "desktop"));
     await seq.snap();
     await seq.snapPage();
     await seq.snap({ fullPage: true });
     expect(calls.map((c) => c.path)).toEqual([
-      join(seq.dir, "001.png"),
-      join(seq.dir, "002.png"),
-      join(seq.dir, "003.png"),
+      join(seq.dir, "01.png"),
+      join(seq.dir, "02.png"),
+      join(seq.dir, "03.png"),
     ]);
     // snapPage shoots the viewport, which it has grown to the document; native full page is opt-in.
     expect(calls.map((c) => c.fullPage)).toEqual([false, false, true]);
+    expect(page.screenshot.mock.calls[0]?.[0]).toEqual({ path: join(seq.dir, "01.png") }); // png by its extension
     expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe(
-      "001.png  http://x/p\n002.png  http://x/p\n003.png  http://x/p\n",
+      "01.png  http://x/p\n02.png  http://x/p\n03.png  http://x/p\n",
     );
   });
 
@@ -71,6 +72,21 @@ describe("createSequence", () => {
     ]);
     expect(readdirSync(four.dir).sort()).toEqual(["0001.png", "shots.txt"]);
     expect(readFileSync(join(four.dir, "shots.txt"), "utf8")).toBe("0001.png  http://x/p\n");
+  });
+
+  it("writes .jpg files when the format is jpeg, passing its type and quality through", async () => {
+    const { page } = makePageStub();
+    const seq = createSequence(page, root, "cap", undefined, "00", { type: "jpeg", quality: 60 });
+    await seq.snap();
+    await seq.snapPage({ omitBackground: true });
+    expect(readdirSync(seq.dir).sort()).toEqual(["01.jpg", "02.jpg", "shots.txt"]);
+    expect(page.screenshot.mock.calls[1]?.[0]).toEqual({
+      path: join(seq.dir, "02.jpg"),
+      type: "jpeg",
+      quality: 60,
+      omitBackground: true,
+    });
+    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe("01.jpg  http://x/p\n02.jpg  http://x/p\n");
   });
 
   it("snapPage grows the viewport to the document height and restores it, also when the shot fails", async () => {
@@ -93,12 +109,12 @@ describe("createSequence", () => {
     mkdirSync(mine, { recursive: true });
     mkdirSync(sibling, { recursive: true });
     writeFileSync(join(mine, "999.png"), "stale");
-    writeFileSync(join(sibling, "001.png"), "keep");
+    writeFileSync(join(sibling, "01.png"), "keep");
 
     createSequence(makePageStub().page, root, join("cap", "desktop"));
 
     expect(readdirSync(mine)).toEqual([]);
-    expect(existsSync(join(sibling, "001.png"))).toBe(true);
+    expect(existsSync(join(sibling, "01.png"))).toBe(true);
   });
 
   it("refuses to wipe a directory outside its root, the root itself included", () => {
@@ -125,11 +141,11 @@ describe("createSequence", () => {
     });
     await seq.snap();
     expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe(
-      "001.png  http://x/p\n002.png  http://x/p  DOM still changing after 3 s, 2 images still loading after 5 s\n",
+      "01.png  http://x/p\n02.png  http://x/p  DOM still changing after 3 s, 2 images still loading after 5 s\n",
     );
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toBe(
-      "snapseq: 002.png taken with  DOM still changing after 3 s, 2 images still loading after 5 s  http://x/p",
+      "snapseq: 02.png taken with  DOM still changing after 3 s, 2 images still loading after 5 s  http://x/p",
     );
   });
 

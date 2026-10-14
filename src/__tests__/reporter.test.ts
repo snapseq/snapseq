@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe("SnapseqReporter", () => {
-  it("counts a shot whatever the width of its number", () => {
+  it("counts a shot whatever the width of its number or its format, and says where a .jpg is", () => {
     const tty = fakeTty(10);
     const r = new SnapseqReporter({ stream: tty.stream });
     const a = fakeTest("t0", "c0.capture.ts", ["capture"], []);
@@ -79,7 +79,11 @@ describe("SnapseqReporter", () => {
     r.onTestBegin(a);
     r.onStepEnd(a, result("passed"), shotStep("01.png  http://h/a"));
     r.onStepEnd(a, result("passed"), shotStep("0002.png  http://h/b"));
+    r.onStepBegin(a, result("passed"), shotStep("03.jpg  http://h/c"));
     expect(plain(tty.text())).toContain("2 shots");
+    expect(plain(tty.text())).toContain("/c");
+    r.onStepEnd(a, result("passed"), shotStep("03.jpg  http://h/c"));
+    expect(plain(tty.text())).toContain("3 shots");
   });
 
   it("clips the live frame, counts completed shots, and prints a complete static summary", () => {

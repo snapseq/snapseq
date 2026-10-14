@@ -64,8 +64,8 @@ import { capture, disableTransitions } from "snapseq";
 capture(async ({ page, seq }) => {
   await disableTransitions(page);   // freeze animations, once per capture
   await page.goto("/pricing");      // relative to host
-  await seq.snap();                 // 001.png  the viewport
-  await seq.snapPage();             // 002.png  the whole page
+  await seq.snap();                 // 01.png  the viewport
+  await seq.snapPage();             // 02.png  the whole page
 });
 ```
 
@@ -98,12 +98,12 @@ the run directory opens in Finder (Explorer on Windows).
   2026-10-01 at 4.07.16 PM/            one directory per run, local time
     pricing/
       desktop/
-        001.png
-        002.png
+        01.png
+        02.png
         shots.txt                      one line per shot: file and URL
       mobile/
-        001.png
-        002.png
+        01.png
+        02.png
         shots.txt
 ```
 

@@ -54,7 +54,7 @@ raise `navigationTimeout` on the env's `use`.
 
 ## `shots.txt` says a wait ran out
 
-**Symptom.** A line like `003.png  http://…  2 images still loading after 5 s`,
+**Symptom.** A line like `03.png  http://…  2 images still loading after 5 s`,
 `fonts still loading after 5 s` or `DOM still changing after 3 s`, printed
 once in the terminal too.
 **Cause.** The readiness wait hit its cap and took the shot anyway. Images:

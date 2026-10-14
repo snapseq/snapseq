@@ -36,8 +36,8 @@ import { capture, disableTransitions } from "snapseq";
 capture(async ({ page, seq }) => {
   await disableTransitions(page);
   await page.goto("/pricing");
-  await seq.snap();      // 001.png  the viewport
-  await seq.snapPage();  // 002.png  the whole page
+  await seq.snap();      // 01.png  the viewport
+  await seq.snapPage();  // 02.png  the whole page
 });
 ```
 
@@ -46,10 +46,10 @@ pnpm screenshot   # "screenshot": "snapseq" in package.json
 ```
 
 ```
-.screenshots/2026-10-01 at 4.07.16 PM/pricing/desktop/001.png
-.screenshots/2026-10-01 at 4.07.16 PM/pricing/desktop/002.png
-.screenshots/2026-10-01 at 4.07.16 PM/pricing/mobile/001.png
-.screenshots/2026-10-01 at 4.07.16 PM/pricing/mobile/002.png
+.screenshots/2026-10-01 at 4.07.16 PM/pricing/desktop/01.png
+.screenshots/2026-10-01 at 4.07.16 PM/pricing/desktop/02.png
+.screenshots/2026-10-01 at 4.07.16 PM/pricing/mobile/01.png
+.screenshots/2026-10-01 at 4.07.16 PM/pricing/mobile/02.png
 ```
 
 ## Docs

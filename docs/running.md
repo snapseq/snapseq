@@ -40,8 +40,8 @@ Every run gets its own directory named for the local time it started
 ```
 .screenshots/
   2026-10-01 at 4.07.16 PM/
-    pricing/desktop/001.png
-    pricing/desktop/002.png
+    pricing/desktop/01.png
+    pricing/desktop/02.png
     pricing/desktop/shots.txt
     pricing/mobile/…
     campaign/landing/desktop/…
@@ -57,16 +57,16 @@ the first.
 and, when a readiness wait ran out, what was still pending:
 
 ```
-001.png  http://localhost:3000/pricing
-002.png  http://localhost:3000/pricing
-003.png  http://localhost:3000/pricing/team  2 images still loading after 5 s
+01.png  http://localhost:3000/pricing
+02.png  http://localhost:3000/pricing
+03.png  http://localhost:3000/pricing/team  2 images still loading after 5 s
 ```
 
 ## Rerunning
 
 `pnpm screenshot --last-failed` reruns the captures that failed last time. It
 is not a resume: with `maxFailures: 1` the captures that never ran are not
-included, and a rerun capture starts from `001.png` again. Set
+included, and a rerun capture starts from `01.png` again. Set
 `SNAPSEQ_RUN=<that run>` to write into the same run directory; only the
 rerun capture's own directory is wiped.
 

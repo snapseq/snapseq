@@ -1,6 +1,7 @@
 import { defineConfig as definePlaywrightConfig, type PlaywrightTestConfig } from "@playwright/test";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ShotFormat } from "./sequence.js";
 
 export interface EnvConfig {
   host: string;
@@ -46,8 +47,10 @@ export interface SnapseqConfig {
   capturesDir?: string;
   /** Where screenshots are written, relative to the config file. Default `.screenshots`. Self-gitignored. */
   screenshotsDir?: string;
-  /** The shape of a shot number: `"000"` (default) gives `001.png`, `"0000"` gives `0001.png`. Zeros only. */
+  /** The shape of a shot number: `"00"` (default) gives `01.png`, `"000"` gives `001.png`. Zeros only. */
   numbering?: string;
+  /** Playwright's screenshot `type` (`"png"`, the default, or `"jpeg"`) and `quality` (JPEG only, 0 to 100). */
+  format?: ShotFormat;
 }
 
 const DEFAULT_DEVICES: Record<string, DeviceConfig> = {
@@ -62,8 +65,10 @@ export interface SnapseqMetadata {
   screenshotsDir: string;
   /** Run directory name, e.g. `2026-10-01 at 4.07.16 PM`. */
   run: string;
-  /** The shape of a shot number, e.g. `"000"`. */
+  /** The shape of a shot number, e.g. `"00"`. */
   numbering: string;
+  /** The config's `format`, or `{}`. */
+  format: ShotFormat;
   /** The env's `replay` map, if any. */
   replay?: Record<string, string>;
   /** `--record`: fetch the replay requests live and write their files. */
@@ -137,9 +142,9 @@ export function defineConfig(
   // but workers inherit the env of the main process, which set it first.
   const run = (process.env.SNAPSEQ_RUN ||= runStamp());
   assertName("SNAPSEQ_RUN", run);
-  const numbering = config.numbering ?? "000";
+  const numbering = config.numbering ?? "00";
   if (!/^0+$/.test(numbering)) {
-    throw new Error(`snapseq: numbering must be zeros, like "000", not "${numbering}"`);
+    throw new Error(`snapseq: numbering must be zeros, like "00", not "${numbering}"`);
   }
   const devices = config.devices ?? DEFAULT_DEVICES;
   for (const name of Object.keys(devices)) assertName("a device name", name);
@@ -149,6 +154,7 @@ export function defineConfig(
     screenshotsDir,
     run,
     numbering,
+    format: config.format ?? {},
     record: !!process.env.SNAPSEQ_RECORD,
     ...(env.replay ? { replay: env.replay } : {}),
   };
