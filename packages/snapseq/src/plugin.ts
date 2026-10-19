@@ -49,6 +49,8 @@ export interface Plugin {
   afterGrow?(shot: Shot, ctx: SequenceContext): Promise<void>;
   /** After the file is written and before the shot joins `seq.shots`. May rewrite the file in place. */
   afterSnap?(shot: Shot, ctx: SequenceContext): Promise<void>;
+  /** In `snapPage`, once the viewport and the scroll position are back, after the shot was taken or after it failed. For putting the page back in its viewport state: a scroll event, an override taken off. */
+  afterRestore?(shot: Shot, ctx: SequenceContext): Promise<void>;
   /** After the sequence body passed, with every shot in order, before the page closes. */
   done?(shots: readonly Shot[], ctx: SequenceContext): Promise<void>;
   /** After the sequence body failed or timed out and `failed.png` was attempted, with the shots listed so far. */

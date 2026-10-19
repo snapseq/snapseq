@@ -68,6 +68,8 @@ interface Plugin {
   afterGrow?(shot: Shot, ctx: SequenceContext): Promise<void>;
   /** After the file is written. May rewrite it in place. */
   afterSnap?(shot: Shot, ctx: SequenceContext): Promise<void>;
+  /** In `snapPage`, once the viewport and the scroll position are back, taken or failed. */
+  afterRestore?(shot: Shot, ctx: SequenceContext): Promise<void>;
   /** After the sequence passed, with every shot of it, in order. */
   done?(shots: readonly Shot[], ctx: SequenceContext): Promise<void>;
   /** After the sequence failed, with the shots listed so far. */
@@ -106,6 +108,7 @@ every kind run in the order the plugins are listed, each awaited.
 | `beforeSnap(shot, ctx)` | At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. | `shot`, no file yet     | Change the page, edit `shot.options` (`mask`, `clip`, `style`, `omitBackground`, …), push to `shot.notes`.             |
 | `afterGrow(shot, ctx)`  | In `snapPage`, each time the viewport has grown (to the document height, and again if the height changed), before the readiness wait and the height measure. | `shot`, no file yet | Settle what the grow started, at the grown viewport.                                                    |
 | `afterSnap(shot, ctx)`  | After the file is written.                                                                                  | `shot`, file on disk    | Rewrite the file in place.                                                                                              |
+| `afterRestore(shot, ctx)` | In `snapPage`, once the viewport and the scroll position are back, after the shot was taken or after it failed. | `shot`, file on disk if taken | Put the page back in its viewport state: a scroll event, an override taken off.                                  |
 | `done(shots, ctx)`      | In teardown, only when the sequence body passed.                                                            | Every shot, in order    | Write beside the shots.                                                                                                 |
 | `failed(shots, ctx)`    | In teardown, when the body failed or timed out, after `failed.png` was attempted.                          | The shots listed so far | Write beside the shots.                                                                                                 |
 
@@ -156,6 +159,15 @@ skipped by a file-level `skipIf` then gets no directory.
     `scale: "css"`.
   - A throwing `afterSnap` leaves the file on disk, but the shot is not
     added to `seq.shots`, and the hooks after it do not run.
+- **`afterRestore`** runs in `snapPage` only, at the end of the restore: the
+  viewport is the device's again and the scroll position is back. It runs
+  whether the shot was taken or failed (a refused page, a failed screenshot, a
+  throwing `afterSnap`), so a plugin that changed the page for the grown
+  viewport undoes it here, and the page is in its viewport state for what the
+  sequence does next. It does not run for `snap`, or when `beforeSnap` threw
+  or the viewport could not be restored. After a shot that was taken, a
+  throw fails the sequence; after one that failed, it is swallowed, as the
+  shot's own error is the one reported.
 - **`done`** runs once, only when the sequence body passed, with every shot of
   this sequence and device in order. It runs before the page closes, in its
   own step named after the plugin. A sequence that used `seq` but took no shot
@@ -176,7 +188,7 @@ snapseq: plugin "label" threw in afterSnap on 01.png: <message>
 snapseq: plugin "pdf" threw in done: <message>
 ```
 
-`beforeSnap` names the shot like `afterSnap`; `failed` reads like `done`.
+`beforeSnap`, `afterGrow` and `afterRestore` name the shot like `afterSnap`; `failed` reads like `done`.
 
 ### Adding an option
 

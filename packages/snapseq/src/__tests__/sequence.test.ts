@@ -351,6 +351,59 @@ describe("createSequence", () => {
       expect(events.filter((e) => e.startsWith("afterGrow"))).toEqual([]);
     });
 
+    it("runs afterRestore hooks once per snapPage, once the viewport and the scroll position are back, and never for snap", async () => {
+      const { page, events } = makePageStub(900);
+      const plugins: Plugin[] = [
+        {
+          name: "a",
+          afterRestore: async (shot) => {
+            const size = page.viewportSize(); // the device's again
+            events.push(`afterRestore ${shot.name} ${size.height}`);
+          },
+        },
+      ];
+      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      await seq.snapPage();
+      expect(events.slice(-5)).toEqual(["setViewportSize 300", "scroll", "scrollTo 1500", "viewportSize", "afterRestore 01.png 300"]);
+      expect(events.filter((e) => e.startsWith("afterRestore"))).toHaveLength(1);
+      events.length = 0;
+      await seq.snap();
+      expect(events.filter((e) => e.startsWith("afterRestore"))).toEqual([]);
+    });
+
+    it("runs afterRestore when snapPage refuses the page, after the viewport is back, and keeps the refusal as the error", async () => {
+      const { page, events } = makePageStub();
+      page.evaluate.mockImplementation(async (fn: unknown) => {
+        const src = String(fn);
+        if (src.includes("documentElement.scrollHeight")) return page.viewportSize().height + 500;
+        if (src.includes("document.images")) return { pending: 0, first: "", failed: 0, firstFailed: "" };
+        if (src.includes("querySelectorAll")) return ""; // no scroller to note instead
+        return true;
+      });
+      const heights: number[] = [];
+      const plugins: Plugin[] = [
+        {
+          name: "a",
+          afterRestore: async () => {
+            heights.push(page.viewportSize().height);
+            throw new Error("late"); // swallowed: the refusal is the error
+          },
+        },
+      ];
+      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      await expect(seq.snapPage()).rejects.toThrow("snap({ fullPage: true })");
+      expect(heights).toEqual([300]);
+      expect(events.filter((e) => e === "screenshot")).toEqual([]);
+    });
+
+    it("fails the sequence on an afterRestore that throws after a shot that was taken, naming the plugin and the shot", async () => {
+      const { page } = makePageStub();
+      const plugins: Plugin[] = [{ name: "a", afterRestore: async () => { throw new Error("late"); } }];
+      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      await expect(seq.snapPage()).rejects.toThrow('snapseq: plugin "a" threw in afterRestore on 01.png: late');
+      expect(lines(seq)).toEqual(["01.png  http://x/p"]); // the shot itself was listed
+    });
+
     it("keeps a fullPage that a beforeSnap hook set off a snapPage screenshot; snap passes it on", async () => {
       const { page, calls } = makePageStub();
       const seen: unknown[] = [];

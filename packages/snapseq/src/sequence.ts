@@ -385,7 +385,7 @@ export function createSequence(
     const name = `${String(index).padStart(numbering.length, "0")}.${ext}`;
     return { name, path: join(full, name), url: page.url(), index, options: { ...options }, notes: [], format: { ...format }, deviceScaleFactor: ratio };
   };
-  const hooks = async (kind: "beforeSnap" | "afterGrow" | "afterSnap", shot: Shot): Promise<void> => {
+  const hooks = async (kind: "beforeSnap" | "afterGrow" | "afterSnap" | "afterRestore", shot: Shot): Promise<void> => {
     for (const plugin of plugins) {
       try {
         await plugin[kind]?.(shot, ctx as SequenceContext);
@@ -474,6 +474,8 @@ export function createSequence(
             if (window.performance.timeOrigin === origin) window.scrollTo({ left, top, behavior: "instant" });
           }, scroll)
           .catch(() => undefined);
+        // Taken or failed: the page goes back to its viewport state. In the catch path below a throw is swallowed with the restore's.
+        await hooks("afterRestore", shot);
       };
       // The afterGrow hooks run at the grown viewport, before the readiness wait that follows.
       const grow = async (height: number) => {
