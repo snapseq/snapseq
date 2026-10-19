@@ -1,0 +1,401 @@
+import type { Route } from "@playwright/test";
+import { disableTransitions, type Plugin } from "snapseq";
+
+export interface StabilizeOptions {
+  /** Freeze viewport-height units to px at the shot's viewport, so `snapPage` can grow the viewport without the layout following it. Default true. */
+  viewportUnits?: boolean;
+  /** No transitions or animations, Web Animations finished, SVG and video paused. Default true. */
+  motion?: boolean;
+  /** Emulate `prefers-reduced-motion: reduce` for the capture. Default false: the page's own preference stays. */
+  reducedMotion?: boolean;
+  /** Move the pointer off the page before each shot, so what a click left under it is not drawn in `:hover`. `snap({ hover: "keep" })` skips it for one shot. Default true. */
+  hover?: boolean;
+  /** For a shot with `fullPage: true`: scroll from the top to the end first, so reveals on scroll and lazy loaders fire. Default false. */
+  scroll?: boolean;
+}
+
+declare module "snapseq" {
+  interface SnapOptions {
+    /** `"keep"`: leave the pointer where the capture put it for this shot. Needs `snapseq-stabilize` in `plugins`. */
+    hover?: "keep";
+  }
+}
+
+// The functions below run in the page. Arrow functions only: a bundler wraps
+// named inner functions in a helper the page does not have.
+
+// The document from its top down to its end, one viewport at a time, a frame on each stop: what waits for
+// the viewport (an IntersectionObserver reveal, a data-src loader) fires on the way. The end is read
+// again on every stop, so growth that lands during the pass is followed, up to the caps. The position
+// the page had comes back at the end. It begins once the DOM has been quiet for 200 ms, 2 s at most: a page
+// that inserts its sections and images after domcontentloaded (hydration) has them to scroll through.
+const scrollPass = async () => {
+  await new Promise<void>((done) => {
+    let quiet = 0;
+    const observer = new MutationObserver(() => {
+      window.clearTimeout(quiet);
+      quiet = window.setTimeout(end, 200);
+    });
+    const end = () => {
+      observer.disconnect();
+      window.clearTimeout(quiet);
+      window.clearTimeout(cap);
+      done();
+    };
+    const cap = window.setTimeout(end, 2000);
+    quiet = window.setTimeout(end, 200);
+    observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
+  });
+  const root = document.scrollingElement ?? document.documentElement;
+  const origin = window.scrollY;
+  const height = window.innerHeight;
+  const deadline = Date.now() + 5000;
+  let steps = 0;
+  let capped = false;
+  const go = async (top: number) => {
+    capped = steps >= 60 || Date.now() > deadline;
+    if (capped) return false;
+    window.scrollTo({ top, behavior: "instant" });
+    await new Promise<void>((done) => requestAnimationFrame(() => done()));
+    steps++;
+    return true;
+  };
+  try {
+    await go(0);
+    while (window.scrollY + height < root.scrollHeight - 1) if (!(await go(window.scrollY + height))) break;
+  } finally {
+    window.scrollTo({ top: origin, behavior: "instant" });
+  }
+  return { steps, capped };
+};
+
+// Web Animations: a finite one is finished, an infinite one (or one that cannot
+// finish) is cancelled. A finish handler can start another, so go round again.
+const stopMotion = async () => {
+  for (let round = 0; round < 5; round++) {
+    for (const animation of document.getAnimations()) {
+      try {
+        if (Number.isFinite(animation.effect?.getComputedTiming().endTime) && animation.playbackRate !== 0) animation.finish();
+        else animation.cancel();
+      } catch {
+        animation.cancel();
+      }
+    }
+    await new Promise<void>((done) => requestAnimationFrame(() => done()));
+    if (document.getAnimations().every((animation) => animation.playState === "finished")) break;
+  }
+  for (const svg of Array.from(document.querySelectorAll("svg"))) {
+    if (!(svg instanceof SVGSVGElement)) continue; // an HTML element named svg has no animations to pause
+    svg.pauseAnimations(); // where it is, like a video: a draw-in that finished stays drawn
+  }
+  for (const video of Array.from(document.querySelectorAll("video"))) video.pause();
+};
+
+// The links to fetch again, as hrefs without the fragment, which no request URL has: an unreadable,
+// enabled, non-alternate stylesheet link not warned about yet. The links themselves wait in a property for swapLinks.
+const findLinks = () => {
+  const warned = (window as unknown as { __snapseqViewportUnits?: { warned: Set<string> } }).__snapseqViewportUnits?.warned;
+  const links = Array.from(document.styleSheets).flatMap((sheet) => {
+    const link = sheet.ownerNode;
+    let readable = true;
+    try {
+      readable = !!sheet.cssRules;
+    } catch {
+      readable = false;
+    }
+    return !readable &&
+      !sheet.disabled &&
+      link instanceof HTMLLinkElement &&
+      !link.disabled &&
+      link.relList.contains("stylesheet") &&
+      !link.relList.contains("alternate") &&
+      !warned?.has(link.href)
+      ? [link]
+      : [];
+  });
+  (window as unknown as { __snapseqRefetch?: HTMLLinkElement[] }).__snapseqRefetch = links;
+  return links.map((link) => link.href.replace(/#.*/, ""));
+};
+
+// Fetches each of those again as a CORS request, through a clone beside the original; the
+// original goes once the clone loaded, and stays when it did not (a 500, a timeout).
+// The plugin's route supplies the header the server did not.
+const swapLinks = async () => {
+  const host = window as unknown as { __snapseqRefetch?: HTMLLinkElement[] };
+  const links = (host.__snapseqRefetch ?? []).filter((link) => link.isConnected); // the page may have removed one since findLinks
+  delete host.__snapseqRefetch;
+  const cap = new Promise<boolean>((done) => window.setTimeout(() => done(false), 5000));
+  const swaps = links.map((link) => {
+    const clone = link.cloneNode() as HTMLLinkElement;
+    clone.crossOrigin = "anonymous";
+    const loaded = new Promise<boolean>((done) => {
+      clone.addEventListener("load", () => done(true), { once: true });
+      clone.addEventListener("error", () => done(false), { once: true });
+    });
+    link.after(clone);
+    return { link, clone, loaded };
+  });
+  const ok = await Promise.all(swaps.map((swap) => Promise.race([swap.loaded, cap])));
+  swaps.forEach((swap, i) => (ok[i] ? swap.link : swap.clone).remove());
+};
+
+// Rewrites every viewport-height unit (vh, svh, lvh, dvh, vmin, vmax, vb and
+// their variants) in the page's CSS to px, at the viewport as it is now. The
+// page's own value is kept per declaration, so the next shot freezes it again at
+// the viewport of that shot. Open shadow roots and adopted stylesheets are reached. Resolves to the hrefs unreadable now.
+const freezeUnits = async () => {
+  type Saved = { value: string; priority: string; frozen: string };
+  type State = {
+    originals: WeakMap<CSSStyleDeclaration, Map<string, Saved>>;
+    bases: Record<string, number>;
+    warned: Set<string>;
+    unreadable: Set<string>;
+    observer?: MutationObserver;
+  };
+  const host = window as unknown as { __snapseqViewportUnits?: State };
+  const state = (host.__snapseqViewportUnits ??= { originals: new WeakMap(), bases: {}, warned: new Set(), unreadable: new Set() });
+
+  // Reported on every call, so every shot says it; `warned` is for findLinks, which tries a sheet once per document.
+  const note = (href: string) => {
+    state.warned.add(href);
+    state.unreadable.add(href);
+  };
+  // A sheet from another origin has no readable rules unless it was fetched with CORS.
+  const readable = (sheet: CSSStyleSheet) => {
+    try {
+      return !!sheet.cssRules;
+    } catch {
+      return false;
+    }
+  };
+
+  // What the fetch again above could not make readable. The run below finds the imports again.
+  state.unreadable.clear();
+  for (const sheet of Array.from(document.styleSheets)) {
+    if (sheet.href && !sheet.disabled && !readable(sheet)) note(sheet.href);
+  }
+
+  // What 100 of each unit is in px. Width-only units (vw, vi) are not frozen: the width never changes.
+  // An element of its own name, reset by `all`: no rule of the page's can reach it.
+  const probe = document.createElement("snapseq-probe");
+  probe.style.cssText = "all:initial!important;display:block!important;position:fixed!important;visibility:hidden!important;width:0!important";
+  document.documentElement.append(probe);
+  state.bases = {};
+  for (const prefix of ["", "s", "l", "d"]) {
+    for (const axis of ["h", "min", "max", "b"]) {
+      const unit = `${prefix}v${axis}`;
+      probe.style.setProperty("height", `100${unit}`, "important");
+      state.bases[unit] = parseFloat(getComputedStyle(probe).height); // not the bounding rect: a transform on an ancestor scales that
+    }
+  }
+  probe.remove();
+  state.observer?.takeRecords(); // the probe's own mutations; the run below covers everything present
+
+  // Quoted strings and url(...) are left alone: split() keeps them at the odd indexes.
+  const protectedText = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|url\([^)]*\))/i;
+  const viewportUnit = /(?<![\w-])(-?\d*\.?\d+(?:e[+-]?\d+)?)(s|l|d)?v(h|min|max|b)\b/gi;
+  const convert = (value: string) =>
+    value
+      .split(protectedText)
+      .map((part, i) =>
+        i % 2
+          ? part
+          : part.replace(viewportUnit, (match, n: string, prefix: string | undefined, axis: string) => {
+              const base = state.bases[`${prefix ?? ""}v${axis}`.toLowerCase()];
+              return base === undefined ? match : `${+((parseFloat(n) / 100) * base).toFixed(3)}px`;
+            }),
+      )
+      .join("");
+
+  const apply = (style: CSSStyleDeclaration) => {
+    for (const name of Array.from(style)) {
+      let value = style.getPropertyValue(name);
+      let priority = style.getPropertyPriority(name);
+      const prev = state.originals.get(style)?.get(name);
+      // Still what this script set, value and priority: freeze the page's own value again, at the viewport of now.
+      // Anything else is a value the page wrote since, and is its own original.
+      if (prev && value === prev.frozen && priority === prev.priority) ({ value, priority } = prev);
+      const next = convert(value);
+      if (next === value) {
+        state.originals.get(style)?.delete(name);
+        continue;
+      }
+      style.setProperty(name, next, priority);
+      if (!state.originals.has(style)) state.originals.set(style, new Map());
+      state.originals.get(style)!.set(name, { value, priority, frozen: style.getPropertyValue(name) });
+    }
+  };
+  // A rule with a style is a declaration block; one with rules (media, supports, layer,
+  // container, scope, nesting) or an imported sheet holds more.
+  const walk = (rules: CSSRuleList): void => {
+    for (const rule of Array.from(rules)) {
+      const r = rule as CSSRule & { style?: CSSStyleDeclaration; cssRules?: CSSRuleList; styleSheet?: CSSStyleSheet | null };
+      if (r.style) apply(r.style);
+      if (r.cssRules) walk(r.cssRules);
+      if (r.styleSheet) {
+        try {
+          walk(r.styleSheet.cssRules);
+        } catch {
+          if (r.styleSheet.href) note(r.styleSheet.href); // a cross-origin import cannot be fetched again
+        }
+      }
+    }
+  };
+  // What the observer below watches: anything that can carry CSS, in the document and in every open shadow root.
+  const watch = { childList: true, subtree: true, attributes: true, attributeFilter: ["style"], characterData: true };
+  // The document, then every open shadow root in it, nested ones included: its sheets, its adopted
+  // sheets and the style attributes inside it. A sheet shared by several roots is walked once per run.
+  // One pass over all elements per root. Closed roots are out of reach. A sheet link that has not loaded
+  // yet runs this again when it does; a root found is watched.
+  const run = () => {
+    const seen = new Set<CSSStyleSheet>();
+    const walkRoot = (root: Document | ShadowRoot) => {
+      for (const sheet of [...Array.from(root.styleSheets), ...root.adoptedStyleSheets]) {
+        if (seen.has(sheet)) continue;
+        seen.add(sheet);
+        try {
+          walk(sheet.cssRules);
+        } catch {
+          // unreadable: noted above
+        }
+      }
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
+        if (el.hasAttribute("style") && el.style) apply(el.style);
+        if (el instanceof HTMLLinkElement && !el.sheet && el.relList.contains("stylesheet")) el.addEventListener("load", run, { once: true });
+        if (el.shadowRoot) {
+          state.observer?.observe(el.shadowRoot, watch);
+          walkRoot(el.shadowRoot);
+        }
+      }
+    };
+    walkRoot(document);
+    state.observer?.takeRecords(); // the inline styles written above are ours, not the page's
+  };
+
+  // CSS that arrives later, such as a resize handler adding a widget while snapPage has
+  // the viewport grown, is frozen at the bases saved above, not at the grown viewport.
+  // A <style> or a <link> added, alone or inside an added subtree, the text of a <style> edited, or a node added
+  // that carries a shadow root, walks everything again with run. A style attribute written, which a script that
+  // animates does every frame, and a node added with style attributes but no sheet, only get apply on their own elements.
+  if (!state.observer) {
+    const css = "style, link[rel~=stylesheet]";
+    state.observer = new MutationObserver((records) => {
+      let dirty = false;
+      const written = new Set<HTMLElement>();
+      for (const record of records) {
+        if (record.type === "attributes") {
+          written.add(record.target as HTMLElement);
+          continue;
+        }
+        const target = record.target instanceof Element ? record.target : record.target.parentElement;
+        if (target?.matches("style")) dirty = true;
+        for (const node of Array.from(record.addedNodes)) {
+          if (!(node instanceof Element)) continue;
+          if (node.matches(css) || node.querySelector(css) || node.shadowRoot) dirty = true;
+          else for (const el of [node, ...Array.from(node.querySelectorAll("[style]"))]) written.add(el as HTMLElement);
+        }
+      }
+      if (dirty) {
+        run();
+      } else {
+        for (const el of written) if (el.style) apply(el.style);
+        state.observer?.takeRecords(); // the inline styles written above are ours, not the page's
+      }
+    });
+    state.observer.observe(document, watch);
+  }
+  run();
+
+  return { unreadable: Array.from(state.unreadable) };
+};
+
+// What goes into the manifest and the terminal: no credentials, query string or fragment (a signed CDN URL), at most 80 characters.
+const shown = (href: string) => {
+  try {
+    const u = new URL(href);
+    u.username = u.password = u.search = u.hash = "";
+    return u.href.slice(0, 80);
+  } catch {
+    return href.slice(0, 80);
+  }
+};
+
+/**
+ * Makes `snapPage` work on pages with viewport-height units, and holds the page
+ * still for each shot: pointer off the content, motion stopped. Each step has its own switch.
+ */
+export function stabilize({
+  viewportUnits = true,
+  motion = true,
+  reducedMotion = false,
+  hover = true,
+  scroll = false,
+}: StabilizeOptions = {}): Plugin {
+  return {
+    name: "stabilize",
+    async begin({ page }) {
+      if (reducedMotion) await page.emulateMedia({ reducedMotion: "reduce" });
+      if (motion) await disableTransitions(page);
+    },
+    async beforeSnap(shot, { page }) {
+      // The pointer stays where the last click left it, and whatever moved under it (a card, a menu) is drawn in
+      // :hover. Off the viewport nothing is hovered; the page's mouseleave handlers run. Out through the left
+      // edge at mid-height, not the top: exit-intent scripts watch for a leave with clientY <= 0. (0, 0)
+      // would leave the element in the corner hovered.
+      if (hover && shot.options.hover !== "keep") {
+        const v = page.viewportSize();
+        await page.mouse.move(-1, v ? Math.round(v.height / 2) : 0);
+      }
+      // Native full page does not scroll, so what waits for the viewport never fires. snapPage and a plain snap show what they take.
+      if (scroll && shot.options.fullPage) {
+        const { steps, capped } = await page.evaluate(scrollPass);
+        if (capped) shot.notes.push(`scroll pass stopped after ${steps} steps`);
+      }
+      if (motion) {
+        await page.evaluate(stopMotion);
+        // Playwright also finishes or cancels an animation that starts after this pass (a resize handler, a late
+        // script) as it takes the screenshot. A capture's own setting wins.
+        shot.options.animations ??= "disabled";
+      }
+      if (viewportUnits) {
+        // Script can read a cross-origin stylesheet's rules only if it was fetched with CORS: swapLinks does that.
+        // While the route exists the HTTP cache is off and only the matching URLs are intercepted; outside that
+        // window nothing is routed. Its handler adds the header the server did not, to one text/css response per URL
+        // and nothing else (the hrefs come from the page, which may lie about them); anything else, and a fetch error,
+        // falls back to the routes registered before it, or to the browser.
+        const hrefs = new Set(await page.evaluate(findLinks));
+        if (hrefs.size > 0) {
+          // A RegExp, not a function: Playwright cannot tell a function's URLs in advance, and would intercept every request.
+          const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          const match = new RegExp("^(?:" + Array.from(hrefs).map(escape).join("|") + ")$");
+          const served = new Set<string>();
+          const serve = async (route: Route) => {
+            const request = route.request();
+            // The clone is anonymous, so the browser sends it no cookie: a request that has one is not the clone's.
+            if (served.has(request.url()) || request.headers().cookie) return route.fallback();
+            // An empty cookie header, which Playwright takes as set: it does not add the context's cookies to this fetch.
+            // A redirect is not followed (the body would be served at the old URL, where a relative url() in it
+            // resolves wrongly, and the fetch would leave the URL that was routed); it is no 2xx, so it falls back.
+            const response = await route.fetch({ maxRedirects: 0, headers: { ...request.headers(), cookie: "" } }).catch(() => undefined);
+            // Not a stylesheet, or no answer: the browser makes its own CORS request, which fails without the header
+            // and leaves the original sheet in place; freezeUnits notes it.
+            if (!response?.ok() || !response.headers()["content-type"]?.toLowerCase().startsWith("text/css")) return route.fallback();
+            served.add(request.url());
+            return route.fulfill({ response, headers: { ...response.headers(), "access-control-allow-origin": "*" } }).catch(() => {});
+          };
+          await page.route(match, serve);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            // The page ends the swap itself after 5 s; this bounds the route from here, too.
+            await Promise.race([page.evaluate(swapLinks), new Promise<void>((done) => (timer = setTimeout(done, 6000)))]);
+          } finally {
+            clearTimeout(timer);
+            await page.unroute(match, serve);
+          }
+        }
+        const { unreadable } = await page.evaluate(freezeUnits);
+        for (const href of unreadable) shot.notes.push(`cannot read ${shown(href)}: its viewport units stay live`);
+      }
+    },
+  };
+}
