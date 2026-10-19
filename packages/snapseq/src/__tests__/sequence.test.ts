@@ -26,6 +26,7 @@ function makePageStub(documentHeight = 900, container = "", ratio: unknown = 2) 
   const events: string[] = [];
   let viewport = { width: 400, height: 300 };
   vi.stubGlobal("window", makeWindow(1, events));
+  vi.stubGlobal("document", { dispatchEvent: (e: Event) => void events.push(`dispatch ${e.type}`) });
   const page = {
     screenshot: vi.fn(async (opts: { path: string; fullPage?: boolean }) => {
       writeFileSync(opts.path, "png-stub");
@@ -53,13 +54,16 @@ function makePageStub(documentHeight = 900, container = "", ratio: unknown = 2) 
               ? "images"
               : src.includes("devicePixelRatio")
                 ? "ratio"
-                : "wait";
+                : src.includes("dispatchEvent")
+                  ? "event"
+                  : "wait";
       events.push(kind);
       if (kind === "scroll") return (fn as (a: unknown) => unknown)(arg); // against the stubbed window
       if (kind === "container") return container;
       if (kind === "height") return documentHeight;
       if (kind === "images") return { pending: 0, first: "", failed: 0, firstFailed: "" };
       if (kind === "ratio") return ratio;
+      if (kind === "event") return (fn as () => unknown)(); // against the stubbed document
       return true; // quiet in time, fonts in
     }),
   };
@@ -124,13 +128,16 @@ describe("createSequence", () => {
   });
 
   it("snapPage grows the viewport to the document height and restores it, also when the shot fails", async () => {
-    const { page, viewports } = makePageStub(900);
+    const { page, viewports, events } = makePageStub(900);
     const seq = createSequence(page, root, join("cap", "desktop"));
     await seq.snapPage();
     expect(viewports).toEqual([
       { width: 400, height: 900 },
       { width: 400, height: 300 },
     ]);
+    // Grown from the top, nothing scrolled: a scroll event, before the readiness wait, lets scroll-driven UI settle.
+    const grown = events.indexOf("setViewportSize 900");
+    expect(events.slice(grown, grown + 4)).toEqual(["setViewportSize 900", "event", "dispatch scroll", "wait"]);
 
     page.screenshot.mockRejectedValueOnce(new Error("boom"));
     await expect(seq.snapPage()).rejects.toThrow("boom");
@@ -243,11 +250,11 @@ describe("createSequence", () => {
     );
   });
 
-  it("snapPage puts back the viewport, then the scroll position, and only into the document it read it from", async () => {
+  it("snapPage puts back the viewport, then the scroll position with a scroll event, and only into the document it read it from", async () => {
     const { page, events } = makePageStub();
     const seq = createSequence(page, root, "cap");
     await seq.snapPage();
-    expect(events.slice(-3)).toEqual(["setViewportSize 300", "scroll", "scrollTo 1500"]);
+    expect(events.slice(-4)).toEqual(["setViewportSize 300", "scroll", "scrollTo 1500", "dispatch scroll"]);
     // A reload during the shot: a new document with its own timeOrigin, so nothing is scrolled.
     const reloaded = makeWindow(2, events);
     page.screenshot.mockImplementationOnce(async (opts: { path: string }) => {

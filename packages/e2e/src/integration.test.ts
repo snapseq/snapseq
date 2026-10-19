@@ -34,6 +34,18 @@ const STICKY_PAGE = `<!doctype html><html><head><style>html.landed { padding-bot
 <script>new IntersectionObserver((entries) => document.documentElement.classList.toggle("landed", entries.some((e) => e.isIntersecting))).observe(document.getElementById("slot"));</script>
 </body></html>`;
 
+// 1100 px tall. A fixed bar at the bottom hides once the page end is in view, a back-to-top button shows: each follows
+// scroll events alone, the bar's handler on the window, the button's on the document.
+const TRAY_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:1100px"></div>
+<div id="bar" data-hidden="0" style="position:fixed;bottom:0;left:0;right:0;height:80px;background:#c00"></div><button id="up" data-shown="0" style="position:fixed;top:0">up</button>
+<script>
+const bar = document.getElementById("bar");
+const up = document.getElementById("up");
+const end = () => (scrollY + innerHeight >= document.body.scrollHeight - 100 ? "1" : "0");
+addEventListener("scroll", () => { bar.dataset.hidden = end(); bar.style.display = end() === "1" ? "none" : ""; });
+document.addEventListener("scroll", () => { up.dataset.shown = end(); });
+</script></body></html>`;
+
 // JS-driven motion: an attribute changes every frame for 40 frames, then data-done. `?forever` never stops.
 const JS_MOTION_PAGE = `<!doctype html><html><body style="margin:0"><div id="x">x</div><script>
 let n = 0; const el = document.getElementById("x"); const forever = location.search.includes("forever");
@@ -131,6 +143,8 @@ function startServer() {
     res.end(
       url.startsWith("/sticky")
         ? STICKY_PAGE
+        : url.startsWith("/tray")
+          ? TRAY_PAGE
         : url.startsWith("/widget")
           ? WIDGET_PAGE
         : url.startsWith("/font")
@@ -1203,6 +1217,44 @@ sequence(async ({ page, seq }) => {
     const r = await playwright(p, ["--reporter", REPORTER]);
     expect(r.out).toContain("1 passed  1 shot");
     expect(r.status).toBe(0);
+  });
+
+  it("fires a scroll event once grown from the top, and once restored, so scroll-driven UI settles for each viewport", async () => {
+    const p = makeProject({
+      esm: true,
+      config: `
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+import { defineConfig } from "snapseq";
+export default defineConfig({
+  envs: { dev: { host: "${server.url}" } },
+  devices: { d1: { viewport: { width: 400, height: 300 } } },
+  screenshotsDir: "out",
+  plugins: [{
+    name: "probe",
+    // After each shot, before snapPage restores the viewport: the bar's state, then the button's.
+    afterSnap: async (_shot, ctx) => appendFileSync(join(ctx.seq.dir, "probe.txt"), (await ctx.page.evaluate(() => document.getElementById("bar").dataset.hidden + document.getElementById("up").dataset.shown)) + "\\n"),
+  }],
+});
+`,
+      sequences: {
+        "tray.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/tray");
+  await seq.snapPage();
+  await seq.snap();
+});
+`,
+      },
+    });
+    dirs.push(p);
+    const r = await playwright(p, ["--reporter", REPORTER]);
+    expect(r.out).toContain("1 passed  2 shots");
+    expect(r.status).toBe(0);
+    // The whole page: the bar hidden, the button shown. Back at one screen from the top: the bar again, no button.
+    expect(readFileSync(join(p, "out", "run1", "tray", "d1", "probe.txt"), "utf8")).toBe("11\n00\n");
+    expect(pngSize(join(p, "out", "run1", "tray", "d1", "01.png"))).toEqual([400, 1100]);
   });
 
   it("refuses a layout that follows the viewport, restores the viewport, and points at the native full page", async () => {

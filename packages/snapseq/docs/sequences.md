@@ -53,13 +53,16 @@ Beyond Playwright's own (`page`, `context`, `browser`, …):
 `seq.snapPage()` is the whole page the way a reviewer expects it: the viewport
 grows to the document height, so sticky and fixed elements rest in flow and a
 tray whose slot comes into view gets to land; one shot; the viewport and the
-scroll position are restored. A page about one screen tall whose content
-scrolls inside an element rather than the document (`html` and `body` at 100%
-height with `overflow: hidden`, a scrolling `main`) is not grown: the shot is
-the device's viewport, with a note naming the element. Content that lands
-during the wait and makes it taller makes it a page again, grown as usual; a
-shell that grows with the viewport gets the note instead of a refusal. The
-element is never expanded.
+scroll position are restored. After the viewport grows, a scroll event is
+fired, so UI that follows the scroll (a tray that hides at the page end, a
+back-to-top button) settles as if the reader had scrolled there; another
+fires once the viewport is restored, so it settles back. A page about one
+screen tall whose content scrolls inside an element rather than the document
+(`html` and `body` at 100% height with `overflow: hidden`, a scrolling
+`main`) is not grown: the shot is the device's viewport, with a note naming
+the element. Content that lands during the wait and makes it taller makes it
+a page again, grown as usual; a shell that grows with the viewport gets the
+note instead of a refusal. The element is never expanded.
 
 `seq.snap({ fullPage: true })` is Playwright's native full page: the viewport
 stays as it is, and sticky elements come out pinned where the scroll left
