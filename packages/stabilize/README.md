@@ -143,7 +143,10 @@ once the viewport is back. The event is synthetic: `isTrusted` is `false`,
 and a handler that checks it ignores it. Any scroll handler runs, not only
 the tray's: one that reads "bottom reached" (an infinite scroll that loads
 more, a 100 % scroll beacon) or compares with the last `scrollY` (a header
-that hides on scroll down) can react too. That is why it is off by default.
+that hides on scroll down) can react too, and so can a reveal script that
+judges what is in view against the window height it read at load: it takes
+its in-view class off everything below the first screen, and an animated
+chart there goes back to its base state. That is why it is off by default.
 
 **Motion** (`motion`). When the sequence begins, transitions and smooth
 scrolling are turned off on every document: `disableTransitions` from snapseq
