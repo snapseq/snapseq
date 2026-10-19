@@ -1,10 +1,10 @@
 import type { Route } from "@playwright/test";
-import { disableTransitions, type Plugin } from "snapseq";
+import { addPersistentStyle, type Plugin } from "snapseq";
 
 export interface StabilizeOptions {
   /** Freeze viewport-height units to px at the shot's viewport, so `snapPage` can grow the viewport without the layout following it. Default true. */
   viewportUnits?: boolean;
-  /** No transitions or animations, Web Animations finished, SVG and video paused. Default true. */
+  /** No transitions; animations finished, or cancelled when they cannot finish, before each shot and after `snapPage` grows the viewport; SVG and video paused. Default true. */
   motion?: boolean;
   /** Emulate `prefers-reduced-motion: reduce` for the sequence. Default false: the page's own preference stays. */
   reducedMotion?: boolean;
@@ -12,6 +12,8 @@ export interface StabilizeOptions {
   hover?: boolean;
   /** For a shot with `fullPage: true`: scroll from the top to the end first, so reveals on scroll and lazy loaders fire. Default false. */
   scroll?: boolean;
+  /** A scroll event after `snapPage` grows the viewport, and before each shot, for UI that follows scroll events only (a tray that hides at the page end). Default false. */
+  scrollEvent?: boolean;
 }
 
 declare module "snapseq" {
@@ -21,31 +23,41 @@ declare module "snapseq" {
   }
 }
 
+// snapseq's disableTransitions without its `animation: none`, which would hold a reveal at its base state (a bar
+// chart at zero width): animations run, and stopMotion brings each to its end.
+const NO_TRANSITIONS = `*, *::before, *::after { transition: none !important; }
+*::details-content { transition: none !important; }
+*::backdrop { transition: none !important; }
+html { scroll-behavior: auto !important; }`;
+
 // The functions below run in the page. Arrow functions only: a bundler wraps
 // named inner functions in a helper the page does not have.
 
-// The document from its top down to its end, one viewport at a time, a frame on each stop: what waits for
-// the viewport (an IntersectionObserver reveal, a data-src loader) fires on the way. The end is read
-// again on every stop, so growth that lands during the pass is followed, up to the caps. The position
-// the page had comes back at the end. It begins once the DOM has been quiet for 200 ms, 2 s at most: a page
-// that inserts its sections and images after domcontentloaded (hydration) has them to scroll through.
-const scrollPass = async () => {
-  await new Promise<void>((done) => {
-    let quiet = 0;
+// Resolves once the DOM has been quiet for 200 ms, 2 s at most: what a script inserts after domcontentloaded
+// (hydration), or what an observer reveals after a grow, has landed.
+const quiet = () =>
+  new Promise<void>((done) => {
+    let timer = 0;
     const observer = new MutationObserver(() => {
-      window.clearTimeout(quiet);
-      quiet = window.setTimeout(end, 200);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(end, 200);
     });
     const end = () => {
       observer.disconnect();
-      window.clearTimeout(quiet);
+      window.clearTimeout(timer);
       window.clearTimeout(cap);
       done();
     };
     const cap = window.setTimeout(end, 2000);
-    quiet = window.setTimeout(end, 200);
+    timer = window.setTimeout(end, 200);
     observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
   });
+
+// The document from its top down to its end, one viewport at a time, a frame on each stop: what waits for
+// the viewport (an IntersectionObserver reveal, a data-src loader) fires on the way. The end is read
+// again on every stop, so growth that lands during the pass is followed, up to the caps. The position
+// the page had comes back at the end.
+const scrollPass = async () => {
   const root = document.scrollingElement ?? document.documentElement;
   const origin = window.scrollY;
   const height = window.innerHeight;
@@ -68,6 +80,9 @@ const scrollPass = async () => {
   }
   return { steps, capped };
 };
+
+// What the browser sends when the document scrolls: a scroll event at the document, bubbling to the window.
+const fireScroll = () => document.dispatchEvent(new Event("scroll", { bubbles: true }));
 
 // Web Animations: a finite one is finished, an infinite one (or one that cannot
 // finish) is cancelled. A finish handler can start another, so go round again.
@@ -150,7 +165,7 @@ const freezeUnits = async () => {
     bases: Record<string, number>;
     warned: Set<string>;
     unreadable: Set<string>;
-    checked: Map<string, boolean>; // href: true keeps the note, false is quiet
+    checked: Map<string, boolean>; // href: true keeps the note, false is harmless
     observer?: MutationObserver;
   };
   const host = window as unknown as { __snapseqViewportUnits?: State };
@@ -309,14 +324,14 @@ const freezeUnits = async () => {
 
   // An unreadable sheet no refetch can open (a cross-origin @import loads without CORS) is fetched as text, once per
   // document, at most 10 per call, 512 K characters each and 3 s in all. Best effort: this anonymous fetch may not get
-  // what the page applied. It is quiet (false) only for a text/css answer that, with comments and strings taken out,
+  // what the page applied. It is harmless (false) only for a text/css answer that, with comments and strings taken out,
   // has no viewport unit outside url(), no escape and no @import (whose sheet would stay unseen). Anything else, or
   // not checked yet (over the 10, or found while these were out), keeps the note.
   const deadline = AbortSignal.timeout(3000);
   const todo = Array.from(state.unreadable).filter((href) => !state.checked.has(href)).slice(0, 10);
   await Promise.all(
     todo.map(async (href) => {
-      let quiet = false;
+      let harmless = false;
       try {
         const response = await fetch(href, { signal: deadline });
         if (response.ok && response.body && response.headers.get("content-type")?.toLowerCase().startsWith("text/css")) {
@@ -332,12 +347,12 @@ const freezeUnits = async () => {
           }
           // An unquoted url() goes too, so a /* inside it is not taken for a comment; one with a backslash stays.
           const bare = (text + decoder.decode()).replace(/\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)/gi, " ");
-          quiet = !bare.includes("\\") && !/@import/i.test(bare) && convert(bare) === bare;
+          harmless = !bare.includes("\\") && !/@import/i.test(bare) && convert(bare) === bare;
         }
       } catch {
         // no answer in time, too long, refused by CORS or the page's CSP: unknown
       }
-      state.checked.set(href, !quiet);
+      state.checked.set(href, !harmless);
     }),
   );
   return { unreadable: Array.from(state.unreadable).filter((href) => state.checked.get(href) !== false) };
@@ -364,12 +379,13 @@ export function stabilize({
   reducedMotion = false,
   hover = true,
   scroll = false,
+  scrollEvent = false,
 }: StabilizeOptions = {}): Plugin {
   return {
     name: "stabilize",
     async begin({ page }) {
       if (reducedMotion) await page.emulateMedia({ reducedMotion: "reduce" });
-      if (motion) await disableTransitions(page);
+      if (motion) await addPersistentStyle(page, NO_TRANSITIONS);
     },
     async beforeSnap(shot, { page }) {
       // The pointer stays where the last click left it, and whatever moved under it (a card, a menu) is drawn in
@@ -382,9 +398,12 @@ export function stabilize({
       }
       // Native full page does not scroll, so what waits for the viewport never fires. snapPage and a plain snap show what they take.
       if (scroll && shot.options.fullPage) {
+        await page.evaluate(quiet);
         const { steps, capped } = await page.evaluate(scrollPass);
         if (capped) shot.notes.push(`scroll pass stopped after ${steps} steps`);
       }
+      // At the viewport of this shot: a tray that hid for a grown snapPage shows again once the viewport is back.
+      if (scrollEvent) await page.evaluate(fireScroll);
       if (motion) {
         await page.evaluate(stopMotion);
         // Playwright also finishes or cancels an animation that starts after this pass (a resize handler, a late
@@ -429,6 +448,16 @@ export function stabilize({
         }
         const { unreadable } = await page.evaluate(freezeUnits);
         for (const href of unreadable) shot.notes.push(`cannot read ${shown(href)}: its viewport units stay live`);
+      }
+    },
+    // Grown from the top, nothing scrolls, so no scroll event fires. What the grow brought into view (an observer adding
+    // .inView) may start an animation, which grows the page while it runs: once the DOM is quiet it is finished, so
+    // snapPage measures the page at its end state. freezeUnits does not run again: it would freeze at the grown viewport.
+    async afterGrow(_shot, { page }) {
+      if (scrollEvent) await page.evaluate(fireScroll);
+      if (motion) {
+        await page.evaluate(quiet);
+        await page.evaluate(stopMotion);
       }
     },
   };

@@ -23,14 +23,15 @@ import { stabilize } from "@snapseq/stabilize";
 export default defineConfig({ envs: { /* … */ }, plugins: [stabilize()] });
 ```
 
-Viewport units, motion and hover are on; scroll and reduced motion are off.
-Each has a switch:
+Viewport units, motion and hover are on; scroll, scroll events and reduced
+motion are off. Each has a switch:
 
 ```ts
 stabilize({ viewportUnits: false })  // no freezing of viewport units
 stabilize({ motion: false })         // motion is left alone
 stabilize({ hover: false })          // the pointer is left where it is
 stabilize({ scroll: true })          // scroll pass before a native full page
+stabilize({ scrollEvent: true })     // a scroll event once snapPage grew the viewport
 stabilize({ reducedMotion: true })   // emulate prefers-reduced-motion: reduce
 ```
 
@@ -128,18 +129,41 @@ carries the note `scroll pass stopped after N steps`. Plain `snap` and
 `snapPage` are not scrolled: `snapPage` grows the viewport to the whole page,
 which shows everything already. A virtualized list, or a header that changes
 with the scroll direction, is not helped. With `hover: "keep"` the pass moves
-content under the kept pointer. A reveal done by a keyframe animation, not by
-a class, stays hidden by `disableTransitions`: see
-[An element that fades in is missing from the shot](https://github.com/snapseq/snapseq/blob/main/packages/snapseq/docs/troubleshooting.md#an-element-that-fades-in-is-missing-from-the-shot).
+content under the kept pointer. A reveal done by a keyframe animation is
+brought to its end by the motion step below.
 
-**Motion** (`motion`). When the sequence begins, `disableTransitions` from
-snapseq is applied (no transitions, animations or smooth scrolling, on every
-document). Before each shot: Web Animations are finished, or cancelled when
-they cannot finish (an infinite one); SVG animations are paused where they are,
-like a video, so a draw-in that finished stays drawn; videos stop playing.
-The screenshot itself runs with Playwright's `animations: "disabled"` unless
-the sequence sets its own, so an animation that starts after that pass (from a
-resize handler, say) is finished or cancelled too.
+**Scroll event** (`scrollEvent`, off by default). `snapPage` grows the
+viewport from where the page is; from the top nothing scrolls, so no scroll
+event fires, and UI that follows scroll events only stays as it was: a fixed
+tray that hides once the page end is in view is drawn over the footer, a
+back-to-top button stays hidden. With `scrollEvent: true` the plugin fires
+one scroll event after each grow, at the document and bubbling to the window
+as the browser's own does, and one before each shot, so the tray shows again
+once the viewport is back. The event is synthetic: `isTrusted` is `false`,
+and a handler that checks it ignores it. Any scroll handler runs, not only
+the tray's: one that reads "bottom reached" (an infinite scroll that loads
+more, a 100 % scroll beacon) or compares with the last `scrollY` (a header
+that hides on scroll down) can react too. That is why it is off by default.
+
+**Motion** (`motion`). When the sequence begins, transitions and smooth
+scrolling are turned off on every document: `disableTransitions` from snapseq
+without its `animation: none`. Animations run, and before each shot, and in
+`snapPage` after each grow once the DOM has been quiet for 200 ms (2 s at
+most), CSS and Web Animations are finished, or cancelled when they cannot
+finish (an infinite one), rather than removed. A `forwards` reveal, such as a
+bar chart that grows in, keeps its final state, and so does a `forwards` exit
+animation, hidden; one without fill goes back to its base style. Finishing
+runs the page's `animationend` and `finish` handlers. After a grow this comes
+before `snapPage` measures the page, so a section that opens as it comes into
+view is measured open. SVG animations are paused where they are, like a
+video, so a draw-in that finished stays drawn; videos stop playing. The
+screenshot itself runs with Playwright's `animations: "disabled"` unless the
+sequence sets its own, so an animation that starts after that pass (from a
+resize handler, say) is finished or cancelled too; Playwright plays an
+infinite animation it cancelled again once the shot is taken, so between
+shots the page holds less still than under `animation: none`. A sequence
+that calls `disableTransitions` itself brings `animation: none` back, and
+with it reveals held at their base state.
 
 **Reduced motion** (`reducedMotion`, off by default). Emulates
 `prefers-reduced-motion: reduce` for the sequence, for a page that has a quieter

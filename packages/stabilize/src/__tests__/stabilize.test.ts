@@ -267,6 +267,46 @@ window.__facts = () => ({
 });
 </script></body></html>`;
 
+// A bar chart whose bars grow in, 0 to 90 %, by a forwards keyframe once an observer marks the chart in view: 1500 px
+// down, so only the grown viewport shows it. A spinner turns forever. 20 + 1500 + 100 + 300 = 1920 px tall.
+const CHART_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+@keyframes grow { from { width: 0 } to { width: 90% } }
+@keyframes spin { to { transform: rotate(1turn) } }
+#chart { height: 100px }
+.bar { height: 100px; width: 0; background: rgb(255, 128, 0) }
+.inView .bar { animation: grow 1s forwards }
+#spin { width: 20px; height: 20px; background: #000; animation: spin 1s linear infinite }
+</style></head><body><div id="spin"></div><div style="height:1500px"></div><section id="chart"><div class="bar"></div></section><div style="height:300px"></div><script>
+new IntersectionObserver((entries, o) => entries.forEach((e) => e.isIntersecting && (e.target.classList.add("inView"), o.disconnect()))).observe(document.getElementById("chart"));
+</script></body></html>`;
+
+// A section that opens, max-height 0 to 600 px over 2 s, once the page end is in view: only the grown viewport shows
+// it, and the page is 600 px taller once it is open. 1500 + 600 + 20 = 2120 px tall then, the green end last.
+const OPEN_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+@keyframes open { from { max-height: 0 } to { max-height: 600px } }
+#more { max-height: 0; overflow: hidden; background: rgb(0, 128, 255) }
+#more.inView { animation: open 2s forwards }
+#more > div { height: 600px }
+#end { height: 20px; background: rgb(0, 160, 0) }
+</style></head><body><div style="height:1500px"></div><section id="more"><div></div></section><div id="end"></div><script>
+new IntersectionObserver((entries, o) => entries.forEach((e) => e.isIntersecting && (document.getElementById("more").classList.add("inView"), o.disconnect()))).observe(document.getElementById("end"));
+</script></body></html>`;
+
+// A fixed bar at the bottom that hides once the page end is in view, by a scroll handler on the document; one on the
+// window notes that it heard the event too. 1500 px tall.
+const SCROLLEVENT_PAGE = `<!doctype html><html><body style="margin:0;background:#fff"><div style="height:1500px"></div>
+<div id="tray" style="position:fixed;bottom:0;left:0;right:0;height:80px;background:rgb(200, 0, 0)"></div><script>
+const tray = document.getElementById("tray");
+let heard = "no";
+document.addEventListener("scroll", () => {
+  tray.style.display = scrollY + innerHeight >= document.documentElement.scrollHeight - 100 ? "none" : "";
+});
+addEventListener("scroll", () => (heard = "yes"));
+window.__facts = () => ({ tray: getComputedStyle(tray).display, heard });
+</script></body></html>`;
+
 // A click inserts 300 px above the button, which moves the card under the still pointer: the button sits at 300-340 px
 // before the click, at 600-640 after it, and the click was at y 320.
 const HOVER_PAGE = `<!doctype html><html><head><style>
@@ -566,6 +606,28 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
+  chart: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/chart");
+  await seq.snapPage();
+});
+`,
+  open: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/open");
+  await seq.snapPage();
+});
+`,
+  scrollevent: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/scrollevent");
+  await seq.snapPage();
+  await seq.snap();
+});
+`,
   hover: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -715,6 +777,9 @@ function appServer(cdn: string) {
     "/anim": ANIM_PAGE,
     "/follow": FOLLOW_PAGE,
     "/motion": MOTION_PAGE,
+    "/chart": CHART_PAGE,
+    "/open": OPEN_PAGE,
+    "/scrollevent": SCROLLEVENT_PAGE,
     "/hover": HOVER_PAGE,
     "/reveal": REVEAL_PAGE,
     "/hydrate": HYDRATE_PAGE,
@@ -1164,6 +1229,49 @@ describe("motion", () => {
     const p = probe(r.dir);
     expect(p.infinite).toBeGreaterThan(0); // the page's own infinite animation, not one of the finite minute-long ones
     expect(p.facts?.rm).toBe("rgb(9, 9, 9)");
+  });
+});
+
+describe("motion after snapPage grows the viewport", () => {
+  // Not removed by CSS, as snapseq's disableTransitions does, so the reveal the grow started is finished at its end.
+  it("shows a forwards reveal the grow started at its end state, and cancels an infinite animation", async () => {
+    const r = await run("chart");
+    expect(r.status, r.out).toBe(0);
+    expect(pngSize(join(r.dir, "01.png"))).toEqual([1280, 1920]);
+    const img = await image(join(r.dir, "01.png"));
+    expect(img.at(1100, 1570)).toEqual([255, 128, 0]); // inside 90 % of 1280 px
+    expect(img.at(1200, 1570)).toEqual([255, 255, 255]); // past it
+    const p = probe(r.dir);
+    expect(p.running).toBe(0);
+    expect(p.infinite).toBe(0);
+  });
+
+  // A height animation that runs on while snapPage measures would leave the shot cut off, or refused.
+  it("finishes a height animation the grow started before snapPage measures, so the page end is in the shot", async () => {
+    const r = await run("open");
+    expect(r.status, r.out).toBe(0);
+    expect(pngSize(join(r.dir, "01.png"))).toEqual([1280, 2120]);
+    const img = await image(join(r.dir, "01.png"));
+    expect(img.at(640, 1800)).toEqual([0, 128, 255]); // the section, open
+    expect(img.at(640, 2119)).toEqual([0, 160, 0]); // the end
+  });
+});
+
+describe("scrollEvent", () => {
+  it("fires a scroll event once snapPage grew the viewport, and again before the next shot: the tray hides, then shows", async () => {
+    const r = await run("scrollevent", { STAB: JSON.stringify({ scrollEvent: true }) });
+    expect(r.status, r.out).toBe(0);
+    expect(probe(r.dir, "01").facts).toEqual({ tray: "none", heard: "yes" }); // at the document, bubbling to the window
+    expect((await image(join(r.dir, "01.png"))).at(640, 1499)).toEqual([255, 255, 255]);
+    expect(probe(r.dir, "02").facts?.tray).toBe("block"); // back at one screen from the top
+    expect((await image(join(r.dir, "02.png"))).at(640, 719)).toEqual([200, 0, 0]);
+  });
+
+  it("is off by default: grown from the top, no scroll event fires and the tray is drawn over the page end", async () => {
+    const r = await run("scrollevent");
+    expect(r.status, r.out).toBe(0);
+    expect(probe(r.dir, "01").facts).toEqual({ tray: "block", heard: "no" });
+    expect((await image(join(r.dir, "01.png"))).at(640, 1499)).toEqual([200, 0, 0]);
   });
 });
 

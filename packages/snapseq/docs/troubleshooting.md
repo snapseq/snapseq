@@ -174,11 +174,13 @@ applies `disableTransitions` itself, so a sequence need not call it.
 
 ## An element that fades in is missing from the shot
 
-**Cause.** `disableTransitions`, which `stabilize()` applies too, sets
-`animation: none`. That leaves an element at its base state, so a `.hero` with
-base `opacity: 0` and `animation: fadeIn 1s forwards` stays hidden.
-**Fix.** `addPersistentStyle(page, ".hero { opacity: 1 !important }")`, or the
-page's own revealed class.
+**Cause.** `disableTransitions` sets `animation: none`. That leaves an element
+at its base state, so a `.hero` with base `opacity: 0` and
+`animation: fadeIn 1s forwards` stays hidden.
+**Fix.** `stabilize()` from `@snapseq/stabilize` instead of
+`disableTransitions`: it finishes the animation, so a `forwards` fade-in ends
+visible. Or `addPersistentStyle(page, ".hero { opacity: 1 !important }")`, or
+the page's own revealed class.
 
 ## Basic auth credentials are not sent, or are sent to the wrong host
 
