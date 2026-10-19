@@ -1,5 +1,13 @@
 # @snapseq/stabilize
 
+## 0.1.1
+
+### Patch Changes
+
+- dc7fda5: The README and the package description use snapseq 0.5's words: a capture is a sequence, and a note prints in the terminal rather than in `shots.txt`.
+- Updated dependencies [dc7fda5]
+  - snapseq@0.5.0
+
 ## 0.1.0
 
 ### Minor Changes
