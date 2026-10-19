@@ -110,6 +110,20 @@ const importPage = (cdn: string) =>
 const sheetImportPage = (sheet: string) =>
   `<!doctype html><html><head><link rel="stylesheet" href="${sheet}"></head><body style="margin:0"><div id="u"></div><div style="height:1000px"></div></body></html>`;
 
+// What the text check of an imported sheet has to read right, served from the CDN with the CORS header. login is a
+// stylesheet for the import and a login page for the check's fetch; big is font rules past the 512 K cap.
+const CHECKED_CSS: Record<string, string> = {
+  nested: '@import url("/x/font.css");',
+  comment: "/* ' */ #u { height: 100vh } /* ' */",
+  escape: "#u { height: 100v\\68 }",
+  fontcomment: '/* 100vh */ @font-face { font-family: "F"; src: url(/f.woff2) }',
+  login: "#u { height: 50vh }",
+  big: '@font-face { font-family: "F"; src: url(/f.woff2) }'.repeat(12000),
+  font: '@font-face { font-family: "F"; src: url(/f.woff2) }',
+};
+const importsPage = (hrefs: string[]) =>
+  `<!doctype html><html><head><style>${hrefs.map((href) => `@import url("${href}");`).join("")}</style></head><body style="margin:0"><div id="u"></div></body></html>`;
+
 // A cross-origin sheet that a script turned off, as a theme switch does: no attribute, only the sheet's flag.
 const disabledPage = (cdn: string) =>
   `<!doctype html><html><head><link rel="stylesheet" href="${cdn}/style.css"></head><body style="margin:0"><div id="xo"></div><script>
@@ -411,6 +425,16 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
+  checked: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/checked");
+  await seq.snap();
+  await page.goto("/many");
+  await seq.snap();
+  await seq.snap();
+});
+`,
   imports: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -647,7 +671,12 @@ function cdnServer() {
       res.writeHead(200, { "content-type": "text/css", "access-control-allow-origin": "*" });
       res.end(url.startsWith("/fonts.css") ? '@font-face { font-family: "F"; src: url(/f-100vh.woff2) format("woff2") }' : "#u { height: 50vh }");
     }
-    else if (url.startsWith("/img.png") || url.startsWith("/v1/img.png")) send(res, "image/png", PNG_1x1);
+    else if (url.startsWith("/x/")) {
+      const name = url.slice(3).split(".")[0]!;
+      const sheet = name !== "login" || req.headers.accept?.startsWith("text/css"); // the import asks for a stylesheet, a fetch for */*
+      res.writeHead(200, { "content-type": sheet ? "text/css" : "text/html", "access-control-allow-origin": "*" });
+      res.end(sheet ? CHECKED_CSS[name] : "<html><body>Sign in</body></html>");
+    } else if (url.startsWith("/img.png") || url.startsWith("/v1/img.png")) send(res, "image/png", PNG_1x1);
     else if (url.startsWith("/old/style.css")) {
       res.writeHead(302, { location: "/v1/style.css" });
       res.end();
@@ -672,6 +701,8 @@ function appServer(cdn: string) {
     "/widget": WIDGET_PAGE,
     "/import": importPage(cdn),
     "/fontimport": sheetImportPage("/fonts.css"),
+    "/checked": importsPage(["nested", "comment", "escape", "fontcomment", "login", "big"].map((name) => `${cdn}/x/${name}.css`)),
+    "/many": importsPage(Array.from({ length: 12 }, (_, i) => `${cdn}/x/font.css?${i + 1}`)),
     "/unitimport": sheetImportPage("/units.css"),
     "/disabled": disabledPage(cdn),
     "/shadow": SHADOW_PAGE,
@@ -1026,6 +1057,21 @@ describe("a cross-origin sheet that a same-origin sheet imports", () => {
     const hits = cdn.hits.slice(before);
     expect(hits.filter((u) => u.startsWith("/fonts.css"))).toHaveLength(2); // the import's, the check's
     expect(hits.filter((u) => u.startsWith("/units.css"))).toHaveLength(2); // two shots, one check
+  });
+});
+
+describe("the text check of an imported sheet", () => {
+  // nested: its own @import is not followed. comment: quotes inside comments. escape: 100v\68 is 100vh. login: the
+  // check's fetch gets HTML, not the sheet the page applied. big: past the cap. fontcomment: a unit in a comment only.
+  // many: twelve font-only imports, ten checked per shot; the two not checked yet keep the note until the next shot.
+  it("keeps the note for what it cannot rule out, and checks at most ten sheets a shot", async () => {
+    const r = await run("checked");
+    expect(r.status, r.out).toBe(0);
+    const note = (name: string) => `cannot read ${cdn.url}/x/${name}.css: its viewport units stay live`;
+    expect(noted(r.out)).toEqual([
+      `snapseq: 01.png taken with ${["nested", "comment", "escape", "login", "big"].map(note).join(", ")}  ${app.url}/checked`,
+      `snapseq: 02.png taken with ${note("font")}  ${app.url}/many`, // the URL without its query: the two notes are one
+    ]);
   });
 });
 

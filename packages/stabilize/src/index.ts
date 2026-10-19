@@ -150,7 +150,7 @@ const freezeUnits = async () => {
     bases: Record<string, number>;
     warned: Set<string>;
     unreadable: Set<string>;
-    checked: Map<string, boolean>;
+    checked: Map<string, boolean>; // href: true keeps the note, false is quiet
     observer?: MutationObserver;
   };
   const host = window as unknown as { __snapseqViewportUnits?: State };
@@ -307,16 +307,40 @@ const freezeUnits = async () => {
   }
   run();
 
-  // An unreadable sheet no refetch can open (a cross-origin @import loads without CORS) is fetched as text once per
-  // document, 3 s at most, and noted only when that fails or the text has a viewport unit. An @import in it is not followed.
+  // An unreadable sheet no refetch can open (a cross-origin @import loads without CORS) is fetched as text, once per
+  // document, at most 10 per call, 512 K characters each and 3 s in all. Best effort: this anonymous fetch may not get
+  // what the page applied. It is quiet (false) only for a text/css answer that, with comments and strings taken out,
+  // has no viewport unit outside url(), no escape and no @import (whose sheet would stay unseen). Anything else, or
+  // not checked yet (over the 10, or found while these were out), keeps the note.
+  const deadline = AbortSignal.timeout(3000);
+  const todo = Array.from(state.unreadable).filter((href) => !state.checked.has(href)).slice(0, 10);
   await Promise.all(
-    Array.from(state.unreadable, async (href) => {
-      if (state.checked.has(href)) return;
-      const text = await fetch(href, { signal: AbortSignal.timeout(3000) }).then((r) => (r.ok ? r.text() : undefined)).catch(() => undefined);
-      state.checked.set(href, text === undefined || convert(text) !== text);
+    todo.map(async (href) => {
+      let quiet = false;
+      try {
+        const response = await fetch(href, { signal: deadline });
+        if (response.ok && response.body && response.headers.get("content-type")?.toLowerCase().startsWith("text/css")) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let text = "";
+          for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+            text += decoder.decode(chunk.value, { stream: true });
+            if (text.length > 512 * 1024) {
+              await reader.cancel();
+              throw new Error("too long");
+            }
+          }
+          // An unquoted url() goes too, so a /* inside it is not taken for a comment; one with a backslash stays.
+          const bare = (text + decoder.decode()).replace(/\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)/gi, " ");
+          quiet = !bare.includes("\\") && !/@import/i.test(bare) && convert(bare) === bare;
+        }
+      } catch {
+        // no answer in time, too long, refused by CORS or the page's CSP: unknown
+      }
+      state.checked.set(href, !quiet);
     }),
   );
-  return { unreadable: Array.from(state.unreadable).filter((href) => state.checked.get(href)) };
+  return { unreadable: Array.from(state.unreadable).filter((href) => state.checked.get(href) !== false) };
 };
 
 // What goes into the manifest and the terminal: no credentials, query string or fragment (a signed CDN URL), at most 80 characters.
