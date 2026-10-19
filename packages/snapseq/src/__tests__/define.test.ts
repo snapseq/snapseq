@@ -89,6 +89,8 @@ describe("defineConfig", () => {
     vi.stubEnv("SNAPSEQ_RUN", "review 1");
     expect(() => defineConfig({ envs })).not.toThrow();
     expect(() => defineConfig({ envs, devices: { "../d": {} } })).toThrow("a device name must be a directory name");
+    // "" would make the device's directory the capture's own, wiped whole.
+    expect(() => defineConfig({ envs, devices: { "": {} } })).toThrow('a device name must be a directory name, not a path: ""');
     expect(() => defineConfig({ envs, devices: { "300x250": { viewport: { width: 300, height: 250 } } } })).not.toThrow();
   });
 
@@ -117,6 +119,71 @@ describe("defineConfig", () => {
       (c.metadata as { snapseq: { format: unknown } }).snapseq.format;
     expect(format(defineConfig({ envs }))).toEqual({});
     expect(format(defineConfig({ envs, format: { type: "jpeg", quality: 60 } }))).toEqual({ type: "jpeg", quality: 60 });
+  });
+
+  it("lets Playwright's readiness check accept a self-signed dev server", () => {
+    const c = defineConfig({ envs: { dev: { host: "https://localhost:3000", webServer: "pnpm dev" } } });
+    expect([c.webServer].flat()[0]).toMatchObject({ url: "https://localhost:3000", ignoreHTTPSErrors: true });
+  });
+
+  it("records for 1 and true, replays for 0, false, empty and unset, and refuses any other value", () => {
+    const record = () => (defineConfig({ envs }).metadata as { snapseq: { record: boolean } }).snapseq.record;
+    for (const [value, expected] of [["1", true], ["true", true], ["0", false], ["false", false], ["", false], [undefined, false]] as const) {
+      vi.stubEnv("SNAPSEQ_RECORD", value);
+      expect(record(), String(value)).toBe(expected);
+    }
+    for (const bad of ["yes", "TRUE", "2", " 1"]) {
+      vi.stubEnv("SNAPSEQ_RECORD", bad);
+      expect(() => defineConfig({ envs })).toThrow(`snapseq: SNAPSEQ_RECORD must be 1 or 0, got "${bad}"`);
+    }
+  });
+
+  it("takes an http(s) URL as the host, from the env or an override; an empty override means the env's", () => {
+    for (const bad of ["localhost:3000", "http://", "ftp://x"]) {
+      vi.stubEnv("SNAPSEQ_HOST", "");
+      expect(() => defineConfig({ envs: { dev: { host: bad } } }), bad).toThrow(`snapseq: host must be an http(s) URL, got "${bad}"`);
+      vi.stubEnv("SNAPSEQ_HOST", bad);
+      expect(() => defineConfig({ envs }), bad).toThrow(`snapseq: host must be an http(s) URL, got "${bad}"`);
+    }
+    vi.stubEnv("SNAPSEQ_HOST", "HTTP://X");
+    expect(use(defineConfig({ envs })).baseURL).toBe("HTTP://X");
+    vi.stubEnv("SNAPSEQ_HOST", "");
+    expect(use(defineConfig({ envs })).baseURL).toBe("http://localhost:3000");
+  });
+
+  it("keeps metadata.snapseq when an override brings its own metadata", () => {
+    const meta = defineConfig({ envs }, { metadata: { client: "acme" } }).metadata as Record<string, unknown>;
+    expect(meta.client).toBe("acme");
+    expect(meta.snapseq).toMatchObject({ env: "dev", host: "http://localhost:3000" });
+    const clash = defineConfig({ envs }, { metadata: { snapseq: "mine" } }).metadata as Record<string, unknown>;
+    expect(clash.snapseq).toMatchObject({ env: "dev" });
+  });
+
+  describe("reporter", () => {
+    const argv = process.argv;
+    const tty = process.stdout.isTTY;
+    beforeEach(() => {
+      process.stdout.isTTY = true;
+      vi.stubEnv("TERM", "xterm-256color");
+      vi.stubEnv("CI", "");
+      vi.stubEnv("PWDEBUG", "");
+    });
+    afterEach(() => {
+      process.argv = argv;
+      process.stdout.isTTY = tty;
+    });
+    const name = (...flags: string[]) => {
+      process.argv = [...argv.slice(0, 2), ...flags];
+      return (defineConfig({ envs }).reporter as [string, unknown][])[0]![0];
+    };
+
+    it("draws the terminal view when interactive, and the list reporter for runs that are not", () => {
+      expect(name()).toMatch(/reporter\.js$/);
+      expect(name("--headed")).toMatch(/reporter\.js$/);
+      for (const flags of [["--list"], ["--debug"], ["--debug=cli"], ["--ui"], ["--ui-host", "0.0.0.0"], ["--ui-host=0.0.0.0"], ["--ui-port", "8080"], ["--ui-port=8080"]]) {
+        expect(name(...flags), flags.join(" ")).toBe("list");
+      }
+    });
   });
 
   it("puts the plugins, functions intact, in use.snapseq, where an env's own use cannot replace them", () => {

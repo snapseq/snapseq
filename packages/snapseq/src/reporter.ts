@@ -81,12 +81,25 @@ const COLOR: Partial<Record<State, number>> = {
   timedOut: 31,
   interrupted: 31,
 };
+// Fewest rows a frame fits: header, blank, one capture, blank, footer, the prompt, and a line to spare.
+const MIN_ROWS = 7;
 const DIM: ReadonlySet<State> = new Set<State>(["queued", "not run", "skipped"]);
 // Frame rows must be exactly one terminal line each: dynamic text carries no
 // ANSI and no wide glyphs; marks and colors are added after the clip.
+// Latin letters with diacritics (U+00A0 to U+024F) and the ellipsis are one column wide and pass; the rest is "?".
 const ascii = (s: string): string =>
-  s.replace(/\x1b\[[0-9;]*m/g, "").replace(/[^\x20-\x7e]/g, "?");
+  s
+    .replace(/\x1b\[[0-9;]*m/g, "")
+    .normalize("NFC")
+    .replace(/[^\x20-\x7e\u00a0-\u024f\u2026]/g, "?");
+// The end of a label or a path tells it apart: a text too long for its columns loses its left.
+const left = (s: string, n: number): string =>
+  s.length <= n ? s : `\u2026${s.slice(s.length - Math.max(n - 1, 0))}`;
 const errorText = (e: TestError): string => e.message ?? e.value ?? "unknown error";
+// Error text carries what a page or a capture put in a message: keep the lines and the colors, drop what moves the
+// cursor, retitles the terminal or reorders the text (other control and format characters). A tab is a space.
+const printable = (s: string): string =>
+  s.replace(/\x1b\[[0-9;]*m|[\p{Cc}\p{Cf}]/gu, (m) => (m === "\t" ? " " : m === "\n" || m.length > 1 ? m : ""));
 const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
 const clock = (ms: number): string => {
   const s = Math.floor(ms / 1000);
@@ -127,13 +140,13 @@ function labelOf(test: TestCase): string {
   const base = file.replace(/\.capture\.[cm]?[jt]s$/, "");
   const titles = test.titlePath().slice(3); // root, project, file
   const path = titles.length === 1 && titles[0] === "capture" ? base : [base, ...titles].join("/");
-  return `${path} / ${project?.name ?? ""}`;
+  return `${path} / ${project?.name ?? ""}`.normalize("NFC"); // macOS hands file names over decomposed
 }
 
 export default class SnapseqReporter implements Reporter {
   private out: OutStream;
   private open: (dir: string) => void;
-  /** In-place frame; false means one line per event (CI, odd terminals, after a resize). */
+  /** In-place frame; false means one line per event (CI, odd terminals, under MIN_ROWS rows, after a resize). */
   private live: boolean;
   private rows = new Map<string, Row>();
   private meta: SnapseqMetadata | undefined;
@@ -153,8 +166,9 @@ export default class SnapseqReporter implements Reporter {
   private server: { host: string; command: string } | undefined;
   private begun = false;
   private waiting = false;
-  /** A frame was drawn at some point: someone is watching. */
+  /** A frame was drawn at some point: someone is watching. A terminal too short for a frame counts too. */
   private drawn = false;
+  private readonly terminal: boolean;
 
   constructor(
     options: {
@@ -166,7 +180,8 @@ export default class SnapseqReporter implements Reporter {
     this.out = options.stream ?? process.stdout;
     this.open = options.open ?? openInFileManager;
     this.server = options.server;
-    this.live = !!this.out.isTTY && this.out.rows !== undefined && this.out.columns !== undefined;
+    this.terminal = !!this.out.isTTY && this.out.columns !== undefined;
+    this.live = this.terminal && (this.out.rows ?? 0) >= MIN_ROWS;
     this.fancy =
       !!this.out.isTTY &&
       process.env.TERM !== "linux" &&
@@ -179,6 +194,7 @@ export default class SnapseqReporter implements Reporter {
       if (!this.live) return;
       this.live = false;
       this.frameLines = 0;
+      if (this.waiting) this.out.write("\r\x1b[2K"); // the header must not land on the waiting line
       this.waiting = false;
       this.flush();
     });
@@ -218,7 +234,8 @@ export default class SnapseqReporter implements Reporter {
   // A shot is starting, or the teardown is shooting the page a capture died on: say where.
   onStepBegin(test: TestCase, _result: TestResult, step: TestStep): void {
     const url = step.category === "test.step" ? AT.exec(step.title)?.[1] : undefined;
-    if (!url) return;
+    // about:blank and chrome-error:// are not pages: the last real one stays.
+    if (!url || !/^https?:\/\//i.test(url)) return;
     try {
       const u = new URL(url);
       this.row(test).at = u.pathname + u.search;
@@ -255,8 +272,8 @@ export default class SnapseqReporter implements Reporter {
 
   // A frame hides errors until the summary; event mode prints them as they come.
   onError(error: TestError): void {
-    if (this.live) this.globalErrors.push(errorText(error));
-    else this.out.write(`${errorText(error)}\n`);
+    if (this.live) this.globalErrors.push(printable(errorText(error)));
+    else this.out.write(`${printable(errorText(error))}\n`);
   }
 
   onStdOut(chunk: string | Buffer): void {
@@ -267,7 +284,7 @@ export default class SnapseqReporter implements Reporter {
     this.forward(chunk);
   }
 
-  onEnd(_result: FullResult): void {
+  onEnd(result: FullResult): void {
     if (this.timer) clearInterval(this.timer);
     for (const row of this.rows.values()) if (row.state === "queued") row.state = "not run";
     const hadFrame = this.live;
@@ -275,17 +292,28 @@ export default class SnapseqReporter implements Reporter {
     this.live = false;
 
     const lines: string[] = [""];
-    // The frame is gone; print every row once. Event mode already printed them.
+    // The frame is gone; print every row that ran once. Event mode already printed them.
+    // Rows that never ran are the footer's count: after a stop at the first
+    // failure they would bury the failure under pages of "not run".
     if (hadFrame) {
-      const rows = [...this.rows.values()];
+      const rows = [...this.rows.values()].filter((r) => r.state !== "not run");
       const width = Math.max(...rows.map((r) => r.label.length), 1);
       for (const row of rows) lines.push(this.line(row, width), ...this.errorLines(row));
     }
     if (this.globalErrors.length > 0) lines.push("", ...this.globalErrors);
     lines.push("", this.footer(), "");
     this.out.write(`${lines.join("\n")}\n`);
-    // Someone is watching: show them the shots. Pipes and CI never get a window.
-    if (this.drawn && this.runDirAbsolute && existsSync(this.runDirAbsolute)) {
+    // Someone is watching: show them the shots. Pipes and CI never get a window, SNAPSEQ_OPEN=0 (or false) keeps it
+    // closed, and Ctrl-C leaves a directory nobody wants to look at.
+    // CI is checked here too, not only where the reporter is chosen: a config or --reporter can name this one anywhere.
+    if (
+      (this.drawn || this.terminal) &&
+      result.status !== "interrupted" &&
+      !/^(0|false)$/i.test(process.env.SNAPSEQ_OPEN ?? "") &&
+      !process.env.CI &&
+      this.runDirAbsolute &&
+      existsSync(this.runDirAbsolute)
+    ) {
       this.open(this.runDirAbsolute);
     }
   }
@@ -325,7 +353,7 @@ export default class SnapseqReporter implements Reporter {
 
   private errorLines(row: Row): string[] {
     if (!row.error) return [];
-    return row.error.trimEnd().split("\n").map((l) => `         ${l}`);
+    return printable(row.error).trimEnd().split("\n").map((l) => `         ${l}`);
   }
 
   private forward(chunk: string | Buffer): void {
@@ -380,22 +408,23 @@ export default class SnapseqReporter implements Reporter {
     return this.compose(row, this.text(row, width));
   }
 
-  private text(row: Row, width: number): string {
+  private text(row: Row, width: number, room = Infinity): string {
     let detail: string;
+    const where = (): string => `  ${left(ascii(row.at ?? ""), room - width - detail.length - 4)}`;
     if (row.state === "running") {
       detail = plural(row.shots);
       // A slow page shows before it finishes. Events print once, so no clock there.
       if (this.live && row.started !== undefined) detail += `  ${clock(Date.now() - row.started)}`;
-      if (row.at) detail += `  ${ascii(row.at)}`;
+      if (row.at) detail += where();
     } else if (row.state === "queued" || row.state === "not run" || row.state === "skipped") {
       detail = row.note ? `${row.state}  ${ascii(row.note)}` : row.state;
     } else {
       detail = `${plural(row.shots)}  ${seconds(row.duration)}`;
       // Where it died, then why.
-      if (row.error && row.at) detail += `  ${ascii(row.at)}`;
+      if (row.error && row.at) detail += where();
       if (row.error) detail += `  ${ascii(row.error.split("\n")[0] ?? "")}`;
     }
-    return `${row.label.padEnd(width)}  ${detail}`;
+    return `${left(row.label, width).padEnd(width)}  ${detail}`;
   }
 
   private render(): void {
@@ -415,32 +444,35 @@ export default class SnapseqReporter implements Reporter {
     }
     const maxRows = Math.max(1, (this.out.rows ?? 24) - 6); // header, blank, blank, footer, prompt
     // A todo list: rows stay in the order the run takes them and change in
-    // place. When it does not fit it scrolls, so the first unfinished row stays
-    // in view under the last finished one, with a line each for what is hidden
-    // above and below.
+    // place. When it does not fit it scrolls: the row to run is always in view,
+    // the last finished row above it and queued rows below as far as there is
+    // room, and a line each for what is hidden gives way before any row does.
     const rows = [...this.rows.values()];
     let start = 0;
     let end = rows.length;
     if (rows.length > maxRows) {
-      const next = rows.findIndex((r) => r.state === "running" || r.state === "queued");
-      start = Math.max(0, next - 1);
-      end = start + maxRows - 1 - (start > 0 ? 1 : 0);
-      if (end >= rows.length) {
-        end = rows.length;
-        start = Math.max(0, end - (maxRows - 1));
+      const i = rows.findIndex((r) => r.state === "running" || r.state === "queued");
+      const next = i < 0 ? rows.length - 1 : i; // everything finished: stay at the end, not back at the top
+      for (let k = maxRows; k >= 1; k--) {
+        start = Math.min(Math.max(0, next - (k > 1 ? 1 : 0)), rows.length - k);
+        end = start + k;
+        if (k + (start > 0 ? 1 : 0) + (end < rows.length ? 1 : 0) <= maxRows) break;
       }
-      end = Math.max(end, start);
     }
+    const spare = maxRows - (end - start);
+    const more = end < rows.length && spare > 0;
+    const above = start > 0 && spare - (more ? 1 : 0) > 0;
     const shown = rows.slice(start, end);
-    const width = Math.min(Math.max(...shown.map((r) => r.label.length), 1), 40);
     const plain = (l: string): string => ascii(l).slice(0, columns);
     const room = Math.max(0, columns - (this.fancy ? 4 : 7)); // indent, mark, space
+    // A label keeps to 40 columns, fewer when the row needs the rest for its count, clock and the end of its path.
+    const width = Math.min(Math.max(...shown.map((r) => r.label.length), 1), 40, Math.max(room - 25, 8));
     const lines = [
       plain(`${this.header()}  ${clock(Date.now() - this.start)}`),
       "",
-      ...(start > 0 ? [plain(`  +${start} above`)] : []),
-      ...shown.map((r) => this.compose(r, ascii(this.text(r, width)).slice(0, room))),
-      ...(end < rows.length ? [plain(`  +${rows.length - end} more`)] : []),
+      ...(above ? [plain(`  +${start} above`)] : []),
+      ...shown.map((r) => this.compose(r, ascii(this.text(r, width, room)).slice(0, room))),
+      ...(more ? [plain(`  +${rows.length - end} more`)] : []),
       "",
       plain(this.footer()),
     ];

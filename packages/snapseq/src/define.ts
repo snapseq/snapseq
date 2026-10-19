@@ -16,12 +16,12 @@ export interface EnvConfig {
    * Command that serves `host`, e.g. `"pnpm dev --port 3002"`. Started before the
    * run (Playwright `webServer`) unless something already passes Playwright's
    * readiness check at `host`, and stopped afterwards if it was started here.
-   * Ignored when the host is overridden (`--host`, `SNAPSEQ_HOST`).
+   * Ignored when the resolved host differs from `host` (`--host`, `SNAPSEQ_HOST`).
    */
   webServer?: string;
   /**
    * Playwright `use` options for this env, merged over snapseq's defaults:
-   * a token in `extraHTTPHeaders`, a login in `storageState`, a `locale`.
+   * a login in `storageState`, a `locale`, `httpCredentials` for the host's origin.
    * Whatever Playwright takes, in its own words; nothing here is auth-specific.
    */
   use?: DeviceConfig;
@@ -30,7 +30,9 @@ export interface EnvConfig {
    * (Playwright's `page.route` pattern) to a file path relative to the config
    * file, e.g. `{ "**\/api/search": "captures/replay/search.json" }`.
    * `--record` fetches each one live and writes its file; every other run
-   * fulfills from the file, as JSON, before the capture starts.
+   * fulfills from the file, as JSON, before the capture starts. A glob without a
+   * host also matches third-party requests; `--record` stops the capture on the
+   * second, different request for the same file.
    */
   replay?: Record<string, string>;
 }
@@ -80,7 +82,7 @@ export interface SnapseqMetadata {
 
 /** One directory name, since the directory it names is wiped: no separators, not `.` or `..`. */
 function assertName(what: string, name: string): void {
-  if (name === "." || name === ".." || /[\\/]/.test(name)) {
+  if (name === "" || name === "." || name === ".." || /[\\/]/.test(name)) {
     throw new Error(`snapseq: ${what} must be a directory name, not a path: "${name}"`);
   }
 }
@@ -111,8 +113,10 @@ function defaultReporter(
     process.env.TERM !== "dumb" &&
     !process.env.CI &&
     !process.env.PWDEBUG &&
-    !argv.includes("--list") &&
-    !argv.some((a) => a === "--debug" || a.startsWith("--debug="));
+    // --ui hands the run to Playwright's own window.
+    !["--list", "--debug", "--ui", "--ui-host", "--ui-port"].some((flag) =>
+      argv.some((a) => a === flag || a.startsWith(`${flag}=`)),
+    );
   // The terminal view names the server it may be waiting for.
   return interactive ? [[REPORTER_PATH, { server }]] : [["list", { printSteps: true }]];
 }
@@ -122,7 +126,8 @@ function defaultReporter(
  * overrides, merged the way Playwright's own `defineConfig` merges them.
  * Env vars: `SNAPSEQ_ENV` picks the env, `SNAPSEQ_HOST` overrides its host,
  * `SNAPSEQ_RUN` names the run directory (default: the time the run started),
- * `SNAPSEQ_RECORD` records the env's `replay` responses.
+ * `SNAPSEQ_RECORD` records the env's `replay` responses, `SNAPSEQ_OPEN=0` keeps
+ * the run directory from opening in a file manager at the end of an interactive run.
  */
 export function defineConfig(
   config: SnapseqConfig,
@@ -140,6 +145,15 @@ export function defineConfig(
   }
 
   const host = process.env.SNAPSEQ_HOST || env.host;
+  // A bare "localhost:3000" parses, as the scheme "localhost:"; a baseURL like that
+  // fails on the first goto, far from the config.
+  let url: URL | undefined;
+  try {
+    url = new URL(host);
+  } catch {}
+  if (!url || !/^https?:$/.test(url.protocol) || !url.hostname) {
+    throw new Error(`snapseq: host must be an http(s) URL, got "${host}"`);
+  }
   const screenshotsDir = config.screenshotsDir ?? ".screenshots";
   // Stamped once per run: this file is evaluated again in every worker process,
   // but workers inherit the env of the main process, which set it first.
@@ -151,6 +165,11 @@ export function defineConfig(
   }
   const devices = config.devices ?? DEFAULT_DEVICES;
   for (const name of Object.keys(devices)) assertName("a device name", name);
+  // Not "any non-empty value": SNAPSEQ_RECORD=0 or =false reading as on would write files over a replay.
+  const recordValue = process.env.SNAPSEQ_RECORD ?? "";
+  if (!["", "0", "false", "1", "true"].includes(recordValue)) {
+    throw new Error(`snapseq: SNAPSEQ_RECORD must be 1 or 0, got "${recordValue}"`);
+  }
   const metadata: SnapseqMetadata = {
     env: envName,
     host,
@@ -158,7 +177,7 @@ export function defineConfig(
     run,
     numbering,
     format: config.format ?? {},
-    record: !!process.env.SNAPSEQ_RECORD,
+    record: recordValue === "1" || recordValue === "true",
     ...(env.replay ? { replay: env.replay } : {}),
   };
   // An overridden host points at a server the user runs; the configured command
@@ -168,7 +187,7 @@ export function defineConfig(
 
   // In `use`, not `metadata`: a use value reaches the workers live, functions
   // intact; metadata arrives as a JSON copy.
-  return definePlaywrightConfig<{ snapseq: { plugins: Plugin[] } }>(
+  const result = definePlaywrightConfig<{ snapseq: { plugins: Plugin[] } }>(
     {
     testDir: config.capturesDir ?? "captures",
     testMatch: /\.capture\.[cm]?[jt]s$/,
@@ -181,12 +200,13 @@ export function defineConfig(
     retries: 0,
     maxFailures: 1,
     reporter: defaultReporter(server),
-    metadata: { snapseq: metadata },
     ...(server
       ? {
           webServer: {
             command: server.command,
             url: host,
+            // The browser contexts ignore certificate errors; the readiness check must too.
+            ignoreHTTPSErrors: true,
             reuseExistingServer: true,
             timeout: 120_000,
           },
@@ -203,7 +223,7 @@ export function defineConfig(
       // Without an origin Playwright answers any Basic challenge with these,
       // a third-party image's included.
       ...(env.httpCredentials
-        ? { httpCredentials: { origin: new URL(host).origin, ...env.httpCredentials } }
+        ? { httpCredentials: { origin: url.origin, ...env.httpCredentials } }
         : {}),
       ...env.use,
       // After the env's own options, so an env cannot replace it.
@@ -216,4 +236,8 @@ export function defineConfig(
     },
     ...overrides,
   );
+  // After the merge: an override's own `metadata` replaces the whole object, and
+  // the fixtures and the reporter read snapseq's from it.
+  result.metadata = { ...result.metadata, snapseq: metadata };
+  return result;
 }

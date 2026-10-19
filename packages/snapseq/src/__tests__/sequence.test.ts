@@ -6,32 +6,62 @@ import type { CaptureContext } from "../fixtures.js";
 import type { Plugin } from "../plugin.js";
 import { createSequence, type SnapOptions } from "../sequence.js";
 
-function makePageStub(documentHeight = 900) {
+// The page's window as the scroll save and restore see it: they run for real against it. A new one is a reload.
+function makeWindow(timeOrigin: number, events: string[]) {
+  return {
+    performance: { timeOrigin },
+    scrollX: 0,
+    scrollY: 1500,
+    scrollTo: vi.fn((to: { top: number }) => void events.push(`scrollTo ${to.top}`)),
+  };
+}
+
+function makePageStub(documentHeight = 900, container = "", ratio: unknown = 2) {
   const calls: Array<{ path: string; fullPage: boolean }> = [];
   const viewports: Array<{ width: number; height: number }> = [];
+  // What the page was asked, in order.
+  const events: string[] = [];
   let viewport = { width: 400, height: 300 };
+  vi.stubGlobal("window", makeWindow(1, events));
   const page = {
     screenshot: vi.fn(async (opts: { path: string; fullPage?: boolean }) => {
       writeFileSync(opts.path, "png-stub");
       calls.push({ path: opts.path, fullPage: !!opts.fullPage });
+      events.push("screenshot");
     }),
-    viewportSize: () => viewport,
+    viewportSize: () => (events.push("viewportSize"), viewport),
     url: () => "http://x/p",
+    waitForLoadState: vi.fn(async (state: string) => void events.push(`waitForLoadState ${state}`)),
     setViewportSize: vi.fn(async (size: { width: number; height: number }) => {
       viewport = size;
       viewports.push(size);
+      events.push(`setViewportSize ${size.height}`);
     }),
-    // Serves the height measurement, the quiet, font and image waits, by what each asks.
-    evaluate: vi.fn(async (fn: unknown) => {
+    // Serves each evaluate by what it asks, and records which it was.
+    evaluate: vi.fn(async (fn: unknown, arg?: unknown) => {
       const src = String(fn);
-      if (src.includes("scrollHeight")) return documentHeight;
-      if (src.includes("document.images")) return 0; // none pending
-      if (src.includes("devicePixelRatio")) return 2;
+      const kind = src.includes("timeOrigin")
+        ? "scroll"
+        : src.includes("querySelectorAll")
+          ? "container"
+          : src.includes("documentElement.scrollHeight")
+            ? "height"
+            : src.includes("document.images")
+              ? "images"
+              : src.includes("devicePixelRatio")
+                ? "ratio"
+                : "wait";
+      events.push(kind);
+      if (kind === "scroll") return (fn as (a: unknown) => unknown)(arg); // against the stubbed window
+      if (kind === "container") return container;
+      if (kind === "height") return documentHeight;
+      if (kind === "images") return { pending: 0, first: "", failed: 0, firstFailed: "" };
+      if (kind === "ratio") return ratio;
       return true; // quiet in time, fonts in
     }),
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return { page: page as any, calls, viewports };
+  return { page: page as any, calls, viewports, events };
 }
 
 describe("createSequence", () => {
@@ -42,6 +72,7 @@ describe("createSequence", () => {
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("numbers screenshots 01, 02, … as PNGs", async () => {
@@ -139,17 +170,42 @@ describe("createSequence", () => {
     page.evaluate.mockImplementation(async (fn: unknown) => {
       const src = String(fn);
       if (src.includes("scrollHeight")) return 900;
-      if (src.includes("document.images")) return 2; // two still pending at the cap
-      return !src.includes("MutationObserver"); // the DOM never went quiet
+      // Two still pending at the cap, one failed with no URL to name.
+      if (src.includes("document.images")) return { pending: 2, first: "http://x/a.png", failed: 1, firstFailed: "" };
+      return !src.includes("MutationObserver") && !src.includes("document.fonts"); // the DOM never went quiet, the fonts never settled
     });
     await seq.snap();
+    // Two spaces separate the fields of the file's line; the terminal line reads as a sentence.
     expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe(
-      "01.png  http://x/p\n02.png  http://x/p  DOM still changing after 3 s, 2 images still loading after 5 s\n",
+      "01.png  http://x/p\n02.png  http://x/p  DOM still changing after 3 s, font readiness still pending after 5 s, 2 images still loading after 5 s (first: http://x/a.png), 1 image failed to load\n",
     );
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toBe(
-      "snapseq: 02.png taken with  DOM still changing after 3 s, 2 images still loading after 5 s  http://x/p",
+      "snapseq: 02.png taken with DOM still changing after 3 s, font readiness still pending after 5 s, 2 images still loading after 5 s (first: http://x/a.png), 1 image failed to load  http://x/p",
     );
+  });
+
+  it("rethrows a failed screenshot with the readiness notes, or ok, and keeps the original as its cause", async () => {
+    const { page } = makePageStub();
+    const seq = createSequence(page, root, "cap");
+    const original = new Error("page.screenshot: Timeout 3000ms exceeded.");
+    page.screenshot.mockRejectedValueOnce(original);
+    const ready = await seq.snap().catch((e: Error) => e);
+    expect(ready).toBeInstanceOf(Error);
+    expect((ready as Error).message).toBe("page.screenshot: Timeout 3000ms exceeded.; readiness: ok");
+    expect((ready as Error).cause).toBe(original);
+
+    page.evaluate.mockImplementation(async (fn: unknown) => {
+      const src = String(fn);
+      if (src.includes("scrollHeight")) return 900;
+      if (src.includes("document.images")) return { pending: 1, first: "http://x/a.png", failed: 0, firstFailed: "" };
+      return !src.includes("MutationObserver");
+    });
+    page.screenshot.mockRejectedValueOnce(original);
+    await expect(seq.snap()).rejects.toThrow(
+      "page.screenshot: Timeout 3000ms exceeded.; readiness: DOM still changing after 3 s, 1 image still loading after 5 s (first: http://x/a.png)",
+    );
+    expect(existsSync(join(seq.dir, "shots.txt"))).toBe(false); // neither was listed
   });
 
   it("snapPage refuses a page whose height follows the viewport, and restores the viewport", async () => {
@@ -157,14 +213,78 @@ describe("createSequence", () => {
     // Every measurement comes back taller than the viewport just set.
     page.evaluate.mockImplementation(async (fn: unknown) => {
       const src = String(fn);
-      if (src.includes("scrollHeight")) return page.viewportSize().height + 500;
-      if (src.includes("document.images")) return 0;
+      if (src.includes("documentElement.scrollHeight")) return page.viewportSize().height + 500;
+      if (src.includes("document.images")) return { pending: 0, first: "", failed: 0, firstFailed: "" };
+      if (src.includes("querySelectorAll")) return ""; // no scroller to note instead
       return true;
     });
     const seq = createSequence(page, root, "cap");
     await expect(seq.snapPage()).rejects.toThrow("snap({ fullPage: true })");
     expect(page.screenshot).not.toHaveBeenCalled();
     expect(viewports.at(-1)).toEqual({ width: 400, height: 300 });
+  });
+
+  it("snapPage names what the hooks noted when it refuses, as the refused shot is never listed", async () => {
+    const { page } = makePageStub();
+    page.evaluate.mockImplementation(async (fn: unknown) => {
+      const src = String(fn);
+      if (src.includes("documentElement.scrollHeight")) return page.viewportSize().height + 500;
+      if (src.includes("document.images")) return { pending: 0, first: "", failed: 0, firstFailed: "" };
+      if (src.includes("querySelectorAll")) return ""; // no scroller to note instead
+      return true;
+    });
+    const plugins: Plugin[] = [
+      { name: "s", beforeSnap: async (shot) => void shot.notes.push("cannot read x.css: its viewport units stay live") },
+    ];
+    const seq = createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as CaptureContext });
+    await expect(seq.snapPage()).rejects.toThrow(
+      "Use snap({ fullPage: true }) for this page. Notes: cannot read x.css: its viewport units stay live",
+    );
+  });
+
+  it("snapPage puts back the viewport, then the scroll position, and only into the document it read it from", async () => {
+    const { page, events } = makePageStub();
+    const seq = createSequence(page, root, "cap");
+    await seq.snapPage();
+    expect(events.slice(-3)).toEqual(["setViewportSize 300", "scroll", "scrollTo 1500"]);
+    // A reload during the shot: a new document with its own timeOrigin, so nothing is scrolled.
+    const reloaded = makeWindow(2, events);
+    page.screenshot.mockImplementationOnce(async (opts: { path: string }) => {
+      writeFileSync(opts.path, "png-stub");
+      vi.stubGlobal("window", reloaded);
+    });
+    await seq.snapPage();
+    expect(events.slice(-2)).toEqual(["setViewportSize 300", "scroll"]);
+    expect(reloaded.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("snapPage never lets a failed restore hide the shot's own error, and fails on one after a shot that passed", async () => {
+    const { page } = makePageStub();
+    const seq = createSequence(page, root, "cap");
+    page.setViewportSize.mockImplementation(async (size: { height: number }) => {
+      if (size.height === 300) throw new Error("restore failed");
+    });
+    page.screenshot.mockRejectedValueOnce(new Error("boom"));
+    await expect(seq.snapPage()).rejects.toThrow("boom");
+    await expect(seq.snapPage()).rejects.toThrow("restore failed");
+  });
+
+  it("snapPage looks for an inner scroller on a page of about one screen, before growing, and then does not grow", async () => {
+    const tall = makePageStub();
+    await createSequence(tall.page, root, "tall").snapPage();
+    expect(tall.events).not.toContain("container");
+    // One screen and a body margin, no scroller: looked for, then grown as usual.
+    const plain = makePageStub(316);
+    await createSequence(plain.page, root, "plain").snapPage();
+    expect(plain.events.indexOf("container")).toBeLessThan(plain.events.indexOf("setViewportSize 316"));
+    const { page, events, viewports } = makePageStub(316, "main.content");
+    const seq = createSequence(page, root, "cap");
+    await seq.snapPage();
+    expect(events).toContain("container");
+    expect(viewports).toEqual([{ width: 400, height: 300 }]); // the restore only
+    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe(
+      "01.png  http://x/p  the page scrolls inside <main.content> not the document: scrollable content may be omitted\n",
+    );
   });
 
   describe("plugins", () => {
@@ -191,23 +311,24 @@ describe("createSequence", () => {
       expect(seq.shots[0]?.options).toEqual({ label: "Hero", mask: ["x"], path: "evil", type: "jpeg" });
     });
 
-    it("runs beforeSnap hooks first: before the readiness waits, and before snapPage reads and grows the viewport", async () => {
-      const { page } = makePageStub();
-      const events: string[] = [];
-      const evaluate = page.evaluate.getMockImplementation();
-      page.evaluate.mockImplementation(async (fn: unknown) => (events.push("evaluate"), evaluate(fn)));
-      const viewportSize = page.viewportSize;
-      page.viewportSize = () => (events.push("viewportSize"), viewportSize());
-      const setViewportSize = page.setViewportSize.getMockImplementation();
-      page.setViewportSize.mockImplementation(async (size: unknown) => (events.push("setViewportSize"), setViewportSize(size)));
+    it("waits for the document, then runs beforeSnap hooks: before the readiness waits, and before snapPage reads and grows the viewport", async () => {
+      const { page, events } = makePageStub();
       const plugins: Plugin[] = [{ name: "a", beforeSnap: async (shot) => void events.push(`beforeSnap written=${existsSync(shot.path)}`) }];
       const seq = createSequence(page, root, "cap", { plugins, ctx });
       await seq.snapPage();
-      // The first evaluate is the device scale factor, read once per sequence.
-      expect(events.slice(0, 5)).toEqual(["evaluate", "beforeSnap written=false", "viewportSize", "evaluate", "setViewportSize"]);
+      // The scale factor is read once per sequence; then the scroll position and the height.
+      expect(events.slice(0, 7)).toEqual([
+        "waitForLoadState domcontentloaded",
+        "ratio",
+        "beforeSnap written=false",
+        "viewportSize",
+        "scroll",
+        "height",
+        "setViewportSize 900",
+      ]);
       events.length = 0;
       await seq.snap();
-      expect(events.slice(0, 2)).toEqual(["beforeSnap written=false", "evaluate"]);
+      expect(events.slice(0, 3)).toEqual(["waitForLoadState domcontentloaded", "beforeSnap written=false", "wait"]);
     });
 
     it("keeps a fullPage that a beforeSnap hook set off a snapPage screenshot; snap passes it on", async () => {
@@ -250,7 +371,7 @@ describe("createSequence", () => {
       page.evaluate.mockImplementation(async (fn: unknown) => {
         const src = String(fn);
         if (src.includes("scrollHeight")) return 900;
-        if (src.includes("document.images")) return 0;
+        if (src.includes("document.images")) return { pending: 0, first: "", failed: 0, firstFailed: "" };
         return !src.includes("MutationObserver"); // the DOM never went quiet
       });
       const seen: string[][] = [];
@@ -342,6 +463,77 @@ describe("createSequence", () => {
     });
   });
 
+  it("listens once per pending image however many passes the image wait takes, wakes on each settle, and stops listening when it ends", async () => {
+    // Images whose listeners are counted: the wait runs for real against them.
+    const image = (name: string) => ({
+      src: `http://x/${name}.png`,
+      currentSrc: `http://x/${name}.png`,
+      complete: false,
+      naturalWidth: 1,
+      loading: "eager",
+      parentElement: null,
+      adds: 0,
+      live: { load: new Set<() => void>(), error: new Set<() => void>() } as Record<string, Set<() => void>>,
+      getBoundingClientRect: () => ({ top: 0, left: 0, right: 10, bottom: 10, width: 10, height: 10 }),
+      checkVisibility: () => true,
+      decode: async () => undefined,
+      addEventListener(type: string, fn: () => void, options?: { signal?: AbortSignal }) {
+        this.adds++;
+        this.live[type]!.add(fn);
+        options?.signal?.addEventListener("abort", () => this.live[type]!.delete(fn));
+      },
+      removeEventListener(type: string, fn: () => void) {
+        this.live[type]!.delete(fn);
+      },
+      load() {
+        this.complete = true;
+        for (const fn of [...this.live.load!]) fn();
+      },
+    });
+    const images = ["a", "b", "c"].map(image);
+    const [a, b, c] = images as [ReturnType<typeof image>, ReturnType<typeof image>, ReturnType<typeof image>];
+    const { page } = makePageStub(); // stubs a window of its own, replaced below
+    vi.stubGlobal("document", { images, documentElement: {}, body: {} });
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    vi.stubGlobal("innerWidth", 400);
+    vi.stubGlobal("innerHeight", 300);
+    vi.stubGlobal("getComputedStyle", () => ({ overflowX: "visible", overflowY: "visible", position: "static" }));
+    page.evaluate.mockImplementation(async (fn: (arg: unknown) => unknown, arg: { maxMs: number }) => {
+      const src = String(fn);
+      if (!src.includes("document.images")) return src.includes("devicePixelRatio") ? 2 : true;
+      // a loads, then its src is swapped on the same element, pending again; b and c load; a's second load is the
+      // last event of all, so the wait ends long before the cap only if that load wakes it.
+      setTimeout(() => a.load(), 20);
+      setTimeout(() => void (a.complete = false), 30);
+      setTimeout(() => b.load(), 40);
+      setTimeout(() => c.load(), 60);
+      setTimeout(() => a.load(), 100);
+      return fn({ ...arg, maxMs: 2000 });
+    });
+    const seq = createSequence(page, root, "cap");
+    const started = performance.now();
+    await seq.snap();
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(images.map((img) => img.adds)).toEqual([2, 2, 2]); // a load and an error listener each
+    expect(images.map((img) => [img.live.load!.size, img.live.error!.size])).toEqual([[0, 0], [0, 0], [0, 0]]);
+    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe("01.png  http://x/p\n");
+  });
+
+  it("wipes a directory a hook wrote into its own on a rerun; only another capture's output stops the wipe", async () => {
+    const plugins: Plugin[] = [
+      {
+        name: "thumbs",
+        afterSnap: async (shot) => {
+          mkdirSync(join(root, "cap", "thumbnails"), { recursive: true });
+          writeFileSync(join(root, "cap", "thumbnails", shot.name), "thumb");
+        },
+      },
+    ];
+    await createSequence(makePageStub().page, root, "cap", { plugins }).snap();
+    expect(existsSync(join(root, "cap", "thumbnails", "01.png"))).toBe(true);
+    expect(readdirSync(createSequence(makePageStub().page, root, "cap").dir)).toEqual([]);
+  });
+
   it("takes one shot at a time: a second snap before the first resolved throws", async () => {
     const { page } = makePageStub();
     const seq = createSequence(page, root, "cap");
@@ -378,6 +570,20 @@ describe("createSequence", () => {
     await seq.snap();
     expect(readdirSync(seq.dir).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
     expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe("01.png  http://x/p\n02.png  http://x/p\n");
+  });
+
+  it("takes the scale factor from the context's option, and bounds what the page says when it is unset", async () => {
+    const given = makePageStub();
+    const seq = createSequence(given.page, root, "given", { deviceScaleFactor: 3 });
+    await seq.snap();
+    expect(seq.shots[0]?.deviceScaleFactor).toBe(3);
+    expect(given.events).not.toContain("ratio");
+    for (const [said, used] of [[1000, 16], [0, 0.1], [Number.NaN, 1], ["2", 1]] as const) {
+      const { page } = makePageStub(900, "", said);
+      const read = createSequence(page, root, `read${used}${typeof said}`);
+      await read.snap();
+      expect(read.shots[0]?.deviceScaleFactor).toBe(used);
+    }
   });
 
   it("reads the device scale factor once per sequence and hands it to every shot, beforeSnap included", async () => {

@@ -2,9 +2,9 @@
 // Thin front for `playwright test`: translates snapseq's own flags, finds the
 // config, then runs the consumer's Playwright CLI in-process so exit codes and
 // Ctrl-C stay Playwright's. Everything else passes through untouched.
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const CONFIG_FILES = ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
@@ -23,7 +23,7 @@ Every other flag goes to \`playwright test\`: --headed, --ui, --debug,
 --trace on, --reporter json, --max-failures 0, ...
 `;
 
-function translateArgs(argv: string[]): string[] {
+function translateArgs(argv: string[]): { config: string; args: string[] } {
   const out: string[] = [];
   let config: string | undefined;
 
@@ -47,9 +47,14 @@ function translateArgs(argv: string[]): string[] {
       case "--device":
         out.push("--project", value());
         break;
-      case "--record":
-        process.env.SNAPSEQ_RECORD = "1";
+      case "--record": {
+        // Bare, it records; a value is SNAPSEQ_RECORD's (1, true, 0, false), which defineConfig checks. Empty
+        // would read as unset there.
+        const record = eq === -1 ? "1" : arg.slice(eq + 1);
+        if (record === "") throw new Error('snapseq: --record must be 1 or 0, got ""');
+        process.env.SNAPSEQ_RECORD = record;
         break;
+      }
       case "-c":
       case "--config":
         config = value();
@@ -63,7 +68,23 @@ function translateArgs(argv: string[]): string[] {
   if (!config) {
     throw new Error(`snapseq: no ${CONFIG_FILES[0]} in ${process.cwd()}; pass -c <path>`);
   }
-  return ["test", "-c", config, ...out];
+  return { config, args: ["test", "-c", config, ...out] };
+}
+
+/**
+ * The consumer's Playwright, never a second copy: the one beside the config, so
+ * `snapseq -c apps/web/snapseq.config.ts` from a monorepo root finds the app's own,
+ * else the one from the working directory.
+ */
+function playwrightCli(config: string): string {
+  const path = resolve(config);
+  // A directory (Playwright takes `-c <dir>`) is the base itself; a file's base is its folder.
+  const base = statSync(path, { throwIfNoEntry: false })?.isDirectory() ? path : dirname(path);
+  try {
+    return createRequire(join(base, "package.json")).resolve("@playwright/test/cli");
+  } catch {
+    return createRequire(resolve("package.json")).resolve("@playwright/test/cli");
+  }
 }
 
 const argv = process.argv.slice(2);
@@ -71,9 +92,8 @@ if (argv.includes("--help") || argv.includes("-h")) {
   process.stdout.write(USAGE);
 } else {
   try {
-    const args = translateArgs(argv);
-    // The consumer's Playwright, resolved from the working directory, never a second copy.
-    const cli = createRequire(resolve("package.json")).resolve("@playwright/test/cli");
+    const { config, args } = translateArgs(argv);
+    const cli = playwrightCli(config);
     process.argv = [process.argv[0]!, cli, ...args];
     await import(pathToFileURL(cli).href);
   } catch (err) {

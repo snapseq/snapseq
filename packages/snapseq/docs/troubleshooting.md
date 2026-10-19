@@ -22,7 +22,9 @@ inside the evaluated callback. `tsx` and esbuild wrap named functions in a
 
 ## The capture dies 10 minutes after its last shot, inside an evaluate
 
-**Symptom.** `No shot for 10 min.` and the stack points into a `page.evaluate`.
+**Symptom.** `No shot for 10 min.` in the live terminal view (the list
+reporter prints `Test timeout of …ms exceeded.`), and the stack points into a
+`page.evaluate`.
 **Cause.** The callback awaited a DOM event (`seeked`, `load`, a custom event)
 that never fired. `page.evaluate` has no timeout of its own, so the capture
 waits until the shot timeout ends it.
@@ -54,24 +56,102 @@ raise `navigationTimeout` on the env's `use`.
 
 ## `shots.txt` says a wait ran out
 
-**Symptom.** A line like `03.png  http://…  2 images still loading after 5 s`,
-`fonts still loading after 5 s` or `DOM still changing after 3 s`, printed
-once in the terminal too.
+**Symptom.** A line like `03.png  http://…  2 images still loading after 5 s (first: http://…/hero.jpg)`,
+`font readiness still pending after 5 s` or `DOM still changing after 3 s (most changed: div#ticker)`,
+printed once in the terminal too.
 **Cause.** The readiness wait hit its cap and took the shot anyway. Images:
-a stalled or very slow asset. Fonts: a face that never arrives. DOM: something
-mutates the document every frame, a clock, a ticker, an infinite loader.
+a stalled or very slow asset, the first one named. Fonts: a face that never
+arrives, or a page whose load event is still pending. DOM: something mutates
+the document every frame, a clock, a ticker, an infinite loader; the note names
+the element that changed most.
 **Fix.** The shot may be fine; check it. If not, hide or stop the moving part
 with `addPersistentStyle`, route the stalled asset with `page.route`, or wait
 for the specific state before the shot. [Captures](captures.md#readiness) lists
 what the wait does and does not see.
 
+An image in the initial HTML that never answers is the exception: it holds the
+page's load event, which Playwright's screenshot waits for. Where the capture
+fails depends on its `goto`:
+
+- A plain `goto(url)` waits for the load event, so it fails at the navigation
+  timeout (120 s by default) with no readiness note.
+- `goto(url, { waitUntil: "domcontentloaded" })` gets past the navigation. The
+  capture then fails at the shot, with the notes at the end of its message
+  (`page.screenshot: Timeout 30000ms exceeded. … ; readiness: 1 image still
+  loading after 5 s (first: http://…/hero.jpg)`), so the image is named.
+
+The `timeout` screenshot option (`seq.snap({ timeout: 5000 })`) only makes the
+capture fail sooner. To make it pass, answer the URL: a `page.route` in
+a `begin` hook, or in the capture before the `goto`, that aborts it
+(`page.route("**/hero.jpg", (route) => route.abort())`; the shot then notes one
+image that failed to load) or fulfills it with a small image of your own.
+
+## `shots.txt` says `N images failed to load (first: …)`
+
+**Cause.** An image the shot shows finished loading with no pixels: a 404, a
+file that is not an image, or a URL the browser blocks, such as one with a
+user and password in it. Hidden images do not count. The note names the first
+one, without its query.
+**Fix.** Open the URL from the note. Fix the URL or answer it with
+`page.route`; if the shot does not need the image, hide it with
+`addPersistentStyle`.
+
+## `shots.txt` says `the page scrolls inside <…> not the document: scrollable content may be omitted`
+
+**Cause.** The page is about one screen tall to the document, and its content
+scrolls inside an element: `html` and `body` at 100% height with `overflow:
+hidden`, a scrolling `main`. A taller viewport shows nothing more, so
+`snapPage` takes the device's viewport and names the element.
+**Fix.** `snap({ fullPage: true })` shows the viewport only too. If the layout
+allows, let the content flow in the document for the shot, then `snapPage`:
+`addPersistentStyle(page, "html, body, main.content { height: auto !important; overflow: visible !important }")`.
+Otherwise shoot it section by section, scrolling the element between shots:
+`await page.locator("main.content").evaluate((el) => el.scrollBy(0, el.clientHeight))`.
+
+## `shots.txt` says `scroll pass stopped after N steps`
+
+**Cause.** `snapseq-stabilize` with `scroll: true` scrolls a native full page
+(`snap({ fullPage: true })`) from its top to its end, to wake lazy content, and
+stops at 60 steps or 5 s. The page is longer than that, or grows as it
+scrolls, like an infinite feed.
+**Fix.** Check the lower part of the shot. For a feed, take the part you need:
+scroll to it yourself and `snap()`. See the stabilize
+[README](../../stabilize/README.md).
+
+## `shots.txt` says `cannot read <url>: its viewport units stay live`
+
+**Cause.** `snapseq-stabilize` could not read the rules of a stylesheet from
+another origin, so its viewport units were not frozen. The note is on every
+shot taken while the sheet is unreadable. The plugin fetches such a sheet again
+as a CORS request; that fails when the server refuses, the sheet redirects, a
+script imports it with `@import`, or a `replay` entry or HAR route serves it.
+A `100vh` section from that sheet can make `snapPage` refuse the page, and the
+refusal ends with this note.
+**Fix.** Serve the stylesheet without a redirect, or from the page's own
+origin. If the page does not depend on that sheet's viewport units, ignore the
+note. See the stabilize [README](../../stabilize/README.md).
+
 ## `snapPage: the document grew from … px after the viewport was set to its height`
 
 **Cause.** The page's layout follows the viewport height: `100vh` sections, a
 footer or loader pinned to the page end. Every taller viewport makes it taller
-again, so no viewport could ever contain it.
-**Fix.** `seq.snap({ fullPage: true })` for that page, Playwright's native full
-page. Sticky elements stay pinned where the scroll left them.
+again, so no viewport could ever contain it. Or the device has `isMobile:
+true` and the page has no viewport meta, or a fixed-width one: the layout
+viewport scales with the grown viewport ([Config](config.md#devices)), and
+`stabilize()` does not change that. When the shot has notes before the
+refusal, a plugin's (such as `snapseq-stabilize`'s `cannot read <url>`) or a
+readiness note (such as `DOM still changing after 3 s`), the message ends with
+`Notes: …`.
+**Fix.** List `stabilize()` from `snapseq-stabilize` in the config's `plugins`:
+it freezes viewport-height units to px before the viewport grows, so a `100vh`
+section stays one screen tall ([Plugins](plugins.md)).
+`stabilize({ motion: false, hover: false })` if you want only that. If the
+page is still refused, something the plugin cannot freeze follows the
+viewport (its README lists what); use
+`seq.snap({ fullPage: true })` for that page, Playwright's native full page.
+Sticky elements stay pinned where the scroll left them. For `isMobile` on a
+page without a viewport meta, use `snap({ fullPage: true })` or a device
+without `isMobile`.
 [Example 6](examples.md#6-a-sticky-tray) shows both.
 
 ## A sticky bar sits mid-page in a full-page shot
@@ -89,15 +169,25 @@ which the readiness wait cannot see.
 **Fix.** Call `disableTransitions(page)` once at the top of the capture, before
 the first `goto`. For Web Animations API motion, wait for the element's final
 state with a locator, or `await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))` raced against a timer.
+Or list `stabilize()` from `snapseq-stabilize` in `plugins`: its `motion`
+option, on by default, finishes or cancels Web Animations before each shot and
+applies `disableTransitions` itself, so a capture need not call it.
+
+## An element that fades in is missing from the shot
+
+**Cause.** `disableTransitions`, which `stabilize()` applies too, sets
+`animation: none`. That leaves an element at its base state, so a `.hero` with
+base `opacity: 0` and `animation: fadeIn 1s forwards` stays hidden.
+**Fix.** `addPersistentStyle(page, ".hero { opacity: 1 !important }")`, or the
+page's own revealed class.
 
 ## Basic auth credentials are not sent, or are sent to the wrong host
 
-**Cause.** `httpCredentials` are offered to the configured host's origin only.
-A site that redirects to another origin behind the same password, or a
-`--host` override on a different origin, is another origin.
-**Fix.** An overridden host counts as the origin automatically. For a redirect,
-set Playwright's `origin` on the credentials to the origin that challenges.
-See [Config](config.md#envs).
+**Cause.** Sent to the resolved host's origin only, `--host` included. A
+redirect to a second origin gets none, and an `origin` set on the env wins over
+`--host`.
+**Fix.** For a redirect, set `origin` to the origin that challenges. With
+`--host`, drop a fixed `origin`. See [Config](config.md#envs).
 
 ## `snapseq: unknown env "…"`
 
@@ -105,12 +195,86 @@ See [Config](config.md#envs).
 message lists the available ones.
 **Fix.** Use a listed name, or `--env ""` for the default.
 
-## `snapseq: SNAPSEQ_RUN must be a directory name, not a path`
+## `snapseq: SNAPSEQ_RUN must be a directory name, not a path: "…"`
 
-**Cause.** The run name contains a slash, or is `.` or `..`. The run's capture
-directories are wiped, so the name may not point outside the screenshots dir.
-**Fix.** A plain name: `SNAPSEQ_RUN=review-1`. The same rule applies to
-device names in `devices`.
+**Cause.** The run name contains a slash or backslash, or is `.` or `..`. The
+run's capture directories are wiped, so the name may not point outside the
+screenshots dir.
+**Fix.** A plain name: `SNAPSEQ_RUN=review-1`.
+
+## `snapseq: no snapseq.config.ts in …; pass -c <path>`
+
+**Cause.** The current directory has no `snapseq.config.{ts,mts,cts,js,mjs,cjs}`
+and `-c` was not given.
+**Fix.** Run from the app's directory, or pass `-c <path>`.
+
+## `snapseq: <flag> requires a value`
+
+**Cause.** A flag that takes a value (`--env`, `--host`, `--device`, `-c`,
+`--config`) is the last argument. Often `--env $ENV` with an empty `ENV`: the
+word vanishes.
+**Fix.** `--env staging` or `--env=staging`. Quote a variable that may be
+empty, `--env "$ENV"`: an empty `--env` or `--host` means unset.
+
+## `snapseq: --record must be 1 or 0, got ""`
+
+**Cause.** `--record=` with nothing after the equals sign, often an empty
+variable (`--record=$FLAG`). The flag refuses it, since a bare `--record`
+records; an empty `SNAPSEQ_RECORD` means unset.
+**Fix.** `--record` to record, `--record=0` to replay, or leave the flag out.
+`--record 0` with a space is not the same: it records, and `0` goes to
+Playwright as a file filter.
+
+## `snapseq: numbering must be zeros, like "00", not "…"`
+
+**Cause.** The config's `numbering` holds anything but zeros, or is empty.
+**Fix.** Zeros only; their count is the width. `"000"` gives `001.png`.
+
+## `snapseq: a device name must be a directory name, not a path: "…"`
+
+**Cause.** A key in `devices` is empty, has a slash or backslash, or is `.` or
+`..`. The device name is a directory that gets wiped.
+**Fix.** A plain key: `phone`, `"300x250"`.
+
+## `snapseq: a shot is already in progress; await each snap before the next`
+
+**Cause.** A `snap` or `snapPage` started before the previous one resolved: a
+missing `await`, a `Promise.all`, or a plugin hook that took a shot of its own.
+**Fix.** Await each shot; take none from a plugin hook.
+
+## `snapseq: the capture ended before … was listed`
+
+**Cause.** A `snap` or `snapPage` was still running when the capture ended:
+the body returned without awaiting it, or the capture failed or timed out
+during the shot. The file may be on disk, but the shot is not listed in
+`shots.txt` and does not count.
+**Fix.** Await every shot before the body returns. If the capture failed or
+timed out, read its first error; this one follows it.
+
+## `snapPage: the page has no viewport size`
+
+**Cause.** The device sets `viewport: null`, so the page has no fixed size to
+grow from.
+**Fix.** Give the device a `viewport`, or use `snap({ fullPage: true })` for
+that device.
+
+## `snapseq: refusing to wipe …: not inside …`
+
+**Cause.** A `describe` or test title with `..` in it points the capture's
+directory outside the screenshots dir. That directory is wiped when the capture
+starts, so snapseq refuses.
+**Fix.** Plain titles, no `..`.
+
+## `snapseq: refusing to wipe …: it holds another capture's output (…)`
+
+**Cause.** One capture's directory sits inside another's. `home.capture.ts` on
+device `mobile` writes `home/mobile/`; `home/mobile.capture.ts` on `desktop`
+writes `home/mobile/desktop/`. A capture's directory is wiped when it starts,
+and a directory in it with a `shots.txt` is another capture's output: snapseq
+refuses, and nothing is deleted. Any other directory in it, such as one a
+plugin hook wrote, is wiped with the rest.
+**Fix.** Rename one of the captures so its name is not a device's, such as
+`home/mobile-menu.capture.ts`.
 
 ## `snapseq: --repeat-each and retries are not supported`
 
@@ -132,16 +296,17 @@ options as a second argument to snapseq's `defineConfig`. See
 
 **Cause.** The readiness check is Playwright's: a 2xx, 3xx or 400–403 at
 `host` after redirects means "already up". A server on another port, or one
-answering 404 or 5xx at the root, does not count. With `--host` or
-`SNAPSEQ_HOST` the command never starts, by design.
+answering 404 or 5xx at the root, does not count. With a `--host` or
+`SNAPSEQ_HOST` different from the env's `host` the command never starts, by
+design.
 **Fix.** Make `host` match where the server listens, or start the server
 yourself and pass `--host`. `DEBUG=pw:webserver` shows the server's output.
 
 ## No live terminal view, just one line per shot
 
 **Cause.** Stdout is not a terminal (CI, a pipe, `| tee`), or the run used
-`--list`, `--debug` or `PWDEBUG`, or `TERM=dumb`. Those get Playwright's list
-reporter instead.
+`--list`, `--debug`, `--ui`, `--ui-host`, `--ui-port` or `PWDEBUG`, or
+`TERM=dumb`. Those get Playwright's list reporter instead.
 **Fix.** None needed; the list output has the same information. For the frame,
 run in a terminal without piping. Words instead of marks (`ok`, `FAIL`) mean
 the terminal cannot draw them; `NO_COLOR` drops colors on purpose.
@@ -152,6 +317,53 @@ The env has a `replay` entry whose file does not exist yet. Record it with
 `pnpm screenshot --record` against a host where the request succeeds
 (`--host` points the env there for that one run), check the shot, and keep
 the file. See [Config](config.md#replay).
+
+## `snapseq: --record got … not written`
+
+**Cause.** The live response was not a 2xx or not JSON (a 403 from a bot check,
+an HTML error page). Saving it would replay it as a 200 on every later run, so
+the capture fails at that request (shots already taken stay) and the existing
+file is left as it was for that response.
+**Fix.** Record against a host where the request succeeds (`--host`). A page
+that renders a 4xx on purpose needs `page.route` or a HAR. See
+[Config](config.md#replay).
+
+## `snapseq: replay file … is not JSON: …`
+
+**Cause.** A replay file does not parse as JSON, usually after a hand edit (a
+trailing comma, a cut-off paste). Replay serves it as `application/json`, so the
+page's widget would break without a word. The message ends with the parser's
+reason and position. The capture stops before its first shot.
+**Fix.** Correct the file, or record it again with `pnpm screenshot --record`.
+See [Config](config.md#replay).
+
+## `snapseq: --record: … matched a second request …; … already written from …`
+
+**Cause.** One `replay` pattern matched two different requests in one device's
+run, and both would write the same file. One file holds one response, so a
+different method, URL or POST body counts as a second request: a search for
+"lamps" and then one for "chairs" at the same URL. A glob like `**/api/search`
+matches any host, so a third-party request can match too; a cache-busting query
+differs on every request and counts as a second URL. A `FormData` body is
+compared without its random boundary, so the same form sent twice is one
+request. When the method and URL are the same, the message ends with `(the
+bodies differ)`.
+**Fix.** When the API has a host of its own, pin the pattern to it, and to
+the query when it matters (`https://api.example.com/search?q=shoes`). When the
+API is same-origin and you record with `--host`, a pinned pattern never
+matches: keep the glob and tighten its path or query until only your request
+matches, or record one request per file. POSTs to one URL that differ by body
+cannot be split by pattern (Playwright routes by URL, and the later pattern
+answers them all): record one, serve the other with a `page.route` that checks
+`route.request().postData()`, or use a HAR. See [Config](config.md#replay).
+
+## `snapseq: host must be an http(s) URL` or `SNAPSEQ_RECORD must be 1 or 0`
+
+**Cause.** The resolved host (`host`, `--host`, `SNAPSEQ_HOST`) has no
+`http://` or `https://`, so `localhost:3000` is read as a scheme. Or
+`SNAPSEQ_RECORD` holds something other than `1`, `true`, `0`, `false` or empty
+(`--record=<value>` sets it).
+**Fix.** `http://localhost:3000`; `SNAPSEQ_RECORD=1` to record, unset to replay.
 
 ## The whole widget is missing on dev, present on staging
 

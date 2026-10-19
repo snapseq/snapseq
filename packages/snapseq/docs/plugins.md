@@ -1,19 +1,22 @@
 # Plugins
 
 A plugin acts on the shots a capture takes: a label strip above each image, a
-PDF of the whole capture. It is a small object listed in the config's
-`plugins`. Two ship as their own packages; writing one takes a few lines.
+PDF of the whole capture, a page that holds still for the shot. It is a small
+object listed in the config's `plugins`. Three ship as their own packages;
+writing one takes a few lines.
 
 ## Using plugins
 
 Install what you use, in the app that has snapseq:
 
 ```bash
-pnpm add -D snapseq-label snapseq-pdf
+pnpm add -D snapseq-label snapseq-pdf snapseq-stabilize
 ```
 
-Both peer-depend on `snapseq`. They work on the shot files, not in a browser,
-so any Playwright browser will do. List them in the config:
+All three peer-depend on `snapseq`. `label` and `pdf` work on the shot files,
+not in a browser, so any Playwright browser will do. `stabilize` works in the
+page through `ctx.page`, in `begin` and `beforeSnap`, and is tested on
+Chromium. List them in the config:
 
 ```ts
 // snapseq.config.ts
@@ -33,6 +36,7 @@ export default defineConfig({
 | --------------------------------------- | ------------------------------------------------------------------------------------------ |
 | [`snapseq-label`](../../label/README.md) | A `label` option on `snap` and `snapPage`: a strip with that text above the shot, styled and scaled from the config. |
 | [`snapseq-pdf`](../../pdf/README.md)     | One PDF per capture and device, a page per shot.                                           |
+| [`snapseq-stabilize`](../../stabilize/README.md) | Freezes viewport-height units so `snapPage` works on `100vh` pages, stops motion before each shot, moves the pointer off the content (`hover`), and can scroll a native full page first (`scroll`). |
 
 A capture asks a plugin for something through the shot's options:
 
@@ -46,7 +50,7 @@ capture(async ({ page, seq }) => {
 });
 ```
 
-A plugin with no options, like `pdf`, needs nothing in the capture.
+A plugin with no per-shot options, like `pdf`, needs nothing in the capture.
 
 ## Writing a plugin
 
@@ -58,7 +62,7 @@ interface Plugin {
   name: string;
   /** The page exists; the capture body has not run. */
   begin?(ctx: CaptureContext): Promise<void>;
-  /** Start of `snap` and `snapPage`. No file yet. May edit `shot.options`. */
+  /** Start of `snap` and `snapPage`. No file yet. May edit `shot.options` and push to `shot.notes`. */
   beforeSnap?(shot: Shot, ctx: CaptureContext): Promise<void>;
   /** After the file is written. May rewrite it in place. */
   afterSnap?(shot: Shot, ctx: CaptureContext): Promise<void>;
@@ -82,9 +86,9 @@ and written in `afterSnap`:
 | `url`     | The page URL when the shot was taken. In `beforeSnap`, the URL when the snap started.         |
 | `index`   | The position in the capture, from 1.                                                          |
 | `options` | What the capture passed to `snap` or `snapPage`, plugin keys included. `beforeSnap` may edit it. |
-| `notes`   | Readiness waits that ran out before the shot, e.g. `2 images still loading after 5 s`. Empty in `beforeSnap`. |
+| `notes`   | The notes on the shot's line: what `beforeSnap` hooks pushed, then the readiness notes, e.g. `2 images still loading after 5 s (first: …)`. In `beforeSnap`, what earlier hooks pushed. |
 | `format`  | The config's `format`. `{}` is PNG.                                                           |
-| `deviceScaleFactor` | Device pixels per CSS pixel, e.g. `2` on a 2x phone. The file is that many times the CSS size. |
+| `deviceScaleFactor` | The file's pixels per CSS pixel, e.g. `2` on a 2x phone, `1` for a shot with `scale: "css"`. The device option's ratio, the page's `devicePixelRatio` as a fallback when the option is unset (the default desktop device), read once at the first shot and clamped to 0.1 to 16. Provisional in `beforeSnap`, as a hook may still set `scale`. |
 
 `name`, `path`, `index` and `format` belong to the sequence: a hook must not
 change them.
@@ -97,7 +101,7 @@ every kind run in the order the plugins are listed, each awaited.
 | Hook                    | Runs                                                                                                      | Gets                    | Can do                                                                                                                 |
 | ----------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `begin(ctx)`            | In the `seq` fixture, once the page exists and before the capture body.                                    | `ctx`                   | Cookies, headers, init scripts, routes, viewport, `emulateMedia`, persistent CSS, through `ctx.page` and `ctx.page.context()`. |
-| `beforeSnap(shot, ctx)` | At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. | `shot`, no file yet     | Change the page, or edit `shot.options` (`mask`, `clip`, `style`, `omitBackground`, …).                                 |
+| `beforeSnap(shot, ctx)` | At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. | `shot`, no file yet     | Change the page, edit `shot.options` (`mask`, `clip`, `style`, `omitBackground`, …), push to `shot.notes`.             |
 | `afterSnap(shot, ctx)`  | After the file is written, before its `shots.txt` line.                                                    | `shot`, file on disk    | Rewrite the file in place.                                                                                              |
 | `done(shots, ctx)`      | In teardown, only when the capture body passed.                                                            | Every shot, in order    | Write beside the shots.                                                                                                 |
 | `failed(shots, ctx)`    | In teardown, when the body failed or timed out, after `failed.png` was attempted.                          | The shots listed so far | Write beside the shots.                                                                                                 |
@@ -117,10 +121,16 @@ skipped by a file-level `skipIf` then gets no directory.
     `route.continue()`.
   - A `begin` that throws fails the capture before its body. There is no
     `failed.png` and no `failed` hook: the fixture never reaches teardown.
-- **`beforeSnap`** runs for every `snap` and `snapPage`, before the readiness
-  wait and before `snapPage` grows the viewport, so what it changes on the
-  page is settled and measured. It runs for shots that carry none of the
-  plugin's options too, so check your own key first and return.
+- **`beforeSnap`** runs for every `snap` and `snapPage` once the current
+  document is parsed, before the readiness wait and before `snapPage` grows
+  the viewport, so what it changes on the page is settled and measured. A
+  document it navigates to is not waited for that way. It runs for shots
+  that carry none of the plugin's options too, so check your own key first and
+  return.
+  - Push to `shot.notes` to put a note on the shot's line. The hooks' notes
+    come first, in order, then the readiness notes. Each is cleaned (control,
+    format and line-separator characters to spaces, trimmed, at most 200
+    characters) and listed once.
   - Edit `shot.options` to change the screenshot. The config's `format` (type
     and quality) and the numbered path always win over anything in it, and a
     `fullPage` set on a `snapPage` shot is dropped.
@@ -136,7 +146,9 @@ skipped by a file-level `skipIf` then gets no directory.
   that carry none of the plugin's options too, so check your own key first
   and return.
   - The `shots.txt` line is built from the sequence's own data: editing the
-    shot here changes nothing there.
+    shot here, `shot.notes` included, changes nothing there.
+  - `shot.deviceScaleFactor` is now the file's: `1` when the options set
+    `scale: "css"`.
   - A throwing `afterSnap` leaves the file on disk, but the shot is not
     written to `shots.txt` or added to `seq.shots`, and the hooks after it do
     not run.
@@ -242,5 +254,5 @@ directory is wiped when the capture starts, so a rerun starts the file over.
 `beforeSnap` and `afterSnap` run in the middle of the capture. Take no shot of
 your own from either: one shot runs at a time, and a `seq.snap()` from a hook
 throws. Leave `ctx.page` as you found it in `afterSnap`; `beforeSnap` changes
-it on purpose. Work on the file, as the shipped plugins do, rather than in a
+it on purpose. Work on the file, as `label` and `pdf` do, rather than in a
 browser of your own.

@@ -17,11 +17,19 @@ export interface Shot {
   index: number;
   /** What the capture passed to `snap` or `snapPage`, plugin keys included. A `beforeSnap` hook may edit it. */
   options: SnapOptions;
-  /** Readiness caps that ran out before the shot, e.g. `2 images still loading after 5 s`. Empty in `beforeSnap`. */
+  /**
+   * The notes on the shot's line in `shots.txt`: what `beforeSnap` hooks pushed, in order, then the readiness caps
+   * that ran out, e.g. `2 images still loading after 5 s (first: …)`. Each is cleaned (control, format and line-separator
+   * characters to spaces, trimmed, at most 200 characters) and listed once. In `beforeSnap`, what earlier hooks pushed.
+   */
   notes: string[];
   /** The config's `format`: Playwright's screenshot `type` and `quality`. `{}` is PNG. */
   format: ShotFormat;
-  /** Device pixels per CSS pixel of the page, e.g. `2` on a 2x phone: the file is that many times the CSS size. */
+  /**
+   * From `afterSnap` on, the file's pixels per CSS pixel: e.g. `2` on a 2x phone, `1` for a shot with `scale: "css"`.
+   * In `beforeSnap` it is the device option's ratio, the page's as a fallback, and provisional, as a hook may
+   * still set `scale`.
+   */
   deviceScaleFactor: number;
 }
 
@@ -35,7 +43,7 @@ export interface Plugin {
   name: string;
   /** The page exists and the capture body has not run: cookies, headers, init scripts, routes, viewport, emulateMedia, persistent CSS. */
   begin?(ctx: CaptureContext): Promise<void>;
-  /** At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. No file yet. May change the page, or edit `shot.options`. */
+  /** At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. No file yet. May change the page, edit `shot.options`, or push to `shot.notes`. */
   beforeSnap?(shot: Shot, ctx: CaptureContext): Promise<void>;
   /** After the file is written and before it is listed in `shots.txt`. May rewrite the file in place. */
   afterSnap?(shot: Shot, ctx: CaptureContext): Promise<void>;

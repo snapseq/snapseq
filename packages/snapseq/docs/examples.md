@@ -145,8 +145,8 @@ capture(async ({ ctx, page, seq }) => {
 });
 ```
 
-Helpers are plain files under `captures/`; only `*.capture.ts` files are
-captures.
+Helpers are plain files under `captures/`; only files named `*.capture.ts`
+(or `.js`, `.mts`, `.cts`, `.mjs`, `.cjs`) are captures.
 
 ## 6. A sticky tray
 
@@ -156,7 +156,9 @@ height, so the tray lands and the shot shows it in place.
 
 A page whose height follows the viewport, a `100vh` hero or a loader pinned
 to the page end, grows again with every resize. `snapPage` refuses it; use
-Playwright's native full page there.
+Playwright's native full page there, or list `stabilize()` from
+`snapseq-stabilize` in `plugins` ([Plugins](plugins.md)) so `snapPage` takes a
+`100vh` hero (`stabilize({ motion: false, hover: false })` for that alone).
 
 ```ts
 // captures/landing.capture.ts
@@ -178,8 +180,9 @@ Use snap({ fullPage: true }) for this page.`
 
 ## 7. Masking and clipping
 
-Both shots take Playwright's screenshot options. Mask what changes between
-runs, clip to a region, inject CSS for one shot.
+Both shots take Playwright's screenshot options, `snapPage` all but
+`fullPage`. Mask what changes between runs, clip to a region, inject CSS for
+one shot.
 
 ```ts
 // captures/account.capture.ts
@@ -193,12 +196,16 @@ capture(async ({ page, seq }) => {
   const header = await page.locator("header").boundingBox();
   if (header) await seq.snap({ clip: header });
 
-  await seq.snapPage({ style: ".cookie-banner { display: none }" });
+  await seq.snapPage({ style: ".cookie-banner { display: none }" });  // a fixed overlay: hiding it moves nothing
 });
 ```
 
-`path` and `type` are not accepted: the sequence owns the file name and
-format.
+`style` is applied after `snapPage` has measured the page, so use it for CSS
+that moves nothing, like hiding a fixed overlay. CSS that changes layout goes
+in `addPersistentStyle`.
+
+`path`, `type` and `quality` are not accepted: the sequence owns the file name
+and format.
 
 ## 8. A state that arrives later
 
@@ -316,9 +323,13 @@ export default defineConfig({
 });
 ```
 
+The iPhone descriptor runs on WebKit: install it with
+`pnpm exec playwright install webkit`, or see [Devices](config.md#devices) for
+the Chromium override.
+
 ```bash
 pnpm screenshot                                  # dev; starts `pnpm dev` unless :3000 already answers
-pnpm screenshot --env staging --device phone     # credentials and the header go to staging only
+pnpm screenshot --env staging --device phone     # staging: credentials to its origin, the header to every origin its pages load
 pnpm screenshot --env dev --host http://localhost:4000   # a server you started; `pnpm dev` is not run
 ```
 
@@ -327,26 +338,23 @@ Shots land under `<capture>/desktop/`, `<capture>/phone/` and
 
 ## 11. Rerun one capture into the same run
 
-Four captures; the third fails, so the fourth never runs (`maxFailures: 1`).
-Rerun what failed into the same run directory, then the one that never ran.
+Three captures on two devices; the third row fails, three never run
+(`maxFailures: 1`). Rerun what failed into the same run directory, then the
+ones that never ran.
 
 ```bash
 pnpm screenshot
-#   ✔ home / desktop      3 shots  4.2s
-#   ✔ home / mobile       3 shots  4.9s
-#   ✖ pricing / desktop   2 shots  31.0s  /pricing/team  Error: locator.click: Timeout 30000ms exceeded.
-#   . pricing / mobile    not run
-#   . landing / desktop   not run
-#   . landing / mobile    not run
+#   ✔ home / desktop     3 shots  4.2s
+#   ✔ landing / desktop  3 shots  4.9s
+#   ✖ pricing / desktop  2 shots  31.0s  /pricing/team  Error: locator.click: Timeout 30000ms exceeded.
 #
 #   2 passed, 1 failed, 3 not run  8 shots  .screenshots/2026-10-01 at 04.07.16 PM
 
 # Fix the capture, then rerun only the failed one, into the same run:
 SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm screenshot --last-failed
 
-# The ones that never ran, by name, same run:
-SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm screenshot pricing --device mobile
-SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm screenshot landing
+# The ones that never ran, by device, same run:
+SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm screenshot --device mobile
 ```
 
 Only the rerun capture's own `<capture>/<device>` directory is wiped; the
@@ -404,3 +412,9 @@ pnpm screenshot --env prod                                               # repla
 
 The recorded file is one response as the backend sent it, so the page renders
 real content. Commit it with the capture.
+
+The glob `**/api/search` matches that path on any host, so a third-party
+request to the same path would match too; `--record` then stops the capture
+and names both requests. This example assumes the API is on the page's own
+host and the recording runs against staging, so a pattern pinned to prod's
+host would never match.
