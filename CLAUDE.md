@@ -1,10 +1,11 @@
 # snapseq
 
 pnpm workspace. `packages/snapseq` is the core: Playwright Test fixtures for scripted
-screenshot captures. `packages/label` (`snapseq-label`) and `packages/pdf`
-(`snapseq-pdf`) are plugins: each its own npm package with no dependencies, peer-depending
-on `snapseq` and `@playwright/test`. Consumers install what they use into their own app and
-keep all business logic there.
+screenshot captures. `packages/label` (`snapseq-label`), `packages/pdf` (`snapseq-pdf`)
+and `packages/stabilize` (`snapseq-stabilize`) are plugins: each its own npm package,
+peer-depending on `snapseq` only. `label` and `pdf` transform the shot files; `stabilize`
+works in the page through `ctx.page`. Consumers install what they use into their own app
+and keep all business logic there.
 
 - Install: `pnpm install` at the root (builds every `dist/` via `prepare`), then
   `pnpm exec playwright install chromium` under Node 20 or 22 (`playwright install` hangs
