@@ -53,11 +53,27 @@ const VH_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:
 
 // 3000 px of content and a 200 px spacer under it that a resize handler removes once the viewport is taller than 2000 px, as a scroll
 // handler takes a tray and its spacer away: the page is then shorter than the viewport that was grown to its old height. A fixed bar
-// with a child sits at the viewport's end. ?stay keeps the spacer, and ends it with a margin that collapses through <body>.
+// with a child sits at the viewport's end. A hidden block holds a box with margin: auto, which computes to "auto", not a length.
+// ?stay keeps the spacer, and ends it with a margin that collapses through <body>.
 const SHRINK_PAGE = (stay: boolean) => `<!doctype html><html><body style="margin:0"><div style="height:3000px;background:#cde"></div>
 <div id="spacer" style="height:200px;background:#eee;${stay ? "margin-bottom:20px" : ""}"></div>
 <div style="position:fixed;bottom:0;left:0;right:0;background:#f00"><div style="height:40px;margin-bottom:20px"></div></div>
+<div style="display:none"><div style="margin:auto">hidden</div></div>
 <script>addEventListener("resize", () => { if (innerHeight > 2000 && ${!stay}) document.getElementById("spacer").remove(); });</script></body></html>`;
+
+// 3000 px of content and a last box that the box measure of snapPage could read short: ?neg ends with margin-bottom: -1px; ?text is a
+// 40 px box whose text wraps past it, which scrollHeight counts and the boxes do not; ?both is that box, then a 200 px spacer that a
+// resize handler removes: the page looks shorter by its boxes and is not.
+const EDGE_TEXT = "The quick brown fox jumps over the lazy dog again and again";
+const EDGE_PAGE = (kind: string) => `<!doctype html><html><body style="margin:0"><div style="height:3000px;background:#cde"></div>${
+  kind === "neg"
+    ? '<div style="height:200px;background:#eee;margin-bottom:-1px"></div>'
+    : `<div style="height:40px;width:100px;background:#eee">${EDGE_TEXT}</div>${
+        kind === "both"
+          ? '<div id="spacer" style="height:200px"></div><script>addEventListener("resize", () => { if (innerHeight > 2000) document.getElementById("spacer").remove(); });</script>'
+          : ""
+      }`
+}</body></html>`;
 
 // A lazy image 2000 px down whose bytes arrive 1.5 s after they are asked for; 100 px tall once loaded.
 const LAZY_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:2000px"></div><img id="lazy" loading="lazy" src="/slow.png" style="display:block;width:100px"></body></html>`;
@@ -137,6 +153,7 @@ function startServer() {
     }
     res.writeHead(200, { "content-type": "text/html" });
     if (url.startsWith("/shrink")) return void res.end(SHRINK_PAGE(url.includes("stay")));
+    if (url.startsWith("/edge")) return void res.end(EDGE_PAGE(url.split("?")[1] ?? ""));
     res.end(
       url.startsWith("/sticky")
         ? STICKY_PAGE
@@ -1236,6 +1253,36 @@ sequence(async ({ page, seq }) => {
     expect(r.status).toBe(0);
     expect(pngSize(join(p, "out", "run1", "shrink", "d1", "01.png"))).toEqual([400, 3000]); // the spacer went with the grow
     expect(pngSize(join(p, "out", "run1", "shrink", "d1", "02.png"))).toEqual([400, 3220]); // spacer, its margin; not the fixed bar's child
+  });
+
+  it("shoots the full height when the box measure reads short: a negative bottom margin, text overflowing its box, and both with a spacer that goes", async () => {
+    const p = makeProject({
+      esm: true,
+      config: config(),
+      sequences: {
+        "edge.seq.ts": `
+import { readFileSync } from "node:fs";
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  for (const kind of ["neg", "text"]) {
+    await page.goto("/edge?" + kind);
+    const shot = await seq.snapPage();
+    const height = await page.evaluate(() => document.documentElement.scrollHeight);
+    const png = readFileSync(shot).readUInt32BE(20);
+    if (png !== height) throw new Error(kind + ": the shot is " + png + " px tall, the page " + height);
+  }
+  await page.goto("/edge?both");
+  await seq.snapPage();
+});
+`,
+      },
+    });
+    dirs.push(p);
+    const r = await playwright(p, ["--reporter", REPORTER]);
+    expect(r.out).toContain("1 passed  3 shots");
+    expect(r.status).toBe(0);
+    expect(pngSize(join(p, "out", "run1", "edge", "d1", "01.png"))).toEqual([400, 3200]);
+    expect(pngSize(join(p, "out", "run1", "edge", "d1", "03.png"))).toEqual([400, 3240]); // the height that measured stable
   });
 
   it("refuses a layout that follows the viewport, restores the viewport, and points at the native full page", async () => {

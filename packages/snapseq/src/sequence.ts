@@ -54,7 +54,9 @@ const contentBottom = (page: Page): Promise<number> =>
     const walk = (el: Element): void => {
       const style = getComputedStyle(el);
       if (style.position === "fixed") return;
-      bottom = Math.max(bottom, el.getBoundingClientRect().bottom + window.scrollY + parseFloat(style.marginBottom));
+      // Not a negative margin, and not NaN: "auto" is what an element in a hidden subtree computes to, and NaN would poison the max.
+      const margin = parseFloat(style.marginBottom);
+      bottom = Math.max(bottom, el.getBoundingClientRect().bottom + window.scrollY + (margin > 0 ? margin : 0));
       for (const child of [...Array.from(el.children), ...Array.from(el.shadowRoot?.children ?? [])]) walk(child);
     };
     walk(document.body);
@@ -524,11 +526,16 @@ export function createSequence(
           await ready(page, notes, true);
           // Landing in flow can change the height; measure once more.
           let grown = await documentHeight(page);
+          const stable = height;
+          let shrunk = false;
           // scrollHeight reads unchanged when the page got shorter than the viewport: the boxes say whether it did. Not
           // below the device's viewport, which is as short as a page gets.
           if (grown === height) {
             const content = Math.max(await contentBottom(page), viewport.height);
-            if (content <= height - 1) grown = content;
+            if (content <= height - 1) {
+              grown = content;
+              shrunk = true;
+            }
           }
           if (grown !== height) {
             height = grown;
@@ -540,7 +547,15 @@ export function createSequence(
           // Not a loop: a layout that follows the viewport grows with every
           // resize, and a shot of it would be cut off. Say so instead, with
           // what the hooks noted, as the refused shot is never listed.
-          const after = await documentHeight(page);
+          let after = await documentHeight(page);
+          // The boxes read too short (text overflowing a fixed-height box, an html padding): the page measured stable at the
+          // height before the shrink, so it goes back there, settled as a grow is, rather than being refused as one that follows the viewport.
+          if (shrunk && after > height) {
+            height = stable;
+            await grow(height);
+            await ready(page, notes, true);
+            after = await documentHeight(page);
+          }
           // An app shell whose content landed late grows with the viewport too: shot as it is, with the note.
           if (after > height) inner = await scrollContainer(page, viewport);
           if (after > height && !inner) {

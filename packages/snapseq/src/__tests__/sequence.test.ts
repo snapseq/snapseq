@@ -226,20 +226,27 @@ describe("createSequence", () => {
   });
 
   it("snapPage grows again to the content's bottom when scrollHeight reads unchanged but the page got shorter, never below the device viewport", async () => {
-    const run = async (content: number) => {
-      const { page, viewports } = makePageStub(900);
-      // scrollHeight never reads below the viewport: 900 however short the content is. The boxes say where it ends.
+    // boxes: where the content ends by its boxes. scroll: the height of the content as scrollHeight sees it, never below the viewport.
+    const run = async (boxes: number, scroll: number) => {
+      const { page, viewports } = makePageStub(900); // 900 before the first grow
       const serve = page.evaluate.getMockImplementation();
-      page.evaluate.mockImplementation(async (fn: unknown, arg?: unknown) => (String(fn).includes("getBoundingClientRect") ? content : serve(fn, arg)));
+      page.evaluate.mockImplementation(async (fn: unknown, arg?: unknown) => {
+        const src = String(fn);
+        if (src.includes("getBoundingClientRect")) return boxes;
+        if (src.includes("documentElement.scrollHeight") && viewports.length > 0) return Math.max(viewports.at(-1)!.height, scroll);
+        return serve(fn, arg);
+      });
       let grows = 0;
       const plugins: Plugin[] = [{ name: "a", afterGrow: async () => void grows++ }];
       await createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as SequenceContext }).snapPage();
       return { heights: viewports.map((v) => v.height), grows };
     };
-    expect(await run(700)).toEqual({ heights: [900, 700, 300], grows: 2 }); // grown, grown again to the content, restored
-    expect(await run(900)).toEqual({ heights: [900, 300], grows: 1 }); // as tall as it was: no second grow
-    expect(await run(899.5)).toEqual({ heights: [900, 300], grows: 1 }); // less than 1 px shorter is rounding
-    expect(await run(200)).toEqual({ heights: [900, 300, 300], grows: 2 }); // not below the device's 300 px
+    expect(await run(700, 700)).toEqual({ heights: [900, 700, 300], grows: 2 }); // grown, grown again to the content, restored
+    expect(await run(900, 900)).toEqual({ heights: [900, 300], grows: 1 }); // as tall as it was: no second grow
+    expect(await run(899.5, 900)).toEqual({ heights: [900, 300], grows: 1 }); // less than 1 px shorter is rounding
+    expect(await run(200, 200)).toEqual({ heights: [900, 300, 300], grows: 2 }); // not below the device's 300 px
+    // The boxes read short (text overflowing a box): scrollHeight still says 900 at 700, so it goes back to 900 and is shot there.
+    expect(await run(700, 900)).toEqual({ heights: [900, 700, 900, 300], grows: 3 });
   });
 
   it("snapPage names what the hooks noted when it refuses, as the refused shot is never listed", async () => {

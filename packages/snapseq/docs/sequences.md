@@ -102,7 +102,11 @@ Each run has its own 5 s image cap, so a slow page can spend two. That second
 grow also follows a page that got shorter: the scroll height never reads below
 the viewport, so content that shrank once the viewport grew (a tray and the spacer
 under the footer, hidden by a scroll handler) is measured by its boxes, fixed
-elements left out, and the viewport is set to that, never below the device's.
+elements left out, and the viewport is set to that, never below the device's. This
+reads the boxes of the body, so it applies where they end above the viewport: a
+page whose `body` or wrapper is `height: 100%` keeps the white rows. If the boxes
+read shorter than the page (text overflowing a fixed-height box), the viewport goes
+back to the height that measured stable and the shot is taken there.
 
 A wait that ran out its cap, a shot that may lack something, or a plugin with
 something to say, prints a note with the shot's line in the terminal:

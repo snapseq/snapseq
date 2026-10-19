@@ -269,6 +269,7 @@ directory is wiped when the sequence starts, so a rerun starts the file over.
 
 `beforeSnap` and `afterSnap` run in the middle of the sequence, and so do
 `afterGrow` and `afterRestore` inside `snapPage`. Take no shot of your own from
-any of them: one shot runs at a time, and a `seq.snap()` from a hook throws. Leave `ctx.page` as you found it in `afterSnap`; `beforeSnap` changes
+any of them: one shot runs at a time, and a `seq.snap()` from a hook throws.
+Leave `ctx.page` as you found it in `afterSnap`; `beforeSnap` changes
 it on purpose. Work on the file, as `label` and `pdf` do, rather than in a
 browser of your own.
