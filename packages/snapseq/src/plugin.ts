@@ -45,6 +45,8 @@ export interface Plugin {
   begin?(ctx: SequenceContext): Promise<void>;
   /** At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. No file yet. May change the page, edit `shot.options`, or push to `shot.notes`. */
   beforeSnap?(shot: Shot, ctx: SequenceContext): Promise<void>;
+  /** In `snapPage`, each time the viewport has grown (to the document height, and again if the height changed), before the readiness wait and the height is measured. */
+  afterGrow?(shot: Shot, ctx: SequenceContext): Promise<void>;
   /** After the file is written and before the shot joins `seq.shots`. May rewrite the file in place. */
   afterSnap?(shot: Shot, ctx: SequenceContext): Promise<void>;
   /** After the sequence body passed, with every shot in order, before the page closes. */

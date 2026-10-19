@@ -28,10 +28,9 @@ export interface Sequence {
   /**
    * The whole page as a reviewer expects it: the viewport grows to the
    * document height, so sticky and fixed elements rest in flow and anything
-   * that reacts to its slot coming into view (a tray that lands) gets to; a
-   * scroll event fires, for UI that follows the scroll; the page gets ready;
-   * one shot; the viewport and the scroll position are restored, with another
-   * scroll event. A layout that follows the viewport height (`vh` units, a loader
+   * that reacts to its slot coming into view (a tray that lands) gets to; the
+   * page gets ready; one shot; the viewport and the scroll position are
+   * restored. A layout that follows the viewport height (`vh` units, a loader
    * at the page end) grows with every resize and is refused: use
    * `snap({ fullPage: true })` for those.
    */
@@ -386,7 +385,7 @@ export function createSequence(
     const name = `${String(index).padStart(numbering.length, "0")}.${ext}`;
     return { name, path: join(full, name), url: page.url(), index, options: { ...options }, notes: [], format: { ...format }, deviceScaleFactor: ratio };
   };
-  const hooks = async (kind: "beforeSnap" | "afterSnap", shot: Shot): Promise<void> => {
+  const hooks = async (kind: "beforeSnap" | "afterGrow" | "afterSnap", shot: Shot): Promise<void> => {
     for (const plugin of plugins) {
       try {
         await plugin[kind]?.(shot, ctx as SequenceContext);
@@ -472,17 +471,14 @@ export function createSequence(
         // A navigation in flight after a listed shot must not fail the sequence over its scroll position.
         await page
           .evaluate(({ origin, left, top }) => {
-            if (window.performance.timeOrigin !== origin) return;
-            window.scrollTo({ left, top, behavior: "instant" });
-            document.dispatchEvent(new Event("scroll", { bubbles: true })); // as after grow, for the restored viewport
+            if (window.performance.timeOrigin === origin) window.scrollTo({ left, top, behavior: "instant" });
           }, scroll)
           .catch(() => undefined);
       };
-      // A grown viewport from the top scrolls nothing, so no scroll event fires: one is sent, as the browser sends it
-      // (at the document, bubbling to the window), so UI that follows the scroll (a tray that hides at the page end) settles.
+      // The afterGrow hooks run at the grown viewport, before the readiness wait that follows.
       const grow = async (height: number) => {
         await page.setViewportSize({ width: viewport.width, height });
-        await page.evaluate(() => document.dispatchEvent(new Event("scroll", { bubbles: true })));
+        await hooks("afterGrow", shot);
       };
       let height = await documentHeight(page);
       // One screen (64 px of slack for margins and a bar) whose content scrolls inside an element: a taller

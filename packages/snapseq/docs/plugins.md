@@ -15,8 +15,8 @@ pnpm add -D @snapseq/label @snapseq/pdf @snapseq/stabilize
 
 All three peer-depend on `snapseq`. `label` and `pdf` work on the shot files,
 not in a browser, so any Playwright browser will do. `stabilize` works in the
-page through `ctx.page`, in `begin` and `beforeSnap`, and is tested on
-Chromium. List them in the config:
+page through `ctx.page`, in `begin`, `beforeSnap` and `afterGrow`, and is
+tested on Chromium. List them in the config:
 
 ```ts
 // snapseq.config.ts
@@ -64,6 +64,8 @@ interface Plugin {
   begin?(ctx: SequenceContext): Promise<void>;
   /** Start of `snap` and `snapPage`. No file yet. May edit `shot.options` and push to `shot.notes`. */
   beforeSnap?(shot: Shot, ctx: SequenceContext): Promise<void>;
+  /** In `snapPage`, each time the viewport has grown, before the readiness wait. */
+  afterGrow?(shot: Shot, ctx: SequenceContext): Promise<void>;
   /** After the file is written. May rewrite it in place. */
   afterSnap?(shot: Shot, ctx: SequenceContext): Promise<void>;
   /** After the sequence passed, with every shot of it, in order. */
@@ -102,6 +104,7 @@ every kind run in the order the plugins are listed, each awaited.
 | ----------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `begin(ctx)`            | In the `seq` fixture, once the page exists and before the sequence body.                                    | `ctx`                   | Cookies, headers, init scripts, routes, viewport, `emulateMedia`, persistent CSS, through `ctx.page` and `ctx.page.context()`. |
 | `beforeSnap(shot, ctx)` | At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. | `shot`, no file yet     | Change the page, edit `shot.options` (`mask`, `clip`, `style`, `omitBackground`, …), push to `shot.notes`.             |
+| `afterGrow(shot, ctx)`  | In `snapPage`, each time the viewport has grown (to the document height, and again if the height changed), before the readiness wait and the height measure. | `shot`, no file yet | Settle what the grow started, at the grown viewport.                                                    |
 | `afterSnap(shot, ctx)`  | After the file is written.                                                                                  | `shot`, file on disk    | Rewrite the file in place.                                                                                              |
 | `done(shots, ctx)`      | In teardown, only when the sequence body passed.                                                            | Every shot, in order    | Write beside the shots.                                                                                                 |
 | `failed(shots, ctx)`    | In teardown, when the body failed or timed out, after `failed.png` was attempted.                          | The shots listed so far | Write beside the shots.                                                                                                 |
@@ -140,6 +143,11 @@ skipped by a file-level `skipIf` then gets no directory.
     `style` option, which applies after the height was measured.
   - A shot refused or failed before its screenshot, such as a `snapPage` height
     refusal or a throwing `beforeSnap`, gives its number back.
+- **`afterGrow`** runs at the grown viewport, only in `snapPage`: a plugin
+  that must settle something the grow started (a reveal an observer fired, a
+  handler that follows the scroll) goes here, so the readiness wait and the
+  height measure that follow see the result. It does not run when the
+  viewport is restored.
 - **`afterSnap`** runs once the file is written, before the terminal counts it.
   A shot counts, and joins `seq.shots`, once every plugin's `afterSnap` has
   passed. It runs for shots that carry none of the plugin's options too, so
