@@ -1,5 +1,29 @@
 # @snapseq/label
 
+## 0.2.0
+
+### Minor Changes
+
+- 974942d: Renamed: `snapseq-label` is now `@snapseq/label` and `snapseq-pdf` is now `@snapseq/pdf`. The old names are deprecated on npm and get no further releases.
+
+### Patch Changes
+
+- e79b4aa: Each package's `exports` now points `require` at `index.d.cts` and `import` at `index.d.ts`, so a CommonJS consumer on `module: node16` no longer gets TS1479.
+- e587661: A label with a control character or a lone surrogate no longer fails the capture; each is drawn as a space. A very long label no longer fails on the measuring canvas, which is now as wide as the image. An RGB shot stays RGB, so a flat page's PNG is not up to 4x bigger. A JPEG is re-encoded without `optimiseCoding`, which held the whole compressed image in memory (1.6 GB on a 3840 x 60000 shot) for a file under 1% smaller. A `scale` that is not a finite number above 0 now throws `@snapseq/label: scale must be a positive number`.
+- 691df8d: The repository moved to `github.com/snapseq/snapseq`; `repository`, `homepage` and `bugs` in each package point there.
+- Updated dependencies [e79b4aa]
+- Updated dependencies [e79b4aa]
+- Updated dependencies [e79b4aa]
+- Updated dependencies [e79b4aa]
+- Updated dependencies [e79b4aa]
+- Updated dependencies [e79b4aa]
+- Updated dependencies [e79b4aa]
+- Updated dependencies [e79b4aa]
+- Updated dependencies [691df8d]
+- Updated dependencies [e79b4aa]
+- Updated dependencies [e79b4aa]
+  - snapseq@0.4.0
+
 ## 0.1.0
 
 ### Minor Changes

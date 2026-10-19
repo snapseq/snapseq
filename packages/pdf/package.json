@@ -1,6 +1,6 @@
 {
   "name": "@snapseq/pdf",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "snapseq plugin: one PDF per capture and device from its screenshots.",
   "license": "ISC",
   "publishConfig": { "access": "public" },
@@ -50,7 +50,7 @@
     "prepublishOnly": "pnpm typecheck && pnpm test"
   },
   "peerDependencies": {
-    "snapseq": ">=0.3.0 <1.0.0-0"
+    "snapseq": ">=0.4.0 <1.0.0-0"
   },
   "devDependencies": {
     "@playwright/test": "1.59.1",

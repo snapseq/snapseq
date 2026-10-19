@@ -1,6 +1,6 @@
 {
   "name": "snapseq",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Playwright Test fixtures for scripted screenshot captures.",
   "license": "ISC",
   "repository": {
