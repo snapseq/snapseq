@@ -175,9 +175,11 @@ It leaves alone:
 
 - A fixed element off the screen at the device's viewport, such as a drawer
   parked at `bottom: -100%`: it is not recorded, and pinning it would pull it
-  into the full page.
-- An element the page removed, hid or un-fixed in response to the grow or to the
-  scroll event.
+  into the full page. One only partly on the screen, such as a bottom sheet
+  peeking 60 px, is not recorded either: it stays at the page end, clipped as
+  the device's viewport clipped it.
+- An element the page removed, hid, moved off the screen or un-fixed in response
+  to the grow or to the scroll event.
 - An element whose size changed with the viewport, such as a `top: 10%;
   bottom: 0` panel or an `inset: 0` dimmer: it has its own layout, and clearing
   its `bottom` would collapse it.
@@ -186,11 +188,20 @@ It leaves alone:
   position after the write: a fixed element inside a transformed, filtered or
   `contain`ed ancestor, whose containing block is that ancestor, and a fixed child
   of a pinned fixed ancestor, which follows it. Its inline values are put back.
+- A box centred by `margin: auto`, such as a `<dialog>` opened with `showModal()`
+  or a `[popover]`: with `bottom: auto` the auto margin becomes 0, the
+  verification finds it moved, and it is put back, so it stays centred in the
+  grown page.
+- An element the page positions itself (a dropdown, a popover, a menu placed by a
+  positioning library). The plugin notes its inline style, its `transform` and its
+  `class` at the device's viewport, and leaves it where the page put it when any of
+  them differs once the viewport has grown. CSS anchor positioning changes none of
+  them and is not detected.
 
 It cannot see fixed elements inside iframes (frames are not entered), in closed
 shadow roots, or made by pseudo-elements. Open shadow roots are walked. A shot that
 throws (a refused `snapPage`, a failed screenshot) leaves the pin until the next
-shot, whose start clears it; at the restored device viewport a pinned element sits
+shot, which clears it first; at the restored device viewport a pinned element sits
 where it was, so only its inline `top` and `bottom` remain. `floating: false`
 turns the step off; a fixed element then sits where its insets put it in the grown
 viewport, and a `bottom: 0` bar is drawn at the page end.

@@ -365,15 +365,24 @@ const freezeUnits = async () => {
 // the page, per document, never in the DOM. Elements never cross evaluate: each call finds the map itself.
 const fixedElements = (mode: string) => {
   type Side = "top" | "bottom";
-  type Entry = { top: number; width: number; height: number; pin?: { was: Record<Side, [string, string]>; wrote: Record<Side, string> } };
+  type Entry = { top: number; width: number; height: number; sig: string; pin?: { was: Record<Side, [string, string]>; wrote: Record<Side, string> } };
   const host = window as unknown as Record<symbol, Map<HTMLElement, Entry> | undefined>;
   const records = (host[Symbol.for("snapseq.floating")] ??= new Map());
   const shows = (el: HTMLElement) => el.checkVisibility({ visibilityProperty: true, opacityProperty: true });
+  const onScreen = (r: DOMRect) => r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
+  // What the page sets on the element itself. Different at the grown viewport: the page placed it (a menu under its trigger,
+  // a tray it moved by class), and the plugin leaves it where the page put it.
+  const signature = (el: HTMLElement) => [el.style.cssText, getComputedStyle(el).transform, el.getAttribute("class")].join("\n");
 
-  // Each side goes back only while it still holds what was written, value and priority: a page that wrote its own since keeps it.
+  // Each side goes back only while it still holds what was written, value and priority: a page that wrote its own since keeps
+  // it, and an element whose side the page took places itself: it is not pinned again.
   const restore = (el: HTMLElement, entry: Entry) => {
     for (const side of ["top", "bottom"] as const) {
-      if (!entry.pin || el.style.getPropertyValue(side) !== entry.pin.wrote[side] || el.style.getPropertyPriority(side) !== "important") continue;
+      if (!entry.pin) continue;
+      if (el.style.getPropertyValue(side) !== entry.pin.wrote[side] || el.style.getPropertyPriority(side) !== "important") {
+        records.delete(el);
+        continue;
+      }
       const [value, priority] = entry.pin.was[side];
       if (value) el.style.setProperty(side, value, priority);
       else el.style.removeProperty(side);
@@ -392,29 +401,33 @@ const fixedElements = (mode: string) => {
 
   if (mode === "discover") {
     // Only fixed elements are measured. One parked off the screen (a hidden drawer) is not recorded: pinning it would pull it in.
+    // One that is only partly on the screen (a bottom sheet peeking) stays as clipped as the device viewport clipped it.
     const walk = (root: Document | ShadowRoot) => {
       for (const el of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
         if (el.shadowRoot) walk(el.shadowRoot);
         if (!el.style || getComputedStyle(el).position !== "fixed" || !shows(el)) continue;
         const r = el.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth) {
-          records.set(el, { top: r.top, width: r.width, height: r.height });
-        }
+        if (onScreen(r) && r.bottom <= window.innerHeight + 1) records.set(el, { top: r.top, width: r.width, height: r.height, sig: signature(el) });
       }
     };
     walk(document);
     return;
   }
 
-  // Not pinned: gone, no longer fixed, hidden, or resized by the grow (a `top: 10%; bottom: 0` panel stretched: it has its
-  // own layout, and clearing its bottom would collapse it). Everything is read before anything is written.
+  // Not pinned: gone, no longer fixed, hidden, moved off the screen by the page (a tray slid or dropped out of view), placed by
+  // the page itself, or resized by the grow (a `top: 10%; bottom: 0` panel stretched: it has its own layout, and clearing its
+  // bottom would collapse it). Everything is read before anything is written.
   const todo: { el: HTMLElement; entry: Entry; top: number }[] = [];
   for (const [el, entry] of records) {
     if (!el.isConnected) continue;
     const style = getComputedStyle(el);
     if (style.position !== "fixed" || !shows(el)) continue;
+    if (signature(el) !== entry.sig) {
+      records.delete(el);
+      continue;
+    }
     const r = el.getBoundingClientRect();
-    if (Math.abs(r.width - entry.width) >= 1 || Math.abs(r.height - entry.height) >= 1) continue;
+    if (!onScreen(r) || Math.abs(r.width - entry.width) >= 1 || Math.abs(r.height - entry.height) >= 1) continue;
     const used = parseFloat(style.top);
     if (!Number.isFinite(used) || Math.abs(entry.top - r.top) < 1) continue;
     todo.push({ el, entry, top: +(used + entry.top - r.top).toFixed(3) });
@@ -469,6 +482,8 @@ export function stabilize({
       if (motion) await addPersistentStyle(page, NO_TRANSITIONS);
     },
     async beforeSnap(shot, { page }) {
+      // A pin a shot that threw left behind goes first, before the freeze and the scroll event meet it.
+      if (floating) await page.evaluate(fixedElements, "release");
       // The pointer stays where the last click left it, and whatever moved under it (a card, a menu) is drawn in
       // :hover. Off the viewport nothing is hovered; the page's mouseleave handlers run. Out through the left
       // edge at mid-height, not the top: exit-intent scripts watch for a leave with clientY <= 0. (0, 0)
@@ -546,7 +561,8 @@ export function stabilize({
     // The file is written and the viewport is still grown: the page's own insets come back. A shot that threw before this
     // leaves the pin until the next shot, whose discovery clears it; at the device viewport a pinned element sits where it was.
     async afterSnap(_shot, { page }) {
-      if (floating) await page.evaluate(fixedElements, "release");
+      // The page may have navigated by now (a timer): the file is written, so that is not the shot's failure.
+      if (floating) await page.evaluate(fixedElements, "release").catch(() => undefined);
     },
   };
 }

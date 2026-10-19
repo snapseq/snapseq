@@ -407,6 +407,60 @@ body { margin: 0 }
 window.__facts = () => ({ inline: document.getElementById("drawer").style.bottom, bottom: getComputedStyle(document.getElementById("drawer")).bottom });
 </script></body></html>`;
 
+// Two trays the page moves out of view once the page end is in view, by rules on <body> (so neither tray's own class or
+// inline style changes): one slides out by a transform, one drops below the viewport by its bottom inset.
+const TRAYS_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#slide { position: fixed; bottom: 0; left: 0; width: 200px; height: 80px; background: rgb(200, 0, 0) }
+#drop { position: fixed; bottom: 0; left: 300px; width: 200px; height: 80px; background: rgb(0, 0, 200) }
+.end #slide { transform: translateY(100%) }
+.end #drop { bottom: -80px }
+</style></head><body><div style="height:1500px"></div><div id="slide"></div><div id="drop"></div><script>
+document.addEventListener("scroll", () => document.body.classList.toggle("end", scrollY + innerHeight >= document.documentElement.scrollHeight - 100));
+const inline = (id) => document.getElementById(id).style.top + "|" + document.getElementById(id).style.bottom;
+window.__facts = () => ({ slide: inline("slide"), drop: inline("drop") });
+</script></body></html>`;
+
+// A menu the page keeps under its trigger, by an inline top it writes on scroll and resize (what a positioning library does
+// with a fixed strategy). The trigger is 400 px down; the sequence scrolls to 300 first, so the grown viewport moves the menu.
+const ANCHORED_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#trigger { position: absolute; top: 400px; left: 100px; width: 200px; height: 30px; background: rgb(0, 120, 0) }
+#menu { position: fixed; left: 100px; width: 200px; height: 100px; background: rgb(200, 0, 100) }
+</style></head><body><div style="height:3000px"></div><div id="trigger"></div><div id="menu"></div><script>
+const place = () => { document.getElementById("menu").style.top = document.getElementById("trigger").getBoundingClientRect().bottom + "px"; };
+addEventListener("scroll", place);
+addEventListener("resize", place);
+place();
+window.__facts = () => {
+  const s = document.getElementById("menu").style;
+  return { top: s.top, priority: s.getPropertyPriority("top"), bottom: s.bottom };
+};
+</script></body></html>`;
+
+// A bottom sheet that peeks 60 px at the device viewport (top 660 of 720, 400 px tall).
+const SHEET_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#sheet { position: fixed; bottom: 0; left: 0; width: 400px; height: 400px; transform: translateY(340px); background: rgb(200, 0, 100) }
+</style></head><body><div style="height:1500px"></div><div id="sheet"></div><script>
+window.__facts = () => ({ inline: document.getElementById("sheet").style.top + "|" + document.getElementById("sheet").style.bottom });
+</script></body></html>`;
+
+// The REGROW page, but the page clears the plugin's top in the second grow, before the plugin looks at the element again.
+const TAKEN_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#drawer { position: fixed; bottom: 0; left: 0; width: 200px; height: 100px; background: rgb(200, 0, 100) }
+</style></head><body><div style="height:1000px"></div><div id="more"></div><div id="drawer"></div><script>
+let resizes = 0;
+addEventListener("resize", () => {
+  resizes++;
+  const el = document.getElementById("drawer");
+  if (resizes === 1) document.getElementById("more").style.height = "500px";
+  if (resizes === 2 && el.style.bottom === "auto") el.style.removeProperty("top");
+});
+window.__facts = () => ({ inline: document.getElementById("drawer").style.top + "|" + document.getElementById("drawer").style.bottom });
+</script></body></html>`;
+
 // FOLLOW_PAGE with a drawer: the shot is refused after the plugin pinned it.
 const FOLLOWDRAWER_PAGE = `<!doctype html><html><head><style>
 body { margin: 0 }
@@ -781,6 +835,29 @@ sequence(async ({ page, seq }) => {
   await seq.snapPage();
 });
 `,
+  trays: floatSequence("/trays"),
+  anchored: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/anchored");
+  await page.evaluate(() => window.scrollTo(0, 300));
+  await seq.snapPage();
+});
+`,
+  sheet: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/sheet");
+  await seq.snapPage();
+});
+`,
+  taken: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/taken");
+  await seq.snapPage();
+});
+`,
   vhdrawer: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -961,6 +1038,10 @@ function appServer(cdn: string) {
     "/regrow": REGROW_PAGE,
     "/followdrawer": FOLLOWDRAWER_PAGE,
     "/vhdrawer": VHDRAWER_PAGE,
+    "/trays": TRAYS_PAGE,
+    "/anchored": ANCHORED_PAGE,
+    "/sheet": SHEET_PAGE,
+    "/taken": TAKEN_PAGE,
     "/hover": HOVER_PAGE,
     "/reveal": REVEAL_PAGE,
     "/hydrate": HYDRATE_PAGE,
@@ -1562,6 +1643,43 @@ describe("floating", () => {
     expect(r.status, r.out).toBe(0);
     expect(probe(r.dir, "01").facts?.inline).toBe("auto"); // pinned while the shot was taken
     expect(probe(r.dir, "02").facts?.bottom).toBe("90px"); // 10vh of 900, not the 72 px of the first viewport
+  });
+
+  it("does not pull back a tray the page moved out of view, by a transform or by its bottom inset", async () => {
+    const r = await run("trays");
+    expect(r.status, r.out).toBe(0);
+    expect(probe(r.dir, "01").facts).toEqual({ slide: "|", drop: "|" });
+    const full = await image(join(r.dir, "01.png"));
+    for (const [x, y] of [[100, 700], [400, 700], [100, 1499], [400, 1499]] as const) expect(full.at(x, y)).toEqual([255, 255, 255]);
+    const snap = await image(join(r.dir, "02.png")); // the same trays at the device viewport: they were there to be pinned
+    expect(snap.at(100, 719)).toEqual([200, 0, 0]);
+    expect(snap.at(400, 719)).toEqual([0, 0, 200]);
+  });
+
+  it("leaves a menu the page placed itself at the grown viewport where the page put it", async () => {
+    const r = await run("anchored");
+    expect(r.status, r.out).toBe(0);
+    const p = probe(r.dir);
+    expect(p.facts).toEqual({ top: "430px", priority: "", bottom: "" });
+    expect(p.rects.menu?.top).toBe(430); // under its trigger, not 300 px up where the first screen had it
+    expect((await image(join(r.dir, "01.png"))).at(150, 480)).toEqual([200, 0, 100]);
+  });
+
+  it("leaves a bottom sheet that peeked at the device viewport as clipped as it was", async () => {
+    const r = await run("sheet");
+    expect(r.status, r.out).toBe(0);
+    expect(probe(r.dir).facts?.inline).toBe("|");
+    const img = await image(join(r.dir, "01.png"));
+    for (const y of [100, 660, 1000, 1439]) expect(img.at(200, y)).toEqual([255, 255, 255]);
+    expect(img.at(200, 1470)).toEqual([200, 0, 100]); // the last 60 px of the page
+  });
+
+  it("does not pin again an element whose top the page cleared between two grows", async () => {
+    const r = await run("taken");
+    expect(r.status, r.out).toBe(0);
+    const p = probe(r.dir);
+    expect(p.facts?.inline).toBe("|");
+    expect(p.rects.drawer?.top).toBe(1400);
   });
 
   it("pins a fixed box in an open shadow root like one in the document", async () => {
