@@ -30,7 +30,7 @@ reduced motion are off. Each has a switch:
 ```ts
 stabilize({ viewportUnits: false })  // no freezing of viewport units
 stabilize({ floating: false })       // fixed elements follow their insets in the grown viewport
-stabilize({ scrollEvent: false })    // no scroll event after snapPage grew the viewport
+stabilize({ scrollEvent: false })    // no scroll event after snapPage grew or restored the viewport
 stabilize({ motion: false })         // motion is left alone
 stabilize({ hover: false })          // the pointer is left where it is
 stabilize({ scroll: true })          // scroll pass before a native full page
@@ -140,17 +140,18 @@ page is; from the top nothing scrolls, so no scroll event fires, and UI that
 follows scroll events only stays as it was: a fixed tray that hides on scroll
 once its inline counterpart is in view is drawn over the footer, a back-to-top
 button stays hidden. The plugin fires one scroll event after each grow, at the
-document and bubbling to the window as the browser's own does, and one before
-each shot, so the tray shows again once the viewport is back. Between shots the
-page keeps the state of the grown viewport until the next shot's event. The
-event is synthetic: `isTrusted` is `false`, and a handler that checks it
+document and bubbling to the window as the browser's own does, and one once the
+viewport is restored, so the page is back in its viewport state for what the
+sequence does next: a tray the grow hid shows again, and a click on it between
+two shots finds it. The event is synthetic: `isTrusted` is `false`, and a handler that checks it
 ignores it. Any scroll handler runs, not only the tray's, and some react in
 ways you do not want:
 
 - A header that hides on scroll down and treats a zero delta as down is hidden.
 - A "bottom reached" handler, such as an infinite scroll that appends on each
-  event or a 100 % scroll beacon, runs on each grow. One that appends content
-  every time keeps the document growing, and `snapPage` refuses the page.
+  event or a 100 % scroll beacon, runs on each grow and on the restore. One that
+  appends content every time keeps the document growing, and `snapPage` refuses
+  the page.
 - A reveal script that judges what is in view against the window height it read
   at load takes its in-view class off everything below the first screen, and an
   animated chart there goes back to its base state.
@@ -167,9 +168,10 @@ an ancestor) and inside the viewport. After each grow, once the page has settled
 it sets `top: <px> !important; bottom: auto !important` inline on each, so it sits
 at the top it had. Height, width, `left`, `right` and `transform` are not
 touched: a box centred by `top: 50%` and `translateY(-50%)` keeps its transform.
-Once the file is written, and before the viewport is restored, the page's own
-inline `top` and `bottom` come back. A property is restored only while it still
-holds what the plugin wrote, so a value the page wrote in the meantime stays.
+Once the viewport is restored, the page's own inline `top` and `bottom` come back,
+whether the shot was taken or failed (a refused `snapPage`, a failed screenshot).
+A property is restored only while it still holds what the plugin wrote, so a value
+the page wrote in the meantime stays.
 
 It leaves alone:
 
@@ -199,10 +201,9 @@ It leaves alone:
   them and is not detected.
 
 It cannot see fixed elements inside iframes (frames are not entered), in closed
-shadow roots, or made by pseudo-elements. Open shadow roots are walked. A shot that
-throws (a refused `snapPage`, a failed screenshot) leaves the pin until the next
-shot, which clears it first; at the restored device viewport a pinned element sits
-where it was, so only its inline `top` and `bottom` remain. `floating: false`
+shadow roots, or made by pseudo-elements. Open shadow roots are walked. If the
+restore itself fails, the pin stays until the next shot, which clears it first; at
+the device viewport a pinned element sits where it was. `floating: false`
 turns the step off; a fixed element then sits where its insets put it in the grown
 viewport, and a `bottom: 0` bar is drawn at the page end.
 

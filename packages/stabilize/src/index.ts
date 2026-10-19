@@ -12,7 +12,7 @@ export interface StabilizeOptions {
   hover?: boolean;
   /** For a shot with `fullPage: true`: scroll from the top to the end first, so reveals on scroll and lazy loaders fire. Default false. */
   scroll?: boolean;
-  /** A scroll event after `snapPage` grows the viewport, and before each shot, for UI that follows scroll events only (a tray that hides once its inline counterpart is in view, a back-to-top button). Default true. */
+  /** A scroll event after `snapPage` grows the viewport and again once it is restored, so the page is back in its viewport state for what the sequence does next, for UI that follows scroll events only (a tray that hides once its inline counterpart is in view, a back-to-top button). Default true. */
   scrollEvent?: boolean;
   /** For `snapPage`: a `position: fixed` element keeps the top it had at the device viewport, instead of following its `bottom` inset to the end of the grown page (a promo drawer, a chat bubble, a cookie banner). Default true. */
   floating?: boolean;
@@ -482,7 +482,7 @@ export function stabilize({
       if (motion) await addPersistentStyle(page, NO_TRANSITIONS);
     },
     async beforeSnap(shot, { page }) {
-      // A pin a shot that threw left behind goes first, before the freeze and the scroll event meet it.
+      // A pin left behind goes first, before the freeze meets it: afterRestore takes it off, so this is for a restore that itself failed.
       if (floating) await page.evaluate(fixedElements, "release");
       // The pointer stays where the last click left it, and whatever moved under it (a card, a menu) is drawn in
       // :hover. Off the viewport nothing is hovered; the page's mouseleave handlers run. Out through the left
@@ -498,8 +498,6 @@ export function stabilize({
         const { steps, capped } = await page.evaluate(scrollPass);
         if (capped) shot.notes.push(`scroll pass stopped after ${steps} steps`);
       }
-      // At the viewport of this shot: a tray that hid for a grown snapPage shows again once the viewport is back.
-      if (scrollEvent) await page.evaluate(fireScroll);
       if (motion) {
         await page.evaluate(stopMotion);
         // Playwright also finishes or cancels an animation that starts after this pass (a resize handler, a late
@@ -558,11 +556,13 @@ export function stabilize({
       if (motion) await page.evaluate(stopMotion);
       if (floating) await page.evaluate(fixedElements, "pin");
     },
-    // The file is written and the viewport is still grown: the page's own insets come back. A shot that threw before this
-    // leaves the pin until the next shot, which clears it first; at the device viewport a pinned element sits where it was.
-    async afterSnap(_shot, { page }) {
-      // The page may have navigated by now (a timer): the file is written, so that is not the shot's failure.
+    // The viewport and the scroll position are back, the shot taken or failed: the page's own insets come back, then the page
+    // hears the scroll event for its own viewport, so what the sequence does next finds it as it was (a tray the grow hid shows
+    // again). If the restore itself failed this does not run, and the next shot's beforeSnap releases the pin.
+    async afterRestore(_shot, { page }) {
+      // The page may have navigated by now (a timer): that is not the shot's failure.
       if (floating) await page.evaluate(fixedElements, "release").catch(() => undefined);
+      if (scrollEvent) await page.evaluate(fireScroll).catch(() => undefined);
     },
   };
 }

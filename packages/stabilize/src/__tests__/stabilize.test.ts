@@ -805,6 +805,18 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
+  // A click on the tray right after snapPage, before any other shot: it waits for the tray to be visible, and gives up after 3 s.
+  restored: `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/scrollevent");
+  await seq.snapPage();
+  writeFileSync(join(seq.dir, "after.json"), JSON.stringify(await page.evaluate(() => window.__facts())));
+  await page.locator("#tray").click({ timeout: 3000 });
+});
+`,
   drawer: floatSequence("/drawer", "\n  await page.setViewportSize({ width: 1920, height: 1080 });"),
   own: floatSequence("/own"),
   shapes: `
@@ -1523,7 +1535,7 @@ describe("motion after snapPage grows the viewport", () => {
 });
 
 describe("scrollEvent", () => {
-  it("is on by default: a scroll event fires once snapPage grew the viewport, and again before the next shot: the tray hides, then shows", async () => {
+  it("is on by default: a scroll event fires once snapPage grew the viewport, and again once it is restored: the tray hides, then shows", async () => {
     const r = await run("scrollevent");
     expect(r.status, r.out).toBe(0);
     expect(probe(r.dir, "01").facts).toEqual({ tray: "none", heard: "yes" }); // at the document, bubbling to the window
@@ -1532,6 +1544,13 @@ describe("scrollEvent", () => {
     expect(full.at(640, 719)).toEqual([255, 255, 255]); // and not pinned at the first screen either: it is gone
     expect(probe(r.dir, "02").facts?.tray).toBe("block"); // back at one screen from the top
     expect((await image(join(r.dir, "02.png"))).at(640, 719)).toEqual([200, 0, 0]);
+  });
+
+  it("shows the tray again as soon as snapPage returns, before any other shot: a click on it between shots finds it", async () => {
+    const r = await run("restored");
+    expect(r.status, r.out).toBe(0); // the click would time out on a tray left hidden by the grown viewport
+    expect(probe(r.dir, "01").facts?.tray).toBe("none"); // hidden while the shot was taken
+    expect(after(r.dir)).toEqual({ tray: "block", heard: "yes" });
   });
 
   it("with scrollEvent: false no scroll event fires on the grow: the tray stays, where the first screen had it", async () => {
@@ -1702,10 +1721,10 @@ describe("floating", () => {
     expect(p.rects.stay?.top).toBe(620);
   });
 
-  it("leaves a pin only until the next shot: a refused snapPage, then a snap with no override", async () => {
+  it("takes the pin off when the viewport is restored, even for a refused snapPage, before any other shot", async () => {
     const r = await run("followdrawer");
     expect(r.status, r.out).toBe(0);
-    expect(after(r.dir)).toEqual({ refused: true, inline: "620px|auto" }); // where the refusal left it
+    expect(after(r.dir)).toEqual({ refused: true, inline: "|" }); // read right after the refusal
     expect(probe(r.dir, "01").facts?.inline).toBe("|");
   });
 });

@@ -58,8 +58,8 @@ element sits where its insets put it in the grown viewport (a `bottom: 0` bar at
 the page end). With `@snapseq/stabilize` a fixed element that was on the first
 screen keeps its vertical position where the plugin can give it one (its README
 lists what it leaves alone), and a tray the page hides on scroll is hidden:
-growing from the top scrolls nothing, so the plugin fires the scroll event itself
-(`scrollEvent`).
+growing from the top scrolls nothing, so the plugin fires the scroll event itself,
+after the grow and again once the viewport is restored (`scrollEvent`).
 A page about one screen tall whose content
 scrolls inside an element rather than the document (`html` and `body` at 100%
 height with `overflow: hidden`, a scrolling `main`) is not grown: the shot is
