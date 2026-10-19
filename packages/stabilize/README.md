@@ -79,7 +79,10 @@ in flow. Width units (`vw`) are left alone: the width never changes.
   the page had it, and each shot taken while it is unreadable carries the note
   `cannot read <url>: its viewport units stay live`, noted on the shot's line in
   the terminal (the URL without its query string, cut to 80 characters). The
-  refetch is tried once per page load.
+  refetch is tried once per page load. A stylesheet that stays unreadable is
+  then fetched once as text, with CORS and for 3 s at most: when that works
+  and the text has no viewport unit outside quotes and `url(...)`, there is
+  nothing to freeze and the shots carry no note.
 
   Security: the URLs to fetch again come from the page, which may name any URL.
   While a cross-origin stylesheet is fetched again, a route answers that URL
@@ -153,8 +156,13 @@ variant. Off, the page's own preference is left alone.
   started, and a cross-origin stylesheet added while the viewport is grown.
 - Vertical writing modes: `vb` is frozen as a height and `vi` is left alone,
   as in horizontal text.
-- A cross-origin stylesheet that redirects, or that a script imports with
-  `@import`: it is noted on the shots and its viewport units stay live.
+- A cross-origin stylesheet that redirects, or that a stylesheet imports with
+  its own `@import` (a font service's CSS): the browser loads an import without
+  CORS, so no refetch can open it, and its viewport units stay live. It is
+  noted on the shots only when its text has a viewport unit or cannot be
+  fetched with CORS; `@font-face` rules alone say nothing. An `@import` inside
+  that text is not followed. A stylesheet that arrives after the first shot, or
+  whose imports load after it, carries the note from the next shot on.
 - A cross-origin stylesheet that a `replay` entry or a HAR route serves: the
   plugin's route runs first and fetches it live, falling back to the earlier
   routes only when that fetch fails. The replayed copy then carries no CORS

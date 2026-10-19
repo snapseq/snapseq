@@ -142,7 +142,7 @@ const swapLinks = async () => {
 // Rewrites every viewport-height unit (vh, svh, lvh, dvh, vmin, vmax, vb and
 // their variants) in the page's CSS to px, at the viewport as it is now. The
 // page's own value is kept per declaration, so the next shot freezes it again at
-// the viewport of that shot. Open shadow roots and adopted stylesheets are reached. Resolves to the hrefs unreadable now.
+// the viewport of that shot. Open shadow roots and adopted stylesheets are reached. Resolves to the hrefs unreadable now that may hold a viewport unit.
 const freezeUnits = async () => {
   type Saved = { value: string; priority: string; frozen: string };
   type State = {
@@ -150,10 +150,11 @@ const freezeUnits = async () => {
     bases: Record<string, number>;
     warned: Set<string>;
     unreadable: Set<string>;
+    checked: Map<string, boolean>;
     observer?: MutationObserver;
   };
   const host = window as unknown as { __snapseqViewportUnits?: State };
-  const state = (host.__snapseqViewportUnits ??= { originals: new WeakMap(), bases: {}, warned: new Set(), unreadable: new Set() });
+  const state = (host.__snapseqViewportUnits ??= { originals: new WeakMap(), bases: {}, warned: new Set(), unreadable: new Set(), checked: new Map<string, boolean>() });
 
   // Reported on every call, so every shot says it; `warned` is for findLinks, which tries a sheet once per document.
   const note = (href: string) => {
@@ -306,7 +307,16 @@ const freezeUnits = async () => {
   }
   run();
 
-  return { unreadable: Array.from(state.unreadable) };
+  // An unreadable sheet no refetch can open (a cross-origin @import loads without CORS) is fetched as text once per
+  // document, 3 s at most, and noted only when that fails or the text has a viewport unit. An @import in it is not followed.
+  await Promise.all(
+    Array.from(state.unreadable, async (href) => {
+      if (state.checked.has(href)) return;
+      const text = await fetch(href, { signal: AbortSignal.timeout(3000) }).then((r) => (r.ok ? r.text() : undefined)).catch(() => undefined);
+      state.checked.set(href, text === undefined || convert(text) !== text);
+    }),
+  );
+  return { unreadable: Array.from(state.unreadable).filter((href) => state.checked.get(href)) };
 };
 
 // What goes into the manifest and the terminal: no credentials, query string or fragment (a signed CDN URL), at most 80 characters.

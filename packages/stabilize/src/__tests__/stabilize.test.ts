@@ -105,6 +105,11 @@ addEventListener("resize", () => {
 const importPage = (cdn: string) =>
   `<!doctype html><html><head><style>@import url("${cdn}/style.css");</style></head><body style="margin:0"><div id="xo"></div></body></html>`;
 
+// A same-origin sheet that @imports a cross-origin one, as a font service's is: the import loads without CORS, so its
+// rules stay unreadable even though its server sends the header. /fonts.css imports @font-face rules only, /units.css a 50vh.
+const sheetImportPage = (sheet: string) =>
+  `<!doctype html><html><head><link rel="stylesheet" href="${sheet}"></head><body style="margin:0"><div id="u"></div><div style="height:1000px"></div></body></html>`;
+
 // A cross-origin sheet that a script turned off, as a theme switch does: no attribute, only the sheet's flag.
 const disabledPage = (cdn: string) =>
   `<!doctype html><html><head><link rel="stylesheet" href="${cdn}/style.css"></head><body style="margin:0"><div id="xo"></div><script>
@@ -406,6 +411,16 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
+  imports: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/fontimport");
+  await seq.snap();
+  await page.goto("/unitimport");
+  await seq.snap();
+  await seq.snap();
+});
+`,
   redirect: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -627,6 +642,11 @@ function cdnServer() {
       res.writeHead(200, { "content-type": "application/json", "set-cookie": "session=s3cret; Path=/" });
       res.end('{"secret":true}');
     } else if (url.startsWith("/style.css")) send(res, "text/css", "#xo { height: 100vh; background: url(img.png) }");
+    // Imported, with the CORS header a font service sends; the font's URL looks like a viewport unit.
+    else if (url.startsWith("/fonts.css") || url.startsWith("/units.css")) {
+      res.writeHead(200, { "content-type": "text/css", "access-control-allow-origin": "*" });
+      res.end(url.startsWith("/fonts.css") ? '@font-face { font-family: "F"; src: url(/f-100vh.woff2) format("woff2") }' : "#u { height: 50vh }");
+    }
     else if (url.startsWith("/img.png") || url.startsWith("/v1/img.png")) send(res, "image/png", PNG_1x1);
     else if (url.startsWith("/old/style.css")) {
       res.writeHead(302, { location: "/v1/style.css" });
@@ -651,6 +671,8 @@ function appServer(cdn: string) {
     "/iframe": iframePage(cdn),
     "/widget": WIDGET_PAGE,
     "/import": importPage(cdn),
+    "/fontimport": sheetImportPage("/fonts.css"),
+    "/unitimport": sheetImportPage("/units.css"),
     "/disabled": disabledPage(cdn),
     "/shadow": SHADOW_PAGE,
     "/rewrite": REWRITE_PAGE,
@@ -671,6 +693,7 @@ function appServer(cdn: string) {
     const path = (req.url ?? "").split("?")[0]!;
     const page = pages[path];
     if (path === "/imported.css") send(res, "text/css", "#imp { height: 25vh }");
+    else if (path === "/fonts.css" || path === "/units.css") send(res, "text/css", `@import url("${cdn}${path}");`);
     else if (path === "/lazy.png") send(res, "image/png", PNG_1x1);
     else if (path === "/slow.css") setTimeout(() => send(res, "text/css", "#slow { height: 100vh }"), 300);
     else if (path === "/cached.txt") {
@@ -970,8 +993,9 @@ describe("a sheet that stays unreadable", () => {
     const note = `cannot read ${cdn.url}/flaky.css: its viewport units stay live`;
     expect(noted(r.out)).toEqual([`snapseq: 01.png taken with ${note}  ${app.url}/flaky`, `snapseq: 02.png taken with ${note}  ${app.url}/flaky`]);
     expect(probe(r.dir, "01").rects.flaky?.height).toBe(720); // the original sheet still applies, live
-    // The page's, the plugin's one refetch (500, passed on) and the browser's own request after it, all with the full URL.
-    expect(cdn.hits.slice(before).filter((u) => u.startsWith("/flaky.css"))).toEqual(Array(3).fill("/flaky.css?sig=abc"));
+    // The page's, the plugin's one refetch (500, passed on), the browser's own request after it and the one check of its
+    // text (500 again), all with the full URL.
+    expect(cdn.hits.slice(before).filter((u) => u.startsWith("/flaky.css"))).toEqual(Array(4).fill("/flaky.css?sig=abc"));
     expect(noted(r.out).join("\n")).not.toContain("sig=abc"); // the note shows the URL without its query string
     // A route turns the HTTP cache off. The sequence fetched a cacheable file twice before the first shot and twice
     // after the refetch: one request each means no route was there, at the start or once the refetch was done.
@@ -987,7 +1011,21 @@ describe("sheets the plugin cannot or should not fetch again", () => {
     expect(r.status, r.out).toBe(0);
     // The disabled sheet's page says nothing.
     expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/style.css: its viewport units stay live  ${app.url}/import`]);
-    expect(cdn.hits.slice(before).filter((u) => u.startsWith("/style.css"))).toHaveLength(2); // one request per page
+    // The import's and the check of its text (no CORS header: still noted), then the disabled sheet's.
+    expect(cdn.hits.slice(before).filter((u) => u.startsWith("/style.css"))).toHaveLength(3);
+  });
+});
+
+describe("a cross-origin sheet that a same-origin sheet imports", () => {
+  it("is noted only when its text has a viewport unit, and its text is fetched once per document", async () => {
+    const before = cdn.hits.length;
+    const r = await run("imports");
+    expect(r.status, r.out).toBe(0);
+    const note = `cannot read ${cdn.url}/units.css: its viewport units stay live  ${app.url}/unitimport`;
+    expect(noted(r.out)).toEqual([`snapseq: 02.png taken with ${note}`, `snapseq: 03.png taken with ${note}`]);
+    const hits = cdn.hits.slice(before);
+    expect(hits.filter((u) => u.startsWith("/fonts.css"))).toHaveLength(2); // the import's, the check's
+    expect(hits.filter((u) => u.startsWith("/units.css"))).toHaveLength(2); // two shots, one check
   });
 });
 
