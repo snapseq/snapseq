@@ -18,7 +18,7 @@ Start with the [core README](packages/snapseq/README.md) and its [docs](packages
 ```bash
 pnpm install             # every package; builds each dist/ via prepare
 pnpm typecheck
-pnpm test                # every package; the core's integration tests run real Chromium
+pnpm test                # every package; packages/e2e drives the built packages through real Chromium
 pnpm changeset           # one per changed package
 pnpm changeset version   # bump versions and write changelogs
 pnpm release             # publish what changed, tag

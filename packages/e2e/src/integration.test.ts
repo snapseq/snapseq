@@ -18,7 +18,7 @@ import { PDFDocument } from "@cantoo/pdf-lib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Drives the BUILT package through the real Playwright CLI, the way a consumer would.
-const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../../snapseq");
 const PW_CLI = join(PKG, "node_modules/@playwright/test/cli.js");
 const AUTH = `Basic ${Buffer.from("u:p").toString("base64")}`;
 // Smooth scrolling, a running animation and a transition on a <details> fold's pseudo-element,

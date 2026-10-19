@@ -7,9 +7,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // A consumer in a scratch dir imports the BUILT packages by name. Types must come from
 // index.d.ts under ESM and index.d.cts under CJS, or node16 resolution raises TS1479.
-const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../../snapseq");
 const PACKAGES = resolve(PKG, "..");
-const TSC = join(PKG, "node_modules/.bin/tsc");
+const TSC = resolve(dirname(fileURLToPath(import.meta.url)), "../node_modules/.bin/tsc");
 const LINKS: Record<string, string> = {
   snapseq: PKG,
   "@snapseq/label": join(PACKAGES, "label"),

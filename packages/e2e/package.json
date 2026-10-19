@@ -1,0 +1,22 @@
+{
+  "name": "@snapseq/e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Consumer-style tests: the built packages installed into a scratch project and driven through the real Playwright CLI.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cantoo/pdf-lib": "2.11.1",
+    "@playwright/test": "1.59.1",
+    "@snapseq/label": "workspace:*",
+    "@snapseq/pdf": "workspace:*",
+    "@snapseq/stabilize": "workspace:*",
+    "@types/node": "^25.6.0",
+    "snapseq": "workspace:*",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}
