@@ -421,6 +421,26 @@ describe("createSequence", () => {
       expect(lines(seq)).toEqual(["01.png  http://x/p"]); // the shot itself was listed
     });
 
+    it("runs every plugin's afterRestore even when an earlier one throws, then throws the first error; other hooks stop at the first throw", async () => {
+      const { page } = makePageStub();
+      const ran: string[] = [];
+      const plugins: Plugin[] = [
+        { name: "a", afterRestore: async () => { ran.push("a"); throw new Error("first"); } },
+        { name: "b", afterRestore: async () => { ran.push("b"); throw new Error("second"); } },
+        { name: "c", afterRestore: async () => void ran.push("c") },
+      ];
+      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      await expect(seq.snapPage()).rejects.toThrow('snapseq: plugin "a" threw in afterRestore on 01.png: first');
+      expect(ran).toEqual(["a", "b", "c"]);
+      const stops: string[] = [];
+      const grow: Plugin[] = [
+        { name: "a", afterGrow: async () => { stops.push("a"); throw new Error("x"); } },
+        { name: "b", afterGrow: async () => void stops.push("b") },
+      ];
+      await expect(createSequence(makePageStub().page, root, "cap2", { plugins: grow, ctx }).snapPage()).rejects.toThrow('plugin "a" threw in afterGrow');
+      expect(stops).toEqual(["a"]); // an afterGrow throw stops at the first plugin
+    });
+
     it("keeps a fullPage that a beforeSnap hook set off a snapPage screenshot; snap passes it on", async () => {
       const { page, calls } = makePageStub();
       const seen: unknown[] = [];

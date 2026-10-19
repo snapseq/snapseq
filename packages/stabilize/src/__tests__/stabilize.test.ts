@@ -561,8 +561,8 @@ window.__facts = () => ({ y: String(scrollY) });
 </script></body></html>`;
 
 // What the config hands to Playwright. The probe writes, beside each shot and while snapPage still has the
-// viewport grown, the geometry of every element with an id, inside open shadow roots too. It is listed before the plugin,
-// whose afterSnap hands the page's own insets back: the probe sees the page as the screenshot did. STAB is the plugin's options as JSON; NO_STAB leaves it out.
+// viewport grown, the geometry of every element with an id, inside open shadow roots too. The plugin hands the page's own
+// insets back in afterRestore, after every afterSnap, so the probe sees the page as the screenshot did wherever it is listed. STAB is the plugin's options as JSON; NO_STAB leaves it out.
 const CONFIG = (host: string) => `
 import { writeFileSync } from "node:fs";
 import { defineConfig } from "snapseq";

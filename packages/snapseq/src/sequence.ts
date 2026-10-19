@@ -403,14 +403,18 @@ export function createSequence(
     return { name, path: join(full, name), url: page.url(), index, options: { ...options }, notes: [], format: { ...format }, deviceScaleFactor: ratio };
   };
   const hooks = async (kind: "beforeSnap" | "afterGrow" | "afterSnap" | "afterRestore", shot: Shot): Promise<void> => {
+    let first: Error | undefined;
     for (const plugin of plugins) {
       try {
         await plugin[kind]?.(shot, ctx as SequenceContext);
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
-        throw new Error(`snapseq: plugin "${plugin.name}" threw in ${kind} on ${shot.name}: ${message}`, { cause });
+        first ??= new Error(`snapseq: plugin "${plugin.name}" threw in ${kind} on ${shot.name}: ${message}`, { cause });
+        // A cleanup hook runs for every plugin, whatever an earlier one did; the others stop at the first throw.
+        if (kind !== "afterRestore") break;
       }
     }
+    if (first) throw first;
   };
   const take = async (shot: Shot, readiness: string[]): Promise<string> => {
     // Claimed this late so a shot refused before its screenshot (snapPage's height check) gives its number back.

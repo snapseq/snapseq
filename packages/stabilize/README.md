@@ -151,7 +151,9 @@ two shots finds it. The event is synthetic: `isTrusted` is `false`, and a handle
 ignores it. Any scroll handler runs, not only the tray's, and some react in
 ways you do not want:
 
-- A header that hides on scroll down and treats a zero delta as down is hidden.
+- A header that hides on scroll down and treats a zero delta as down is hidden in
+  the full page, and the restore event has a zero delta too, so it also stays
+  hidden between `snapPage` and the sequence's next step.
 - A "bottom reached" handler, such as an infinite scroll that appends on each
   event or a 100 % scroll beacon, runs on each grow and on the restore. One that
   appends content every time keeps the document growing, and `snapPage` refuses

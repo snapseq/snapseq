@@ -165,9 +165,10 @@ skipped by a file-level `skipIf` then gets no directory.
   throwing `afterSnap`), so a plugin that changed the page for the grown
   viewport undoes it here, and the page is in its viewport state for what the
   sequence does next. It does not run for `snap`, or when `beforeSnap` threw
-  or the viewport could not be restored. After a shot that was taken, a
-  throw fails the sequence; after one that failed, it is swallowed, as the
-  shot's own error is the one reported.
+  or the viewport could not be restored. Every plugin's `afterRestore` runs,
+  whatever an earlier one threw, and then the first error is thrown: after a
+  shot that was taken it fails the sequence; after one that failed it is
+  swallowed, as the shot's own error is the one reported.
 - **`done`** runs once, only when the sequence body passed, with every shot of
   this sequence and device in order. It runs before the page closes, in its
   own step named after the plugin. A sequence that used `seq` but took no shot
@@ -266,8 +267,8 @@ directory is wiped when the sequence starts, so a rerun starts the file over.
 - `ctx.seq.shots` lists the shots so far, in order, each one's hooks passed.
   In `beforeSnap` and `afterSnap` the current shot is not in it yet.
 
-`beforeSnap` and `afterSnap` run in the middle of the sequence. Take no shot of
-your own from either: one shot runs at a time, and a `seq.snap()` from a hook
-throws. Leave `ctx.page` as you found it in `afterSnap`; `beforeSnap` changes
+`beforeSnap` and `afterSnap` run in the middle of the sequence, and so do
+`afterGrow` and `afterRestore` inside `snapPage`. Take no shot of your own from
+any of them: one shot runs at a time, and a `seq.snap()` from a hook throws. Leave `ctx.page` as you found it in `afterSnap`; `beforeSnap` changes
 it on purpose. Work on the file, as `label` and `pdf` do, rather than in a
 browser of your own.
