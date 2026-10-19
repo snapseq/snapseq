@@ -8,7 +8,8 @@ left alone.
 
 ## Install
 
-In the app that has snapseq. Peer dependency: `snapseq`.
+In the app that has snapseq. Peer dependency: `snapseq`. Runtime dependency:
+`sharp` 0.35.
 
 ```bash
 pnpm add -D snapseq-label
@@ -32,12 +33,15 @@ label({ theme: "dark" })   // black strip, white text
 label({ scale: true })     // the strip follows the device scale factor
 ```
 
-`background` and `color` take any CSS color and win over the theme.
+`background` and `color` win over the theme. They must be colors librsvg
+understands: named colors, hex and `rgb()`. An unknown color draws black.
 
 ## Use
 
 ```ts
 // captures/home.capture.ts
+import { capture } from "snapseq";
+
 capture(async ({ page, seq }) => {
   await page.goto("/");
   await seq.snap({ label: "0.0 Home" });      // 01.png, with the strip
@@ -69,9 +73,14 @@ never resampled. The file is rewritten in place.
 - Without `scale`, the strip is 24 px of the file at any device scale factor,
   so on a 2x shot it reads as 12 CSS px. `scale: true` makes it follow the
   factor: 48 px on a 2x shot, 96 px on a 4x one. A function maps the factor to
-  the scale instead, e.g. `scale: (dsf) => Math.max(1, dsf / 2)`.
+  the scale instead, e.g. `scale: (dsf) => Math.max(1, dsf / 2)`. A scale that
+  is not a finite number above 0 throws.
 - A JPEG is decoded and encoded again at the configured `format` quality.
-- The text is drawn with a system font that fontconfig can find. A container
-  with no fonts installed draws an empty strip, so install one there.
+- The text is drawn with a system font that fontconfig can find. A system with
+  no fonts installed draws each character as a box, so install one there, e.g.
+  `fonts-dejavu-core` on a Debian or Ubuntu image.
+- Control characters and lone surrogates in a label are drawn as spaces.
+- Color emoji may render as monochrome or solid shapes in the SVG path the
+  strip uses (sharp through librsvg), so keep them out of a label.
 
 More: [Plugins](https://github.com/syantra/snapseq/blob/main/packages/snapseq/docs/plugins.md), on how they run and how to write one.
