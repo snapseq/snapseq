@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import type { CaptureContext, ShotFormat, SnapOptions } from "snapseq";
+import type { SequenceContext, ShotFormat, SnapOptions } from "snapseq";
 import { afterEach, describe, expect, it } from "vitest";
 import { label, type LabelOptions } from "../index.js";
 
@@ -34,7 +34,7 @@ async function run(
   text: SnapOptions["label"],
   { plugin = {}, format = {}, dsf = 1 }: { plugin?: LabelOptions; format?: ShotFormat; dsf?: number } = {},
 ) {
-  const ctx = { seq: { dir } } as unknown as CaptureContext;
+  const ctx = { seq: { dir } } as unknown as SequenceContext;
   const shot = { name: "", path, url: "", index: 1, options: { label: text }, notes: [], format, deviceScaleFactor: dsf };
   await label(plugin).afterSnap!(shot, ctx);
 }

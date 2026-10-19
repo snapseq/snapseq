@@ -2,9 +2,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CaptureContext } from "../fixtures.js";
+import type { SequenceContext } from "../fixtures.js";
 import type { Plugin } from "../plugin.js";
-import { createSequence, type SnapOptions } from "../sequence.js";
+import { createSequence, type Sequence, type SnapOptions } from "../sequence.js";
+
+// Each listed shot as one line: name, URL, then its notes.
+const lines = (seq: Sequence) => seq.shots.map((s) => `${s.name}  ${s.url}${s.notes.length > 0 ? `  ${s.notes.join(", ")}` : ""}`);
 
 // The page's window as the scroll save and restore see it: they run for real against it. A new one is a reload.
 function makeWindow(timeOrigin: number, events: string[]) {
@@ -89,9 +92,7 @@ describe("createSequence", () => {
     // snapPage shoots the viewport, which it has grown to the document; native full page is opt-in.
     expect(calls.map((c) => c.fullPage)).toEqual([false, false, true]);
     expect(page.screenshot.mock.calls[0]?.[0]).toEqual({ path: join(seq.dir, "01.png") }); // png by its extension
-    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe(
-      "01.png  http://x/p\n02.png  http://x/p\n03.png  http://x/p\n",
-    );
+    expect(lines(seq)).toEqual(["01.png  http://x/p", "02.png  http://x/p", "03.png  http://x/p"]);
   });
 
   it("pads shot numbers to the numbering's width", async () => {
@@ -102,10 +103,9 @@ describe("createSequence", () => {
     expect(readdirSync(two.dir).sort()).toEqual([
       ...Array.from({ length: 9 }, (_, i) => `0${i + 1}.png`),
       "10.png",
-      "shots.txt",
     ]);
-    expect(readdirSync(four.dir).sort()).toEqual(["0001.png", "shots.txt"]);
-    expect(readFileSync(join(four.dir, "shots.txt"), "utf8")).toBe("0001.png  http://x/p\n");
+    expect(readdirSync(four.dir)).toEqual(["0001.png"]);
+    expect(lines(four)).toEqual(["0001.png  http://x/p"]);
   });
 
   it("writes .jpg files when the format is jpeg, passing its type and quality through", async () => {
@@ -113,14 +113,14 @@ describe("createSequence", () => {
     const seq = createSequence(page, root, "cap", { format: { type: "jpeg", quality: 60 } });
     await seq.snap();
     await seq.snapPage({ omitBackground: true });
-    expect(readdirSync(seq.dir).sort()).toEqual(["01.jpg", "02.jpg", "shots.txt"]);
+    expect(readdirSync(seq.dir).sort()).toEqual(["01.jpg", "02.jpg"]);
     expect(page.screenshot.mock.calls[1]?.[0]).toEqual({
       path: join(seq.dir, "02.jpg"),
       type: "jpeg",
       quality: 60,
       omitBackground: true,
     });
-    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe("01.jpg  http://x/p\n02.jpg  http://x/p\n");
+    expect(lines(seq)).toEqual(["01.jpg  http://x/p", "02.jpg  http://x/p"]);
   });
 
   it("snapPage grows the viewport to the document height and restores it, also when the shot fails", async () => {
@@ -162,7 +162,7 @@ describe("createSequence", () => {
     expect(existsSync(join(outside, "keep.txt"))).toBe(true);
   });
 
-  it("records a readiness cap on the shot's line and warns, and says nothing otherwise", async () => {
+  it("records a readiness cap on the shot and warns, and says nothing otherwise", async () => {
     const { page } = makePageStub();
     const seq = createSequence(page, root, "cap");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -175,10 +175,11 @@ describe("createSequence", () => {
       return !src.includes("MutationObserver") && !src.includes("document.fonts"); // the DOM never went quiet, the fonts never settled
     });
     await seq.snap();
-    // Two spaces separate the fields of the file's line; the terminal line reads as a sentence.
-    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe(
-      "01.png  http://x/p\n02.png  http://x/p  DOM still changing after 3 s, font readiness still pending after 5 s, 2 images still loading after 5 s (first: http://x/a.png), 1 image failed to load\n",
-    );
+    // The notes stay on the shot; the terminal line reads as a sentence.
+    expect(lines(seq)).toEqual([
+      "01.png  http://x/p",
+      "02.png  http://x/p  DOM still changing after 3 s, font readiness still pending after 5 s, 2 images still loading after 5 s (first: http://x/a.png), 1 image failed to load",
+    ]);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toBe(
       "snapseq: 02.png taken with DOM still changing after 3 s, font readiness still pending after 5 s, 2 images still loading after 5 s (first: http://x/a.png), 1 image failed to load  http://x/p",
@@ -205,7 +206,7 @@ describe("createSequence", () => {
     await expect(seq.snap()).rejects.toThrow(
       "page.screenshot: Timeout 3000ms exceeded.; readiness: DOM still changing after 3 s, 1 image still loading after 5 s (first: http://x/a.png)",
     );
-    expect(existsSync(join(seq.dir, "shots.txt"))).toBe(false); // neither was listed
+    expect(seq.shots).toEqual([]); // neither was listed
   });
 
   it("snapPage refuses a page whose height follows the viewport, and restores the viewport", async () => {
@@ -236,7 +237,7 @@ describe("createSequence", () => {
     const plugins: Plugin[] = [
       { name: "s", beforeSnap: async (shot) => void shot.notes.push("cannot read x.css: its viewport units stay live") },
     ];
-    const seq = createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as CaptureContext });
+    const seq = createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as SequenceContext });
     await expect(seq.snapPage()).rejects.toThrow(
       "Use snap({ fullPage: true }) for this page. Notes: cannot read x.css: its viewport units stay live",
     );
@@ -282,13 +283,11 @@ describe("createSequence", () => {
     await seq.snapPage();
     expect(events).toContain("container");
     expect(viewports).toEqual([{ width: 400, height: 300 }]); // the restore only
-    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe(
-      "01.png  http://x/p  the page scrolls inside <main.content> not the document: scrollable content may be omitted\n",
-    );
+    expect(lines(seq)).toEqual(["01.png  http://x/p  the page scrolls inside <main.content> not the document: scrollable content may be omitted"]);
   });
 
   describe("plugins", () => {
-    const ctx = { device: "d1" } as CaptureContext;
+    const ctx = { device: "d1" } as SequenceContext;
 
     it("passes what a beforeSnap hook put in the options to the screenshot, but never its path or type", async () => {
       const { page } = makePageStub();
@@ -361,8 +360,7 @@ describe("createSequence", () => {
       await seq.snap();
       expect(seen).toEqual(["http://x/p"]);
       expect(titles).toEqual(["01.png  http://x/later"]);
-      expect(seq.shots[0]?.url).toBe("http://x/later");
-      expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe("01.png  http://x/later\n");
+      expect(lines(seq)).toEqual(["01.png  http://x/later"]);
     });
 
     it("hands beforeSnap no notes and afterSnap the readiness notes", async () => {
@@ -400,13 +398,13 @@ describe("createSequence", () => {
       });
       expect(page.screenshot).not.toHaveBeenCalled();
       await seq.snap();
-      expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe("01.png  http://x/p\n");
+      expect(lines(seq)).toEqual(["01.png  http://x/p"]);
     });
 
-    it("runs afterSnap hooks in listing order, after the file is written and before its shots.txt line", async () => {
+    it("runs afterSnap hooks in listing order, after the file is written and before the shot is listed", async () => {
       const { page } = makePageStub();
       const events: string[] = [];
-      const listed = () => (existsSync(join(seq.dir, "shots.txt")) ? readFileSync(join(seq.dir, "shots.txt"), "utf8") : "");
+      const listed = () => seq.shots.map((s) => s.name).join(",");
       const plugins: Plugin[] = [
         {
           name: "a",
@@ -423,10 +421,10 @@ describe("createSequence", () => {
       expect(events).toEqual([
         'a 01.png written=true ctx=true listed=""',
         "b 01.png",
-        'a 02.png written=true ctx=true listed="01.png  http://x/p\\n"',
+        'a 02.png written=true ctx=true listed="01.png"',
         "b 02.png",
       ]);
-      expect(listed()).toBe("01.png  http://x/p\n02.png  http://x/p\n");
+      expect(listed()).toBe("01.png,02.png");
     });
 
     it("fails the shot when an afterSnap hook throws, naming the plugin and the file, and does not list it", async () => {
@@ -439,7 +437,6 @@ describe("createSequence", () => {
       await expect(seq.snap()).rejects.toThrow(new Error('snapseq: plugin "boom" threw in afterSnap on 01.png: kaput'));
       await expect(seq.snap()).rejects.toMatchObject({ cause: kaput });
       expect(existsSync(join(seq.dir, "01.png"))).toBe(true);
-      expect(existsSync(join(seq.dir, "shots.txt"))).toBe(false);
       expect(seq.shots).toEqual([]);
     });
 
@@ -516,10 +513,10 @@ describe("createSequence", () => {
     expect(performance.now() - started).toBeLessThan(1000);
     expect(images.map((img) => img.adds)).toEqual([2, 2, 2]); // a load and an error listener each
     expect(images.map((img) => [img.live.load!.size, img.live.error!.size])).toEqual([[0, 0], [0, 0], [0, 0]]);
-    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe("01.png  http://x/p\n");
+    expect(lines(seq)).toEqual(["01.png  http://x/p"]);
   });
 
-  it("wipes a directory a hook wrote into its own on a rerun; only another capture's output stops the wipe", async () => {
+  it("wipes a directory a hook wrote into its own on a rerun", async () => {
     const plugins: Plugin[] = [
       {
         name: "thumbs",
@@ -544,7 +541,7 @@ describe("createSequence", () => {
     expect(seq.shots.map((s) => s.name)).toEqual(["01.png", "02.png"]);
   });
 
-  it("does not list a shot whose hook resolved after the capture ended", async () => {
+  it("does not list a shot whose hook resolved after the sequence ended", async () => {
     const { page } = makePageStub();
     const ended = new AbortController();
     let release!: () => void;
@@ -556,20 +553,20 @@ describe("createSequence", () => {
     await new Promise((r) => setTimeout(r, 20)); // the hook is pending
     ended.abort();
     release();
-    await expect(late).rejects.toThrow("the capture ended before 01.png was listed");
+    await expect(late).rejects.toThrow("the sequence ended before 01.png was listed");
     expect(seq.shots).toHaveLength(0);
-    expect(existsSync(join(seq.dir, "shots.txt"))).toBe(false);
   });
 
   it("hands a hook its own copy of format and notes", async () => {
     const { page } = makePageStub();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const seq = createSequence(page, root, "cap", {
       plugins: [{ name: "mut", afterSnap: async (shot) => { shot.format.type = "jpeg"; shot.notes.push("x\ninjected"); } }],
     });
     await seq.snap();
     await seq.snap();
-    expect(readdirSync(seq.dir).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
-    expect(readFileSync(join(seq.dir, "shots.txt"), "utf8")).toBe("01.png  http://x/p\n02.png  http://x/p\n");
+    expect(readdirSync(seq.dir).sort()).toEqual(["01.png", "02.png"]);
+    expect(warn).not.toHaveBeenCalled(); // the pushed note never reached the terminal line
   });
 
   it("takes the scale factor from the context's option, and bounds what the page says when it is unset", async () => {
@@ -590,7 +587,7 @@ describe("createSequence", () => {
     const { page } = makePageStub();
     const seen: number[] = [];
     const plugins: Plugin[] = [{ name: "d", beforeSnap: async (shot) => void seen.push(shot.deviceScaleFactor) }];
-    const seq = createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as CaptureContext });
+    const seq = createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as SequenceContext });
     await seq.snap();
     await seq.snapPage();
     expect(seen).toEqual([2, 2]);

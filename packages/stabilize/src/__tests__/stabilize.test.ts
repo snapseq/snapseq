@@ -184,7 +184,7 @@ const TRANSFORM_PAGE = `<!doctype html><html><head><style>html { transform: scal
 window.__facts = () => ({ height: getComputedStyle(document.getElementById("tall")).height });
 </script></body></html>`;
 
-// An inline value the capture rewrites between the shots: the same px, now !important.
+// An inline value the sequence rewrites between the shots: the same px, now !important.
 const PRIORITY_PAGE = `<!doctype html><html><body style="margin:0"><div id="p" style="height: 100vh"></div><script>
 window.__facts = () => {
   const s = document.getElementById("p").style;
@@ -192,7 +192,7 @@ window.__facts = () => {
 };
 </script></body></html>`;
 
-// A sheet link added by the capture right before the shot, so it is still loading when the freeze begins: the server holds it back.
+// A sheet link added by the sequence right before the shot, so it is still loading when the freeze begins: the server holds it back.
 const SLOWLINK_PAGE = `<!doctype html><html><body style="margin:0"><div id="slow"></div><div style="height:1000px"></div></body></html>`;
 
 // A cross-origin sheet whose href carries a fragment, which no request URL does.
@@ -359,24 +359,24 @@ export default defineConfig({
 });
 `;
 
-const CAPTURES: Record<string, string> = {
+const SEQUENCES: Record<string, string> = {
   snappage: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/probe");
   await seq.snapPage();
 });
 `,
   fullpage: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/probe");
   await seq.snap({ fullPage: true });
 });
 `,
   resized: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/probe");
   await seq.snap();
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -384,22 +384,22 @@ capture(async ({ page, seq }) => {
 });
 `,
   late: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/late");
   await seq.snapPage();
 });
 `,
   keep: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/keep");
   await seq.snapPage();
 });
 `,
   sheets: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/import");
   await seq.snap();
   await page.goto("/disabled");
@@ -407,29 +407,29 @@ capture(async ({ page, seq }) => {
 });
 `,
   redirect: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/redirect");
   await seq.snap();
 });
 `,
   iframe: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/iframe");
   await seq.snapPage();
 });
 `,
   widget: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/widget");
   await seq.snapPage();
 });
 `,
   flaky: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/flaky");
   await page.evaluate(async () => { for (const u of ["/cached.txt?a", "/cached.txt?a"]) await fetch(u); });
   await seq.snap();
@@ -438,43 +438,43 @@ capture(async ({ page, seq }) => {
 });
 `,
   hostile: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/hostile");
   await seq.snap();
 });
 `,
   shadow: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/shadow");
   await seq.snapPage();
 });
 `,
   rewrite: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/rewrite");
   await seq.snapPage();
 });
 `,
   inline: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/inline");
   await seq.snapPage();
 });
 `,
   transform: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/transform");
   await seq.snap();
 });
 `,
   priority: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/priority");
   await seq.snap();
   await page.evaluate(() => {
@@ -485,8 +485,8 @@ capture(async ({ page, seq }) => {
 });
 `,
   slowlink: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/slowlink");
   await page.evaluate(() => {
     const link = document.createElement("link");
@@ -498,15 +498,15 @@ capture(async ({ page, seq }) => {
 });
 `,
   fragment: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/fragment");
   await seq.snapPage();
 });
 `,
   anim: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/anim");
   await seq.snapPage();
 });
@@ -514,8 +514,8 @@ capture(async ({ page, seq }) => {
   follow: `
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/follow");
   let refused = "";
   try {
@@ -528,8 +528,8 @@ capture(async ({ page, seq }) => {
 });
 `,
   hover: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/hover");
   await page.click("#go");
   // The browser hovers what is under a still pointer once the layout changed: wait for it, so the shot is of a hovered card.
@@ -538,8 +538,8 @@ capture(async ({ page, seq }) => {
 });
 `,
   hoverkeep: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/hover");
   await page.click("#go");
   await page.waitForFunction(() => document.getElementById("card").matches(":hover"));
@@ -547,44 +547,44 @@ capture(async ({ page, seq }) => {
 });
 `,
   reveal: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/reveal");
   await seq.snap({ fullPage: true });
 });
 `,
   hydrate: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/hydrate");
   await seq.snap({ fullPage: true });
 });
 `,
   revealsnap: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/reveal");
   await seq.snap();
 });
 `,
   revealmid: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/reveal");
   await page.evaluate(() => scrollTo(0, 6000)); // the sections above were never in view
   await seq.snap({ fullPage: true });
 });
 `,
   long: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/long");
   await seq.snap({ fullPage: true, clip: { x: 0, y: 0, width: 100, height: 100 } });
 });
 `,
   motion: `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/motion");
   await seq.snap();
   await seq.snap();
@@ -692,8 +692,8 @@ function makeProject(host: string): string {
   symlinkSync(join(PKG, "node_modules", "@playwright", "test"), join(dir, "node_modules", "@playwright", "test"));
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   writeFileSync(join(dir, "snapseq.config.ts"), CONFIG(host));
-  mkdirSync(join(dir, "captures"));
-  for (const [name, src] of Object.entries(CAPTURES)) writeFileSync(join(dir, "captures", `${name}.capture.ts`), src);
+  mkdirSync(join(dir, "snapseq"));
+  for (const [name, src] of Object.entries(SEQUENCES)) writeFileSync(join(dir, "snapseq", `${name}.seq.ts`), src);
   return dir;
 }
 
@@ -734,19 +734,19 @@ interface Probe {
   facts: Record<string, string> | null;
 }
 const probe = (dir: string, shot = "01"): Probe => JSON.parse(readFileSync(join(dir, `${shot}.json`), "utf8"));
-// The lines of shots.txt: `01.png  <url>  <notes>`.
-const listed = (dir: string) => readFileSync(join(dir, "shots.txt"), "utf8").trim().split("\n");
+// The notes the run printed, one line per shot taken with any: `snapseq: 01.png taken with <notes>  <url>`.
+const noted = (out: string) => out.match(/snapseq: \d+\.png taken with .*/g) ?? [];
 
 let cdn: Awaited<ReturnType<typeof cdnServer>>;
 let app: Awaited<ReturnType<typeof appServer>>;
 let project: string;
 let runs = 0;
 
-// One Playwright run of one capture into its own run directory, so no run overwrites another's files.
-async function run(capture: string, env: Record<string, string> = {}) {
+// One Playwright run of one sequence into its own run directory, so no run overwrites another's files.
+async function run(sequence: string, env: Record<string, string> = {}) {
   const name = `run${++runs}`;
-  const r = await playwright(project, [`${capture}\\.capture`], { SNAPSEQ_RUN: name, ...env });
-  return { ...r, dir: join(project, "out", name, capture, "d1") };
+  const r = await playwright(project, [`${sequence}\\.seq`], { SNAPSEQ_RUN: name, ...env });
+  return { ...r, dir: join(project, "out", name, sequence, "d1") };
 }
 
 beforeAll(async () => {
@@ -909,7 +909,7 @@ describe("a cross-origin stylesheet whose href has a fragment", () => {
     const r = await run("fragment");
     expect(r.status, r.out).toBe(0);
     expect(r.out).not.toContain("cannot read");
-    expect(listed(r.dir)).toEqual([`01.png  ${app.url}/fragment`]);
+    expect(noted(r.out)).toEqual([]);
     expect(probe(r.dir).rects.xo?.height).toBe(720);
   });
 });
@@ -968,13 +968,12 @@ describe("a sheet that stays unreadable", () => {
     const r = await run("flaky");
     expect(r.status, r.out).toBe(0);
     const note = `cannot read ${cdn.url}/flaky.css: its viewport units stay live`;
-    expect(listed(r.dir)).toEqual([`01.png  ${app.url}/flaky  ${note}`, `02.png  ${app.url}/flaky  ${note}`]);
-    expect(r.out).toMatch(new RegExp(`snapseq: 01\\.png taken with +${note.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)); // and in the terminal, whatever the spacing
+    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with ${note}  ${app.url}/flaky`, `snapseq: 02.png taken with ${note}  ${app.url}/flaky`]);
     expect(probe(r.dir, "01").rects.flaky?.height).toBe(720); // the original sheet still applies, live
     // The page's, the plugin's one refetch (500, passed on) and the browser's own request after it, all with the full URL.
     expect(cdn.hits.slice(before).filter((u) => u.startsWith("/flaky.css"))).toEqual(Array(3).fill("/flaky.css?sig=abc"));
-    expect(readFileSync(join(r.dir, "shots.txt"), "utf8")).not.toContain("sig=abc"); // the note shows the URL without its query string
-    // A route turns the HTTP cache off. The capture fetched a cacheable file twice before the first shot and twice
+    expect(noted(r.out).join("\n")).not.toContain("sig=abc"); // the note shows the URL without its query string
+    // A route turns the HTTP cache off. The sequence fetched a cacheable file twice before the first shot and twice
     // after the refetch: one request each means no route was there, at the start or once the refetch was done.
     const cached = app.hits.slice(appBefore).filter((u) => u.startsWith("/cached.txt"));
     expect(cached.sort()).toEqual(["/cached.txt?a", "/cached.txt?b"]);
@@ -986,10 +985,8 @@ describe("sheets the plugin cannot or should not fetch again", () => {
     const before = cdn.hits.length;
     const r = await run("sheets");
     expect(r.status, r.out).toBe(0);
-    expect(listed(r.dir)).toEqual([
-      `01.png  ${app.url}/import  cannot read ${cdn.url}/style.css: its viewport units stay live`,
-      `02.png  ${app.url}/disabled`, // the disabled sheet's page says nothing
-    ]);
+    // The disabled sheet's page says nothing.
+    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/style.css: its viewport units stay live  ${app.url}/import`]);
     expect(cdn.hits.slice(before).filter((u) => u.startsWith("/style.css"))).toHaveLength(2); // one request per page
   });
 });
@@ -1002,7 +999,7 @@ describe("a stylesheet that redirects", () => {
     const before = cdn.hits.length;
     const r = await run("redirect");
     expect(r.status, r.out).toBe(0);
-    expect(listed(r.dir)).toEqual([`01.png  ${app.url}/redirect  cannot read ${cdn.url}/old/style.css: its viewport units stay live`]);
+    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/old/style.css: its viewport units stay live  ${app.url}/redirect`]);
     expect(probe(r.dir).rects.hero?.height).toBe(720); // the original sheet still applies, live
     const hits = cdn.hits.slice(before);
     expect(hits).toContain("/v1/img.png");
@@ -1021,12 +1018,12 @@ describe("a page that reports a URL of its own as an unreadable stylesheet", () 
     expect(probe(r.dir).facts?.leaked).toBe("false");
     expect(secretCookies.length).toBeGreaterThan(before); // the page's link, the plugin's fetch and the browser's own requests reached the server
     expect(secretCookies.slice(before).filter(Boolean)).toEqual([]); // the session cookie it set is never sent back
-    expect(listed(r.dir)).toEqual([`01.png  ${app.url}/hostile  cannot read ${cdn.url}/secret.json: its viewport units stay live`]);
+    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/secret.json: its viewport units stay live  ${app.url}/hostile`]);
   });
 });
 
 describe("a stylesheet requested by a frame built by script", () => {
-  it("does not hang the capture", async () => {
+  it("does not hang the sequence", async () => {
     const started = Date.now();
     const r = await run("iframe");
     expect(r.status, r.out).toBe(0);
@@ -1113,14 +1110,14 @@ describe("scroll pass for snap({ fullPage: true })", () => {
     expect(p.facts?.last).toBe("1");
     expect(p.facts?.src).toBe(`${app.url}/lazy.png`);
     expect(p.facts?.y).toBe("0");
-    expect(listed(r.dir)).toEqual([`01.png  ${app.url}/reveal`]); // no note
+    expect(noted(r.out)).toEqual([]); // no note
   });
 
   it("starts from the top, not from where the page was scrolled to", async () => {
     const r = await run("revealmid", { STAB: JSON.stringify({ scroll: true }) });
     expect(r.status, r.out).toBe(0);
     const p = probe(r.dir);
-    expect(p.facts?.mid).toBe("1"); // three screens above the position the capture left the page at
+    expect(p.facts?.mid).toBe("1"); // three screens above the position the sequence left the page at
     expect(p.facts?.last).toBe("1");
     expect(p.facts?.y).toBe("6000");
   });
@@ -1151,7 +1148,7 @@ describe("scroll pass for snap({ fullPage: true })", () => {
     const r = await run("long", { STAB: JSON.stringify({ scroll: true }) });
     expect(r.status, r.out).toBe(0);
     const p = probe(r.dir);
-    expect(listed(r.dir)).toEqual([`01.png  ${app.url}/long  scroll pass stopped after 60 steps`]);
+    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with scroll pass stopped after 60 steps  ${app.url}/long`]);
     expect(p.facts?.y).toBe("300");
   });
 });

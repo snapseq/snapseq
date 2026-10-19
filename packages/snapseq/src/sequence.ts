@@ -1,7 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { mkdirSync, rmSync } from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { Page, PageScreenshotOptions } from "@playwright/test";
-import type { CaptureContext } from "./fixtures.js";
+import type { SequenceContext } from "./fixtures.js";
 import type { Plugin, Shot } from "./plugin.js";
 
 /**
@@ -290,7 +290,7 @@ const scrollContainer = (page: Page, viewport: { width: number; height: number }
     return best;
   }, { v: viewport, shown: SHOWN });
 
-// One line each in shots.txt and the terminal: no control, format or line-separator characters, no blanks, each once.
+// One line in the terminal: no control, format or line-separator characters, no blanks, each once.
 const clean = (notes: readonly unknown[]): string[] => [
   ...new Set(
     notes.map((note) => String(note).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, " ").trim().slice(0, 200)).filter(Boolean),
@@ -326,7 +326,7 @@ async function ready(page: Page, notes: string[], all: boolean, clip?: SnapOptio
 
 /**
  * Numbered screenshots (`01.png`, `02.png`, …; as wide as `numbering`, in
- * `format`) in `root/dir`, listed with their URLs in `shots.txt` once every
+ * `format`) in `root/dir`, listed in `shots` once every
  * plugin's `afterSnap` hook passed. The directory is wiped on
  * creation so a run never mixes with the previous run's files; it must lie
  * inside `root`.
@@ -345,14 +345,14 @@ export function createSequence(
     deviceScaleFactor,
   }: {
     // Runs one shot; the fixture wraps it in a `test.step` titled `01.png  <url>`,
-    // so the terminal view can count shots and say where the capture is.
+    // so the terminal view can count shots and say where the sequence is.
     wrap?: (title: string, shoot: () => Promise<void>) => Promise<void>;
     numbering?: string;
     format?: ShotFormat;
     plugins?: readonly Plugin[];
     // What the hooks get; the fixture always passes it.
-    ctx?: CaptureContext;
-    // Aborted when the capture ends: a shot still in flight then is not listed.
+    ctx?: SequenceContext;
+    // Aborted when the sequence ends: a shot still in flight then is not listed.
     signal?: AbortSignal;
     // The context's deviceScaleFactor option; the fixture passes it.
     deviceScaleFactor?: number;
@@ -365,12 +365,7 @@ export function createSequence(
   if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
     throw new Error(`snapseq: refusing to wipe ${full}: not inside ${root}`);
   }
-  // A shots.txt below the directory's own is another capture's output (home/mobile.capture.ts on desktop writes
-  // into home.capture.ts's mobile/), which the wipe would take. Any other directory, a hook's, goes with the rest.
-  const nested = existsSync(full) ? readdirSync(full, { recursive: true, encoding: "utf8" }).find((entry) => entry.endsWith(`${sep}shots.txt`)) : undefined;
-  if (nested) {
-    throw new Error(`snapseq: refusing to wipe ${full}: it holds another capture's output (${dirname(nested)}); rename one of the captures`);
-  }
+  // Whole, a hook's own directory inside included: the fixture has refused a directory another sequence writes into.
   rmSync(full, { recursive: true, force: true });
   mkdirSync(full, { recursive: true });
 
@@ -393,7 +388,7 @@ export function createSequence(
   const hooks = async (kind: "beforeSnap" | "afterSnap", shot: Shot): Promise<void> => {
     for (const plugin of plugins) {
       try {
-        await plugin[kind]?.(shot, ctx as CaptureContext);
+        await plugin[kind]?.(shot, ctx as SequenceContext);
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         throw new Error(`snapseq: plugin "${plugin.name}" threw in ${kind} on ${shot.name}: ${message}`, { cause });
@@ -403,7 +398,7 @@ export function createSequence(
   const take = async (shot: Shot, readiness: string[]): Promise<string> => {
     // Claimed this late so a shot refused before its screenshot (snapPage's height check) gives its number back.
     counter = shot.index;
-    // Locals: an afterSnap hook that edits the shot must not reach the step or the manifest.
+    // Locals: an afterSnap hook that edits the shot must not reach the step or the list.
     const { name, path } = shot;
     shot.url = page.url(); // a beforeSnap hook may have navigated
     const url = shot.url;
@@ -423,10 +418,8 @@ export function createSequence(
       }
       // Inside the step, so the shot counts only once its hooks passed.
       await hooks("afterSnap", shot);
-      if (signal?.aborted) throw new Error(`snapseq: the capture ended before ${name} was listed`);
+      if (signal?.aborted) throw new Error(`snapseq: the sequence ended before ${name} was listed`);
       shots.push(shot);
-      const note = notes.length > 0 ? `  ${notes.join(", ")}` : "";
-      appendFileSync(join(full, "shots.txt"), `${name}  ${url}${note}\n`);
       // Worker stderr reaches every reporter; the list reporter prints it under the step.
       if (notes.length > 0) console.warn(`snapseq: ${name} taken with ${notes.join(", ")}  ${url}`);
     });
@@ -434,7 +427,7 @@ export function createSequence(
   };
 
   // One shot at a time: a second snap before the first resolved (a hook taking
-  // its own, a Promise.all in a capture) would number and list them out of order.
+  // its own, a Promise.all in a sequence) would number and list them out of order.
   let busy = false;
   const one = async <T>(shoot: () => Promise<T>): Promise<T> => {
     if (busy) throw new Error("snapseq: a shot is already in progress; await each snap before the next");
@@ -475,7 +468,7 @@ export function createSequence(
       }));
       const restore = async () => {
         await page.setViewportSize(viewport);
-        // A navigation in flight after a listed shot must not fail the capture over its scroll position.
+        // A navigation in flight after a listed shot must not fail the sequence over its scroll position.
         await page
           .evaluate(({ origin, left, top }) => {
             if (window.performance.timeOrigin === origin) window.scrollTo({ left, top, behavior: "instant" });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PDFDocument } from "@cantoo/pdf-lib";
 import sharp from "sharp";
-import type { CaptureContext, Shot } from "snapseq";
+import type { SequenceContext, Shot } from "snapseq";
 import { afterEach, describe, expect, it } from "vitest";
 import { pdf } from "../index.js";
 
@@ -19,7 +19,7 @@ function setup() {
   tmp = mkdtempSync(join(tmpdir(), "snapseq-pdf-"));
   const dir = join(tmp, "run", "home", "desktop");
   mkdirSync(dir, { recursive: true });
-  return { dir, ctx: { seq: { dir } } as unknown as CaptureContext };
+  return { dir, ctx: { seq: { dir } } as unknown as SequenceContext };
 }
 
 async function makeShot(dir: string, index: number, width: number, height: number, jpeg = false, deviceScaleFactor = 1): Promise<Shot> {
@@ -78,7 +78,7 @@ describe("pdf", () => {
     ]);
   });
 
-  it("removes the previous run's PDF when a capture begins", async () => {
+  it("removes the previous run's PDF when a sequence begins", async () => {
     const { dir, ctx } = setup();
     const file = join(dir, "..", "desktop.pdf");
     writeFileSync(file, "stale");
@@ -118,7 +118,7 @@ describe("pdf", () => {
     expect((await pageSizes(join(dir, "..", "desktop.pdf"))).length).toBe(n);
   });
 
-  it("removes a stale partial PDF when a capture begins", async () => {
+  it("removes a stale partial PDF when a sequence begins", async () => {
     const { dir, ctx } = setup();
     const file = join(dir, "..", "desktop.partial.pdf");
     writeFileSync(file, "stale");
@@ -126,7 +126,7 @@ describe("pdf", () => {
     expect(existsSync(file)).toBe(false);
   });
 
-  it("writes the shots so far to <device>.partial.pdf when a capture fails", async () => {
+  it("writes the shots so far to <device>.partial.pdf when a sequence fails", async () => {
     const { dir, ctx } = setup();
     const shots = [await makeShot(dir, 1, 400, 300), await makeShot(dir, 2, 400, 900)];
 
@@ -139,13 +139,13 @@ describe("pdf", () => {
     expect(existsSync(join(dir, "..", "desktop.pdf"))).toBe(false);
   });
 
-  it("writes no partial PDF when a capture fails before its first shot", async () => {
+  it("writes no partial PDF when a sequence fails before its first shot", async () => {
     const { dir, ctx } = setup();
     await pdf().failed!([], ctx);
     expect(existsSync(join(dir, "..", "desktop.partial.pdf"))).toBe(false);
   });
 
-  it("writes nothing for an empty capture", async () => {
+  it("writes nothing for an empty sequence", async () => {
     const { dir, ctx } = setup();
     await pdf().done!([], ctx);
     expect(existsSync(join(dir, "..", "desktop.pdf"))).toBe(false);

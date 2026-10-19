@@ -275,7 +275,7 @@ addEventListener("load", () => {
 function makeProject(opts: {
   esm: boolean;
   config: string;
-  captures: Record<string, string>;
+  sequences: Record<string, string>;
 }): string {
   const dir = mkdtempSync(join(tmpdir(), "snapseq-it-"));
   mkdirSync(join(dir, "node_modules", "@playwright"), { recursive: true });
@@ -292,8 +292,8 @@ function makeProject(opts: {
   }
   if (opts.esm) writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   writeFileSync(join(dir, "snapseq.config.ts"), opts.config);
-  for (const [rel, src] of Object.entries(opts.captures)) {
-    const file = join(dir, "captures", rel);
+  for (const [rel, src] of Object.entries(opts.sequences)) {
+    const file = join(dir, "snapseq", rel);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, src);
   }
@@ -344,6 +344,8 @@ function snapseq(
 }
 
 const REPORTER = join(PKG, "dist", "reporter.js");
+// The notes the run printed for the shots taken at `url`, in order: `snapseq: 01.png taken with <notes>  <url>`.
+const noted = (out: string, url: string) => (out.match(/snapseq: \d+\.png taken with .*/g) ?? []).filter((line) => line.endsWith(`  ${url}`));
 
 function pngSize(file: string): [number, number] {
   const buf = readFileSync(file);
@@ -354,9 +356,9 @@ function pngSize(file: string): [number, number] {
 const pdfPages = async (file: string) =>
   (await PDFDocument.load(readFileSync(file))).getPages().map((p) => [p.getWidth(), p.getHeight()]);
 
-const captureA = `
-import { capture } from "snapseq";
-capture(async ({ page, seq, ctx, env, device }) => {
+const sequenceA = `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq, ctx, env, device }) => {
   if (ctx.env !== env || ctx.device !== device || ctx.seq !== seq) throw new Error("ctx mismatch");
   await page.goto("/a?env=" + env + "&device=" + device);
   await seq.snap();
@@ -364,9 +366,9 @@ capture(async ({ page, seq, ctx, env, device }) => {
 });
 `;
 
-const captureB = `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+const sequenceB = `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/b");
   await seq.snap();
 });
@@ -374,10 +376,10 @@ capture(async ({ page, seq }) => {
 
 // A file-level skip must run before the seq fixture, so the skipped device gets
 // no directory at all.
-const captureC = `
-import { capture, skipIf } from "snapseq";
+const sequenceC = `
+import { sequence, skipIf } from "snapseq";
 skipIf(({ device }) => device !== "d1", "d1 only");
-capture(async ({ page, seq }) => { await page.goto("/c"); await seq.snap(); });
+sequence(async ({ page, seq }) => { await page.goto("/c"); await seq.snap(); });
 `;
 
 function freePort(): Promise<number> {
@@ -422,10 +424,10 @@ export default defineConfig({
   screenshotsDir: "out",
 });
 `,
-    captures: {
-      "a.capture.ts": captureA,
-      "nested/b.capture.ts": captureB,
-      "c.capture.ts": captureC,
+    sequences: {
+      "a.seq.ts": sequenceA,
+      "nested/b.seq.ts": sequenceB,
+      "c.seq.ts": sequenceC,
     },
   });
   dirs.push(project);
@@ -437,7 +439,7 @@ afterAll(async () => {
 });
 
 describe("snapseq via the Playwright CLI", () => {
-  it("writes numbered screenshots per capture and project, wipes only its own dirs, self-gitignores, and de-headlesses the UA", async () => {
+  it("writes numbered screenshots per sequence and project, wipes only its own dirs, self-gitignores, and de-headlesses the UA", async () => {
     const out = join(project, "out");
     mkdirSync(join(out, "run1", "a", "d1"), { recursive: true });
     writeFileSync(join(out, "run1", "a", "d1", "999.png"), "stale");
@@ -450,11 +452,11 @@ describe("snapseq via the Playwright CLI", () => {
     expect(r.out).toContain(`01.png  ${server.url}/a?env=dev&device=d1`); // the list reporter's step line
     expect(r.status).toBe(0);
 
-    expect(readdirSync(join(out, "run1", "a", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
-    expect(readdirSync(join(out, "run1", "a", "d2")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
-    expect(readdirSync(join(out, "run1", "nested", "b", "d1")).sort()).toEqual(["01.png", "shots.txt"]);
+    expect(readdirSync(join(out, "run1", "a", "d1")).sort()).toEqual(["01.png", "02.png"]);
+    expect(readdirSync(join(out, "run1", "a", "d2")).sort()).toEqual(["01.png", "02.png"]);
+    expect(readdirSync(join(out, "run1", "nested", "b", "d1")).sort()).toEqual(["01.png"]);
     // the skipped device has no dir
-    expect(readdirSync(join(out, "run1", "c", "d1")).sort()).toEqual(["01.png", "shots.txt"]);
+    expect(readdirSync(join(out, "run1", "c", "d1")).sort()).toEqual(["01.png"]);
     expect(existsSync(join(out, "run1", "c", "d2"))).toBe(false);
     expect(existsSync(join(out, "unrelated", "d1", "01.png"))).toBe(true);
     expect(readFileSync(join(out, ".gitignore"), "utf8")).toBe("*\n");
@@ -473,18 +475,18 @@ describe("snapseq via the Playwright CLI", () => {
   });
 
   // The filter is a regex (Playwright's): the dot is escaped so a temp dir ending in "a" cannot match too.
-  it("a file filter re-runs only that capture", async () => {
+  it("a file filter re-runs only that sequence", async () => {
     const out = join(project, "out");
     writeFileSync(join(out, "run1", "nested", "b", "d1", "stale.png"), "stale");
-    const r = await playwright(project, ["a\\.capture", "--project", "d1"]);
+    const r = await playwright(project, ["a\\.seq", "--project", "d1"]);
     expect(r.out).toContain("1 passed");
     expect(existsSync(join(out, "run1", "nested", "b", "d1", "stale.png"))).toBe(true);
-    expect(readdirSync(join(out, "run1", "a", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
+    expect(readdirSync(join(out, "run1", "a", "d1")).sort()).toEqual(["01.png", "02.png"]);
   });
 
   it("SNAPSEQ_ENV picks the env and SNAPSEQ_HOST overrides its host", async () => {
     const before = server.hits.length;
-    const r = await playwright(project, ["a\\.capture", "--project", "d1"], {
+    const r = await playwright(project, ["a\\.seq", "--project", "d1"], {
       SNAPSEQ_ENV: "dead",
       SNAPSEQ_HOST: server.url,
     });
@@ -499,7 +501,7 @@ describe("snapseq via the Playwright CLI", () => {
   });
 
   it("rejects --repeat-each", async () => {
-    const r = await playwright(project, ["a\\.capture", "--project", "d1", "--repeat-each", "2"]);
+    const r = await playwright(project, ["a\\.seq", "--project", "d1", "--repeat-each", "2"]);
     expect(r.status).not.toBe(0);
     expect(r.out).toContain("not supported");
   });
@@ -516,10 +518,10 @@ export default defineConfig({
   format: { type: "jpeg", quality: 50 },
 });
 `,
-      captures: {
-        "p.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+      sequences: {
+        "p.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   const res = await page.goto("/protected/x");
   if (res?.status() !== 200) throw new Error("status " + res?.status());
   // A third-party image behind the same kind of challenge must not get the password.
@@ -538,9 +540,9 @@ capture(async ({ page, seq }) => {
     dirs.push(cjs);
     // The built reporter, loaded by a CommonJS consumer.
     const r = await playwright(cjs, ["--reporter", REPORTER]);
-    expect(r.out).toContain("1 passed  1 shot  .screenshots/run1");
+    expect(r.out).toContain("1 passed  1 shot  screenshots/run1");
     expect(r.status).toBe(0);
-    const shot = readFileSync(join(cjs, ".screenshots", "run1", "p", "d1", "01.jpg"));
+    const shot = readFileSync(join(cjs, "screenshots", "run1", "p", "d1", "01.jpg"));
     expect([...shot.subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]); // a JPEG, by its magic bytes
     expect(server.hits.some((h) => h.url === "/protected/x" && h.auth === AUTH)).toBe(true);
     expect(other.hits.map((h) => h.url)).toContain("/protected/i.png");
@@ -549,17 +551,17 @@ capture(async ({ page, seq }) => {
   });
 
   it("refuses a run name that leaves the screenshots dir, before anything is wiped", async () => {
-    // Where SNAPSEQ_RUN=../outside would put capture a on d1, and wipe.
+    // Where SNAPSEQ_RUN=../outside would put sequence a on d1, and wipe.
     const sentinel = join(project, "outside", "a", "d1", "keep.txt");
     mkdirSync(dirname(sentinel), { recursive: true });
     writeFileSync(sentinel, "keep");
-    const r = await playwright(project, ["a\\.capture", "--project", "d1"], { SNAPSEQ_RUN: "../outside" });
+    const r = await playwright(project, ["a\\.seq", "--project", "d1"], { SNAPSEQ_RUN: "../outside" });
     expect(r.status).not.toBe(0);
     expect(r.out).toContain('SNAPSEQ_RUN must be a directory name, not a path: "../outside"');
     expect(existsSync(sentinel)).toBe(true);
   });
 
-  it("refuses to wipe a capture's directory that holds another capture's output, and deletes nothing", async () => {
+  it("refuses to wipe a sequence's directory that another sequence writes into, and deletes nothing", async () => {
     const p = makeProject({
       esm: true,
       config: `
@@ -570,19 +572,18 @@ export default defineConfig({
   screenshotsDir: "out",
 });
 `,
-      captures: { "home.capture.ts": captureB },
+      // home/d1.seq.ts writes home/d1/<device>/, inside what home.seq.ts on d1 wipes.
+      sequences: { "home.seq.ts": sequenceB, "home/d1.seq.ts": sequenceB },
     });
     dirs.push(p);
-    // What home/d1.capture.ts on d2 writes: inside home.capture.ts's directory on d1.
     const theirs = join(p, "out", "run1", "home", "d1", "d2", "01.png");
     const mine = join(p, "out", "run1", "home", "d1", "01.png");
     mkdirSync(dirname(theirs), { recursive: true });
     writeFileSync(theirs, "keep");
-    writeFileSync(join(dirname(theirs), "shots.txt"), "01.png  http://x/\n");
     writeFileSync(mine, "stale");
-    const r = await playwright(p, ["--project", "d1"]);
+    const r = await playwright(p, ["home\\.seq", "--project", "d1"]);
     expect(r.status).not.toBe(0);
-    expect(r.out).toContain(`${join("home", "d1")}: it holds another capture's output (d2); rename one of the captures`);
+    expect(r.out).toContain(`refusing to wipe ${join("run1", "home", "d1")}: ${join("home", "d1.seq.ts")} writes inside it; rename one of the sequences`);
     expect(readFileSync(theirs, "utf8")).toBe("keep");
     expect(readFileSync(mine, "utf8")).toBe("stale");
   });
@@ -592,7 +593,7 @@ describe("snapseq bin", () => {
   it("translates --env, --host and --device, and finds the config in cwd", async () => {
     const before = server.hits.length;
     const r = await snapseq(project, [
-      "a\\.capture",
+      "a\\.seq",
       "--device",
       "d1",
       "--env",
@@ -606,7 +607,7 @@ describe("snapseq bin", () => {
   });
 
   it("passes unknown flags through to playwright test", async () => {
-    const r = await snapseq(project, ["a\\.capture", "--device=d1", "--list"]);
+    const r = await snapseq(project, ["a\\.seq", "--device=d1", "--list"]);
     expect(r.status).toBe(0);
     expect(r.out).toContain("Total: 1 test in 1 file");
   });
@@ -618,7 +619,7 @@ describe("snapseq bin", () => {
   });
 
   it("fails clearly when no config is in cwd", async () => {
-    const r = await snapseq(project, [], {}, join(project, "captures"));
+    const r = await snapseq(project, [], {}, join(project, "snapseq"));
     expect(r.status).toBe(1);
     expect(r.out).toContain("no snapseq.config.ts in");
   });
@@ -636,10 +637,10 @@ export default defineConfig({
   devices: { d1: { viewport: { width: 320, height: 200 } } },
 });
 `,
-      captures: {
-        "w.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => { await page.goto("/w"); await seq.snap(); });
+      sequences: {
+        "w.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/w"); await seq.snap(); });
 `,
       },
     });
@@ -659,7 +660,7 @@ createServer((_, res) => { res.writeHead(200, { "content-type": "text/html" }); 
     expect(r.out).toContain("1 passed");
     expect(r.status).toBe(0);
     expect(existsSync(join(ws, "started"))).toBe(true);
-    expect(existsSync(join(ws, ".screenshots", "run1", "w", "d1", "01.png"))).toBe(true);
+    expect(existsSync(join(ws, "screenshots", "run1", "w", "d1", "01.png"))).toBe(true);
     expect(await portClosed(port)).toBe(true);
 
     rmSync(join(ws, "started"));
@@ -683,11 +684,11 @@ export default defineConfig({
   screenshotsDir: "out",
 });
 `,
-      captures: {
+      sequences: {
         // Fails unless the CSS applies to the current document AND survives two navigations.
-        "motion.capture.ts": `
-import { capture, disableTransitions } from "snapseq";
-capture(async ({ page, seq }) => {
+        "motion.seq.ts": `
+import { sequence, disableTransitions } from "snapseq";
+sequence(async ({ page, seq }) => {
   const motion = () => page.evaluate(() => {
     const el = document.getElementById("spin");
     const fold = getComputedStyle(document.getElementById("fold"), "::details-content").transitionDuration;
@@ -703,9 +704,9 @@ capture(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
-        "sticky.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "sticky.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/sticky");
   const before = page.viewportSize();
   await seq.snap({ fullPage: true }); // 001: Playwright's full page; the slot never comes into view
@@ -714,18 +715,18 @@ capture(async ({ page, seq }) => {
   await page.waitForFunction(() => !document.documentElement.classList.contains("landed"));
 });
 `,
-        "clip.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "clip.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/clip");
   await seq.snap({ clip: { x: 0, y: 0, width: 100, height: 50 } });
 });
 `,
         // Every shot waits for images: the lazy one below the fold is loaded when snapPage returns,
         // and the native full page forces it to start at all.
-        "lazy.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "lazy.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   const loaded = () => page.evaluate(() => { const i = document.getElementById("lazy"); return i.complete && i.naturalWidth > 0; });
   await page.goto("/lazy");
   if (await loaded()) throw new Error("fixture: the lazy image loaded eagerly");
@@ -750,9 +751,9 @@ capture(async ({ page, seq }) => {
 });
 `,
         // snap waits for a quiet DOM: the shot lands after the 40-frame loop, and the 3 s cap releases it on a page that never quiets.
-        "settle.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "settle.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/jsmotion");
   await seq.snap();
   if ((await page.evaluate(() => document.documentElement.dataset.done)) !== "1") throw new Error("snapped mid-motion");
@@ -780,19 +781,12 @@ capture(async ({ page, seq }) => {
     // the lazy image loaded before the height was measured: 2000 px of page plus the 100 px image
     expect(pngSize(join(out, "lazy", "d1", "01.png"))).toEqual([400, 2100]);
     expect(pngSize(join(out, "lazy", "d1", "02.png"))).toEqual([400, 2100]);
-    expect(readFileSync(join(out, "clip", "d1", "shots.txt"), "utf8")).toBe(`01.png  ${server.url}/clip\n`);
-    // A cap that released a wait is on the shot's line and in the terminal; a shot that was ready says nothing.
-    const shots = (name: string) => readFileSync(join(out, name, "d1", "shots.txt"), "utf8");
-    expect(shots("settle")).toBe(
-      `01.png  ${server.url}/jsmotion\n02.png  ${server.url}/jsmotion?forever  DOM still changing after 3 s (most changed: div#x)\n`,
-    );
-    expect(shots("lazy")).toBe(
-      `01.png  ${server.url}/lazy\n02.png  ${server.url}/lazy?2\n` +
-        `03.png  ${server.url}/chain  1 image still loading after 5 s (first: ${server.url}/stall.png)\n` +
-        `04.png  ${server.url}/chain?far  1 image still loading after 5 s (first: ${server.url}/stall.png)\n` +
-        `05.png  ${server.url}/stall  3 images still loading after 5 s (first: ${server.url}/stall.png)\n`,
-    );
-    expect(r.out).toContain(`snapseq: 05.png taken with 3 images still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/stall`);
+    // A cap that released a wait is noted in the terminal; a shot that was ready says nothing.
+    for (const quiet of ["/clip", "/jsmotion", "/lazy", "/lazy?2"]) expect(noted(r.out, server.url + quiet), quiet).toEqual([]);
+    expect(noted(r.out, `${server.url}/jsmotion?forever`)).toEqual([`snapseq: 02.png taken with DOM still changing after 3 s (most changed: div#x)  ${server.url}/jsmotion?forever`]);
+    expect(noted(r.out, `${server.url}/chain`)).toEqual([`snapseq: 03.png taken with 1 image still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/chain`]);
+    expect(noted(r.out, `${server.url}/chain?far`)).toEqual([`snapseq: 04.png taken with 1 image still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/chain?far`]);
+    expect(noted(r.out, `${server.url}/stall`)).toEqual([`snapseq: 05.png taken with 3 images still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/stall`]);
     expect(r.out.match(/snapseq: \d+\.png taken with/g)).toHaveLength(4);
   });
 });
@@ -830,19 +824,19 @@ export default defineConfig({
   ],
 });
 `,
-      captures: {
+      sequences: {
         // The click resolves once /stream commits, while it is still parsing; 600 ms later the rest arrives.
-        "stream.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "stream.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/tostream");
   await page.click("#go");
   await seq.snap();
 });
 `,
-        "images.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "images.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/manylazy");
   const t = Date.now();
   await seq.snap();
@@ -850,9 +844,9 @@ capture(async ({ page, seq }) => {
   await seq.snapPage();
 });
 `,
-        "broken.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "broken.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/broken");
   await seq.snap({ note: "from hook" });
   await page.evaluate(() => document.images[0].remove());
@@ -861,18 +855,18 @@ capture(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
-        "scale.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "scale.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/scale");
   await seq.snap({ scale: "css" });
   await seq.snap();
   await seq.snap({ cssByHook: true }); // decided at the screenshot, after the hooks
 });
 `,
-        "scroll.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "scroll.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   const y = () => page.evaluate(() => scrollY);
   await page.goto("/long");
   await page.evaluate(() => scrollTo(0, 1500));
@@ -898,9 +892,9 @@ capture(async ({ page, seq }) => {
   await seq.snapPage();
 });
 `,
-        "hidden.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "hidden.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/hidden");
   await seq.snap({ clip: { x: 0, y: 0, width: 100, height: 1000 } });
   await seq.snap({ fullPage: true });
@@ -913,22 +907,21 @@ capture(async ({ page, seq }) => {
     expect(r.out).toContain("6 passed");
     expect(r.status, r.out).toBe(0);
     const out = join(p, "out", "run1");
-    const shots = (name: string) => readFileSync(join(out, name, "d1", "shots.txt"), "utf8");
-    expect(shots("stream")).toBe(`01.png  ${server.url}/stream\n`);
+    expect(noted(r.out, `${server.url}/stream`)).toEqual([]);
     // The hooks run on the parsed document. (The shot itself waited already: fonts.ready holds until the document loads.)
     expect(readFileSync(join(out, "stream", "d1", "before.txt"), "utf8")).toMatch(/^(interactive|complete) true\n$/);
     // In view nothing is pending; the whole page is 40 images that take ten seconds.
-    expect(shots("images")).toMatch(
-      new RegExp(`^01\\.png  ${server.url}/manylazy\\n02\\.png  ${server.url}/manylazy  \\d+ images still loading after 5 s \\(first: ${server.url}/slow\\.png\\)\\n$`),
-    );
+    expect(noted(r.out, `${server.url}/manylazy`)).toEqual([
+      expect.stringMatching(new RegExp(`^snapseq: 02\\.png taken with \\d+ images still loading after 5 s \\(first: ${server.url}/slow\\.png\\)  `)),
+    ]);
     // Hook notes first, cleaned and listed once, then the readiness notes. The URL loses its credentials, query and
     // hash, and is cut to 80 characters.
     const broken = `3 images failed to load (first: ${server.url}/missing/x.png)`;
-    expect(shots("broken")).toBe(
-      `01.png  ${server.url}/broken  from hook, ${broken}\n` +
-        `02.png  ${server.url}/broken  2 images failed to load (first: ${`${server.url}/missing/${"x".repeat(90)}.png`.slice(0, 80)})\n` +
-        `03.png  ${server.url}/broken  1 image failed to load (first: a data: URL)\n`,
-    );
+    expect(noted(r.out, `${server.url}/broken`)).toEqual([
+      `snapseq: 01.png taken with from hook, ${broken}  ${server.url}/broken`,
+      `snapseq: 02.png taken with 2 images failed to load (first: ${`${server.url}/missing/${"x".repeat(90)}.png`.slice(0, 80)})  ${server.url}/broken`,
+      `snapseq: 03.png taken with 1 image failed to load (first: a data: URL)  ${server.url}/broken`,
+    ]);
     expect(r.out).toContain(`snapseq: 01.png taken with from hook, ${broken}  ${server.url}/broken`);
     // afterSnap sees the merged notes; what it pushes stays off the line.
     const probed = (name: string) => readFileSync(join(out, name, "d1", "probe.txt"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -937,27 +930,24 @@ capture(async ({ page, seq }) => {
     expect(pngSize(join(out, "scale", "d1", "01.png"))).toEqual([400, 300]);
     expect(pngSize(join(out, "scale", "d1", "02.png"))).toEqual([800, 600]);
     expect(pngSize(join(out, "scale", "d1", "03.png"))).toEqual([400, 300]);
-    // Restored after a replaceState, not after a reload (the capture checks scrollY); the scroller on screen is
+    // Restored after a replaceState, not after a reload (the sequence checks scrollY); the scroller on screen is
     // noted, the drawer off screen is not.
-    expect(shots("scroll")).toBe(
-      `01.png  ${server.url}/long\n02.png  ${server.url}/long\n03.png  ${server.url}/long#x\n` +
-        `04.png  ${server.url}/scrolly  the page scrolls inside <main.content> not the document: scrollable content may be omitted\n` +
-        `05.png  ${server.url}/drawer\n` +
-        `06.png  ${server.url}/shell  the page scrolls inside <main.content> not the document: scrollable content may be omitted\n` +
-        `07.png  ${server.url}/appshell  the page scrolls inside <app-shell div.content> not the document: scrollable content may be omitted\n` +
-        `08.png  ${server.url}/lands\n` +
-        `09.png  ${server.url}/lateshell  the page scrolls inside <main.content> not the document: scrollable content may be omitted\n` +
-        `10.png  ${server.url}/containbody  the page scrolls inside <body> not the document: scrollable content may be omitted\n`,
-    );
-    // Not refused, and not grown: the device's viewport, at 2x.
+    for (const quiet of ["/long", "/long#x", "/drawer", "/lands"]) expect(noted(r.out, server.url + quiet), quiet).toEqual([]);
+    const inner = (n: number, path: string, el: string) =>
+      `snapseq: ${String(n).padStart(2, "0")}.png taken with the page scrolls inside <${el}> not the document: scrollable content may be omitted  ${server.url}${path}`;
+    expect(noted(r.out, `${server.url}/scrolly`)).toEqual([inner(4, "/scrolly", "main.content")]);
+    expect(noted(r.out, `${server.url}/shell`)).toEqual([inner(6, "/shell", "main.content")]);
+    expect(noted(r.out, `${server.url}/appshell`)).toEqual([inner(7, "/appshell", "app-shell div.content")]);
+    expect(noted(r.out, `${server.url}/lateshell`)).toEqual([inner(9, "/lateshell", "main.content")]);
+    expect(noted(r.out, `${server.url}/containbody`)).toEqual([inner(10, "/containbody", "body")]);
     expect(pngSize(join(out, "scroll", "d1", "06.png"))).toEqual([800, 600]);
     // The data that landed during the wait made it a page: grown to its three screens.
     expect(pngSize(join(out, "scroll", "d1", "08.png"))).toEqual([800, 1800]);
     // In view, only the one at opacity 0 is pending; the full page waits for all three and counts no hidden failure.
-    expect(shots("hidden")).toBe(
-      `01.png  ${server.url}/hidden  1 image still loading after 5 s (first: ${server.url}/stall.png)\n` +
-        `02.png  ${server.url}/hidden  3 images still loading after 5 s (first: ${server.url}/stall.png)\n`,
-    );
+    expect(noted(r.out, `${server.url}/hidden`)).toEqual([
+      `snapseq: 01.png taken with 1 image still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/hidden`,
+      `snapseq: 02.png taken with 3 images still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/hidden`,
+    ]);
   });
 });
 
@@ -975,10 +965,10 @@ export default defineConfig({
     const p = makeProject({
       esm: true,
       config: config(),
-      captures: {
-        "late.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+      sequences: {
+        "late.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/lateimg", { waitUntil: "domcontentloaded" });
   await seq.snap();
 });
@@ -989,19 +979,17 @@ capture(async ({ page, seq }) => {
     const r = await playwright(p, []);
     expect(r.status, r.out).toBe(0);
     // fonts.ready waits for the load event, which waits for the image: no font is loading, so no font note.
-    expect(readFileSync(join(p, "out", "run1", "late", "d1", "shots.txt"), "utf8")).toBe(
-      `01.png  ${server.url}/lateimg  1 image still loading after 5 s (first: ${server.url}/late.png)\n`,
-    );
+    expect(noted(r.out, `${server.url}/lateimg`)).toEqual([`snapseq: 01.png taken with 1 image still loading after 5 s (first: ${server.url}/late.png)  ${server.url}/lateimg`]);
   });
 
   it("puts the readiness notes in the error when the screenshot itself times out on an image that never answers", async () => {
     const p = makeProject({
       esm: true,
       config: config(),
-      captures: {
-        "held.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+      sequences: {
+        "held.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/initstall", { waitUntil: "domcontentloaded" });
   await seq.snap({ timeout: 3000 });
 });
@@ -1021,10 +1009,10 @@ capture(async ({ page, seq }) => {
     const p = makeProject({
       esm: true,
       config: config(),
-      captures: {
-        "next.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+      sequences: {
+        "next.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/initnext", { waitUntil: "domcontentloaded" });
   await seq.snap({ timeout: 2000 });
 });
@@ -1038,25 +1026,25 @@ capture(async ({ page, seq }) => {
     expect(r.out).not.toMatch(/sig=|secret/);
     // The page holds its load event, which the teardown's screenshot waits for too: pending images are abandoned first.
     const dir = join(p, "out", "run1", "next", "d1");
-    expect(readdirSync(dir).sort()).toEqual(["failed.png", "shots.txt"]);
-    expect(readFileSync(join(dir, "shots.txt"), "utf8")).toBe(`failed.png  ${server.url}/initnext\n`);
+    expect(readdirSync(dir).sort()).toEqual(["failed.png"]);
+    expect(r.out).toContain(`failed.png  ${server.url}/initnext`);
   });
 
   it("leaves failed.png when the stalled image is a <picture> source or sits in a frame", async () => {
     const p = makeProject({
       esm: true,
       config: config(),
-      captures: {
-        "picture.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+      sequences: {
+        "picture.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/initpicture", { waitUntil: "domcontentloaded" });
   await seq.snap({ timeout: 2000 });
 });
 `,
-        "frame.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "frame.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/initframe", { waitUntil: "domcontentloaded" });
   await seq.snap({ timeout: 2000 });
 });
@@ -1068,8 +1056,8 @@ capture(async ({ page, seq }) => {
     expect(r.status).not.toBe(0);
     for (const name of ["picture", "frame"]) {
       const dir = join(p, "out", "run1", name, "d1");
-      expect(readdirSync(dir).sort(), name).toEqual(["failed.png", "shots.txt"]);
-      expect(readFileSync(join(dir, "shots.txt"), "utf8"), name).toBe(`failed.png  ${server.url}/init${name}\n`);
+      expect(readdirSync(dir).sort(), name).toEqual(["failed.png"]);
+      expect(r.out, name).toContain(`failed.png  ${server.url}/init${name}`);
     }
   });
 
@@ -1077,9 +1065,9 @@ capture(async ({ page, seq }) => {
     const p = makeProject({
       esm: true,
       config: config(),
-      captures: {
-        "loader.capture.ts": `
-import { capture } from "snapseq";
+      sequences: {
+        "loader.seq.ts": `
+import { sequence } from "snapseq";
 const queries = [
   "url=https%253A%252F%252Fuser%3Apassword%40cdn.test%2Fa.png%3Ftok%3D1%23h", // encoded twice, with credentials, a query and a hash
   "url=%20https%3A%2F%2Fuser%3Apassword%40cdn.test%2Fa.png", // a leading space
@@ -1087,7 +1075,7 @@ const queries = [
   "url=%0Adata%3Aimage%2Fpng%3Bbase64%2CAAAA", // a newline first
   "w=64&url=%2Fimg%2Fa.png%3Fsig%3Dsecret&image=%2Fb.png", // the first of the three, relative
 ];
-capture(async ({ page, seq }) => {
+sequence(async ({ page, seq }) => {
   await page.goto("/");
   for (const q of queries) {
     // A 404 answers at once: one image that failed to load, named by the note.
@@ -1107,14 +1095,14 @@ capture(async ({ page, seq }) => {
     dirs.push(p);
     const r = await playwright(p, []);
     expect(r.status, r.out).toBe(0);
-    const failed = (first: string) => `  1 image failed to load (first: ${server.url}/missing${first})\n`;
-    expect(readFileSync(join(p, "out", "run1", "loader", "d1", "shots.txt"), "utf8")).toBe(
-      `01.png  ${server.url}/${failed("?url=https://cdn.test/a.png")}` +
-        `02.png  ${server.url}/${failed("?url=https://cdn.test/a.png")}` +
-        `03.png  ${server.url}/${failed("")}` +
-        `04.png  ${server.url}/${failed("")}` +
-        `05.png  ${server.url}/${failed("?url=/img/a.png")}`,
-    );
+    const failed = (n: number, first: string) => `snapseq: 0${n}.png taken with 1 image failed to load (first: ${server.url}/missing${first})  ${server.url}/`;
+    expect(noted(r.out, `${server.url}/`)).toEqual([
+      failed(1, "?url=https://cdn.test/a.png"),
+      failed(2, "?url=https://cdn.test/a.png"),
+      failed(3, ""),
+      failed(4, ""),
+      failed(5, "?url=/img/a.png"),
+    ]);
   });
 
   it("snapPage waits for an image the grown page reveals; snap skips one an overflow box cuts out of view, by the containing block", async () => {
@@ -1143,17 +1131,17 @@ export default defineConfig({
   ],
 });
 `,
-      captures: {
-        "reveal.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+      sequences: {
+        "reveal.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/reveal", { waitUntil: "domcontentloaded" });
   await seq.snapPage();
 });
 `,
-        "panel.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "panel.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/panel");
   const t = Date.now();
   await seq.snap();
@@ -1170,16 +1158,13 @@ capture(async ({ page, seq }) => {
     const r = await playwright(p, ["--max-failures", "0"]);
     expect(r.out).toContain("2 passed");
     expect(r.status, r.out).toBe(0);
-    const shots = (name: string) => readFileSync(join(p, "out", "run1", name, "d1", "shots.txt"), "utf8");
-    expect(shots("reveal")).toBe(`01.png  ${server.url}/reveal\n`);
+    expect(noted(r.out, `${server.url}/reveal`)).toEqual([]);
     // Loaded at the shot, which came after the second grow (the first was held until the first resize).
     expect(readFileSync(join(p, "out", "run1", "reveal", "d1", "probe.txt"), "utf8")).toBe("[true,2]\n");
     // Scrolled into the panel's view, the stalled image holds the shot to the cap and is noted; of the four that
     // escape or not, the fixed one and the absolute one above its box do.
-    expect(shots("panel")).toBe(
-      `01.png  ${server.url}/panel\n02.png  ${server.url}/panel  1 image still loading after 5 s (first: ${server.url}/stall.png)\n` +
-        `03.png  ${server.url}/escape  2 images still loading after 5 s (first: ${server.url}/stall.png)\n`,
-    );
+    expect(noted(r.out, `${server.url}/panel`)).toEqual([`snapseq: 02.png taken with 1 image still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/panel`]);
+    expect(noted(r.out, `${server.url}/escape`)).toEqual([`snapseq: 03.png taken with 2 images still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/escape`]);
   });
 });
 
@@ -1197,11 +1182,11 @@ export default defineConfig({
     const p = makeProject({
       esm: true,
       config: config(),
-      captures: {
-        "font.capture.ts": `
+      sequences: {
+        "font.seq.ts": `
 import { readFileSync } from "node:fs";
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   const height = () => page.evaluate(() => document.documentElement.scrollHeight);
   await page.goto("/font", { waitUntil: "domcontentloaded" });
   const before = await height();
@@ -1224,10 +1209,10 @@ capture(async ({ page, seq }) => {
     const p = makeProject({
       esm: true,
       config: config(),
-      captures: {
-        "vh.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+      sequences: {
+        "vh.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/vh");
   const before = page.viewportSize();
   let refused = "";
@@ -1249,7 +1234,6 @@ capture(async ({ page, seq }) => {
     expect(r.out).toContain("1 passed  1 shot");
     expect(r.status).toBe(0);
     expect(pngSize(join(p, "out", "run1", "vh", "d1", "01.png"))).toEqual([400, 800]);
-    expect(readFileSync(join(p, "out", "run1", "vh", "d1", "shots.txt"), "utf8")).toBe(`01.png  ${server.url}/vh\n`);
   });
 });
 
@@ -1268,10 +1252,10 @@ export default defineConfig(
   { use: { navigationTimeout: 1000 } },
 );
 `,
-      captures: {
-        "hang.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => { await page.goto("/hang"); await seq.snap(); });
+      sequences: {
+        "hang.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/hang"); await seq.snap(); });
 `,
       },
     });
@@ -1285,7 +1269,7 @@ capture(async ({ page, seq }) => { await page.goto("/hang"); await seq.snap(); }
 });
 
 describe("timeout", () => {
-  it("counts from the last shot, and a capture that dies leaves failed.png beside its shots", async () => {
+  it("counts from the last shot, and a sequence that dies leaves failed.png beside its shots", async () => {
     const p = makeProject({
       esm: true,
       config: `
@@ -1296,19 +1280,19 @@ export default defineConfig({
   screenshotsDir: "out",
 });
 `,
-      captures: {
-        // 4.5 s of capture under a 2.5 s timeout: passes only if each shot moves the deadline.
-        "idle.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+      sequences: {
+        // 4.5 s of sequence under a 2.5 s timeout: passes only if each shot moves the deadline.
+        "idle.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/idle");
   for (let i = 0; i < 3; i++) { await page.waitForTimeout(1500); await seq.snap(); }
 });
 `,
         // One shot, then silence longer than the timeout.
-        "stuck.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "stuck.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/stuck");
   await seq.snap();
   await page.waitForTimeout(4000);
@@ -1316,9 +1300,9 @@ capture(async ({ page, seq }) => {
 });
 `,
         // Dies on a later page than its last shot.
-        "throws.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "throws.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/throws");
   await seq.snap();
   await page.goto("/throws-next");
@@ -1339,18 +1323,15 @@ capture(async ({ page, seq }) => {
     expect(r.out).not.toMatch(/[✔✖⠋⠙⠹]|waiting for|\r/);
     expect(r.out).toMatch(/FAIL\s+throws \/ d1\s+1 shot\s+[\d.]+s\s+\/throws-next\s+Error: button not found/); // the page it died on, not the last shot's
     const out = join(p, "out", "run1");
-    expect(readdirSync(join(out, "idle", "d1")).sort()).toEqual(["01.png", "02.png", "03.png", "shots.txt"]);
-    expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["01.png", "failed.png", "shots.txt"]);
-    expect(readdirSync(join(out, "throws", "d1")).sort()).toEqual(["01.png", "failed.png", "shots.txt"]);
+    expect(readdirSync(join(out, "idle", "d1")).sort()).toEqual(["01.png", "02.png", "03.png"]);
+    expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["01.png", "failed.png"]);
+    expect(readdirSync(join(out, "throws", "d1")).sort()).toEqual(["01.png", "failed.png"]);
     expect(pngSize(join(out, "stuck", "d1", "failed.png"))).toEqual([320, 200]);
-    expect(readFileSync(join(out, "throws", "d1", "shots.txt"), "utf8")).toBe(
-      `01.png  ${server.url}/throws\nfailed.png  ${server.url}/throws-next\n`,
-    );
 
     // No timeout stays no timeout: the deadline is never touched.
-    const z = await playwright(p, ["stuck\\.capture", "--timeout", "0"]);
+    const z = await playwright(p, ["stuck\\.seq", "--timeout", "0"]);
     expect(z.status).toBe(0);
-    expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
+    expect(readdirSync(join(out, "stuck", "d1")).sort()).toEqual(["01.png", "02.png"]);
   });
 });
 
@@ -1359,11 +1340,11 @@ describe("replay", () => {
     const dir = makeProject({
       esm: true,
       config: `import { defineConfig } from "snapseq";
-export default defineConfig({ envs: { dev: { host: ${JSON.stringify(server.url)}, replay: { "**/api": "captures/replay/api.json" } } }, devices: { d1: {} } });`,
-      captures: {
-        "w.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+export default defineConfig({ envs: { dev: { host: ${JSON.stringify(server.url)}, replay: { "**/api": "snapseq/replay/api.json" } } }, devices: { d1: {} } });`,
+      sequences: {
+        "w.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/widget");
   await page.locator("#v:not(:empty)").waitFor();
   const v = await page.locator("#v").textContent();
@@ -1373,12 +1354,12 @@ capture(async ({ page, seq }) => {
       },
     });
     dirs.push(dir);
-    const file = join(dir, "captures/replay/api.json");
+    const file = join(dir, "snapseq/replay/api.json");
     const apiHits = () => server.hits.filter((h) => h.url.startsWith("/api")).length;
 
     const missing = await playwright(dir, [], { EXPECT_V: "live" });
     expect(missing.status).not.toBe(0);
-    expect(missing.out).toContain("snapseq: no replay file for **/api: captures/replay/api.json");
+    expect(missing.out).toContain("snapseq: no replay file for **/api: snapseq/replay/api.json");
     expect(existsSync(file)).toBe(false);
 
     let hits = apiHits();
@@ -1392,12 +1373,12 @@ capture(async ({ page, seq }) => {
     const rep = await playwright(dir, [], { EXPECT_V: "replayed" });
     expect(rep.status, rep.out).toBe(0);
     expect(apiHits()).toBe(hits);
-    expect(existsSync(join(dir, ".screenshots/run1/w/d1/01.png"))).toBe(true);
+    expect(existsSync(join(dir, "screenshots/run1/w/d1/01.png"))).toBe(true);
   });
 });
 
 describe("plugins", () => {
-  it("runs begin before the body, afterSnap per shot, done once a capture passed and failed once it failed; a throwing hook fails the capture, naming the plugin", async () => {
+  it("runs begin before the body, afterSnap per shot, done once a sequence passed and failed once it failed; a throwing hook fails the sequence, naming the plugin", async () => {
     const p = makeProject({
       esm: true,
       config: `
@@ -1414,7 +1395,7 @@ export default defineConfig({
       name: "probe",
       begin: async (ctx) => ctx.page.route("**/marker", (route) => route.fulfill({ body: "ok" })),
       afterSnap: async (shot, ctx) => log(ctx, \`shot \${shot.name} \${shot.options.tag ?? "-"} \${ctx.device}\`),
-      done: async (shots, ctx) => log(ctx, \`capture \${shots.map((s) => s.name).join(",")}\`),
+      done: async (shots, ctx) => log(ctx, \`sequence \${shots.map((s) => s.name).join(",")}\`),
       failed: async (shots, ctx) => log(ctx, \`failed \${shots.map((s) => s.name).join(",")} png=\${existsSync(join(ctx.seq.dir, "failed.png"))}\`),
     },
     {
@@ -1426,38 +1407,38 @@ export default defineConfig({
   ],
 });
 `,
-      captures: {
-        "pass.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => { await page.goto("/pass"); await seq.snap({ tag: "x" }); await seq.snap(); });
+      sequences: {
+        "pass.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/pass"); await seq.snap({ tag: "x" }); await seq.snap(); });
 `,
-        "fails.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => { await page.goto("/fails"); await seq.snap(); throw new Error("after one shot"); });
+        "fails.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/fails"); await seq.snap(); throw new Error("after one shot"); });
 `,
-        "boom.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => { await page.goto("/boom"); await seq.snap(); });
+        "boom.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/boom"); await seq.snap(); });
 `,
-        "late.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => { await page.goto("/late"); await seq.snap(); });
+        "late.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/late"); await seq.snap(); });
 `,
-        "empty.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => { await page.goto("/empty"); void seq; });
+        "empty.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/empty"); void seq; });
 `,
-        "marker.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+        "marker.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   const r = await page.goto("/marker");
   if ((await r!.text()) !== "ok") throw new Error("begin did not run first");
   await seq.snap();
 });
 `,
-        "early.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => { await page.goto("/early"); await seq.snap(); });
+        "early.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/early"); await seq.snap(); });
 `,
       },
     });
@@ -1469,21 +1450,20 @@ capture(async ({ page, seq }) => { await page.goto("/early"); await seq.snap(); 
     expect(r.out).toContain("3 passed");
     const out = join(p, "out", "run1");
     const read = (name: string, file: string) => readFileSync(join(out, name, "d1", file), "utf8");
-    expect(read("pass", "hooks.txt")).toBe("shot 01.png x d1\nshot 02.png - d1\ncapture 01.png,02.png\n");
+    expect(read("pass", "hooks.txt")).toBe("shot 01.png x d1\nshot 02.png - d1\nsequence 01.png,02.png\n");
     expect(read("fails", "hooks.txt")).toBe("shot 01.png - d1\nfailed 01.png png=true\n"); // failed, not done, and after failed.png
-    expect(read("empty", "hooks.txt")).toBe("capture \n"); // used seq, took no shot: the hook still runs
-    expect(read("marker", "hooks.txt")).toBe("shot 01.png - d1\ncapture 01.png\n"); // the route begin set answered the body's goto
-    // A shot whose hook threw is written but not listed.
+    expect(read("empty", "hooks.txt")).toBe("sequence \n"); // used seq, took no shot: the hook still runs
+    expect(read("marker", "hooks.txt")).toBe("shot 01.png - d1\nsequence 01.png\n"); // the route begin set answered the body's goto
+    // A shot whose hook threw is written but not listed; the sequence fails and failed.png lands beside it.
     expect(r.out).toContain('snapseq: plugin "boom" threw in afterSnap on 01.png: kaput');
-    expect(existsSync(join(out, "boom", "d1", "01.png"))).toBe(true);
-    expect(read("boom", "shots.txt")).toBe(`failed.png  ${server.url}/boom\n`);
+    expect(readdirSync(join(out, "boom", "d1")).sort()).toEqual(["01.png", "failed.png", "hooks.txt"]);
     expect(r.out).toContain('snapseq: plugin "boom" threw in done: late');
-    // A begin that throws fails the capture before its body runs: no shot, no failed.png.
+    // A begin that throws fails the sequence before its body runs: no shot, no failed.png.
     expect(r.out).toContain('snapseq: plugin "boom" threw in begin: early');
     expect(readdirSync(join(out, "early", "d1"))).toEqual([]);
   });
 
-  it("@snapseq/label adds a strip to a labeled shot and @snapseq/pdf binds the capture, labels included", async () => {
+  it("@snapseq/label adds a strip to a labeled shot and @snapseq/pdf binds the sequence, labels included", async () => {
     const p = makeProject({
       esm: true,
       config: `
@@ -1501,10 +1481,10 @@ export default defineConfig({
   plugins: [label(), pdf()],
 });
 `,
-      captures: {
-        "home.capture.ts": `
-import { capture } from "snapseq";
-capture(async ({ page, seq, device }) => {
+      sequences: {
+        "home.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq, device }) => {
   await page.goto("/home");
   await seq.snap({ label: "0.0 Home" });
   // The test page has no viewport meta tag, so mobile emulation scales it and snapPage refuses it.
@@ -1520,12 +1500,11 @@ capture(async ({ page, seq, device }) => {
     expect(r.out).toContain("2 passed");
     expect(r.status).toBe(0);
     const dir = join(p, "out", "run1", "home", "d1");
-    expect(readdirSync(dir).sort()).toEqual(["01.png", "02.png", "03.png", "shots.txt"]);
+    expect(readdirSync(dir).sort()).toEqual(["01.png", "02.png", "03.png"]);
     expect(pngSize(join(dir, "01.png"))).toEqual([400, 324]); // 24 px strip
     const [, full] = pngSize(join(dir, "02.png"));
     expect(full).toBeGreaterThan(924); // the whole 900 px page, plus the strip
     expect(pngSize(join(dir, "03.png"))).toEqual([400, 300]); // no label, untouched
-    expect(readFileSync(join(dir, "shots.txt"), "utf8").split("\n").filter(Boolean)).toHaveLength(3);
     // The PDFs sit next to the device folders. One page per shot at the labeled size: 1 px is 0.75 pt.
     expect(readdirSync(join(p, "out", "run1", "home")).sort()).toEqual(["d1", "d1.pdf", "d2", "d2.pdf"]);
     expect(await pdfPages(join(dir, "..", "d1.pdf"))).toEqual([
@@ -1549,14 +1528,14 @@ capture(async ({ page, seq, device }) => {
 
 describe("run directory", () => {
   it("stamps each run with a Finder-style local-time dir and keeps Playwright's artifacts out of the screenshots dir", async () => {
-    const r = await playwright(project, ["a\\.capture", "--project", "d1"], { SNAPSEQ_RUN: "" });
+    const r = await playwright(project, ["a\\.seq", "--project", "d1"], { SNAPSEQ_RUN: "" });
     expect(r.status).toBe(0);
     const out = join(project, "out");
     const runs = readdirSync(out).filter((n) =>
       /^\d{4}-\d{2}-\d{2} at \d{2}\.\d{2}\.\d{2} [AP]M$/.test(n),
     );
     expect(runs).toHaveLength(1);
-    expect(readdirSync(join(out, runs[0]!, "a", "d1")).sort()).toEqual(["01.png", "02.png", "shots.txt"]);
+    expect(readdirSync(join(out, runs[0]!, "a", "d1")).sort()).toEqual(["01.png", "02.png"]);
     expect(existsSync(join(out, ".playwright"))).toBe(false);
     expect(existsSync(join(project, "node_modules", ".cache", "snapseq", ".last-run.json"))).toBe(
       true,

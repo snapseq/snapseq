@@ -4,13 +4,13 @@
 
 [![npm](https://img.shields.io/npm/v/snapseq)](https://www.npmjs.com/package/snapseq)
 
-Playwright Test fixtures for scripted screenshot captures. A capture is a
-Playwright test; snapseq adds numbered screenshots per run, capture and
+Playwright Test fixtures for scripted screenshot sequences. A sequence is a
+Playwright test; snapseq adds numbered screenshots per run, sequence and
 device, env and host selection, one project per device, a `snapseq`
 command, and defaults suited to long sequential runs. Everything else is stock
 Playwright: `--headed`, `--ui`, `--debug`, `--trace on`, reporters, the VS Code
 extension. [Plugins](docs/plugins.md) add to the shots: a label strip above
-each one, one PDF per capture, or steady viewport units for `snapPage` and no
+each one, one PDF per sequence, or steady viewport units for `snapPage` and no
 motion before a shot.
 
 ## Quick start
@@ -38,10 +38,10 @@ Without `stabilize()`, a page with a `100vh` section makes `snapPage` refuse it
 stops and the pointer leaves the content before each shot.
 
 ```ts
-// captures/pricing.capture.ts
-import { capture } from "snapseq";
+// snapseq/pricing.seq.ts
+import { sequence } from "snapseq";
 
-capture(async ({ page, seq }) => {
+sequence(async ({ page, seq }) => {
   await page.goto("/pricing");
   await seq.snap();      // 01.png  the viewport
   await seq.snapPage();  // 02.png  the whole page
@@ -49,14 +49,14 @@ capture(async ({ page, seq }) => {
 ```
 
 ```bash
-pnpm screenshot   # "screenshot": "snapseq" in package.json
+pnpm snapseq
 ```
 
 ```
-.screenshots/2026-10-01 at 04.07.16 PM/pricing/desktop/01.png
-.screenshots/2026-10-01 at 04.07.16 PM/pricing/desktop/02.png
-.screenshots/2026-10-01 at 04.07.16 PM/pricing/mobile/01.png
-.screenshots/2026-10-01 at 04.07.16 PM/pricing/mobile/02.png
+screenshots/2026-10-01 at 04.07.16 PM/pricing/desktop/01.png
+screenshots/2026-10-01 at 04.07.16 PM/pricing/desktop/02.png
+screenshots/2026-10-01 at 04.07.16 PM/pricing/mobile/01.png
+screenshots/2026-10-01 at 04.07.16 PM/pricing/mobile/02.png
 ```
 
 ## Docs
@@ -65,10 +65,10 @@ pnpm screenshot   # "screenshot": "snapseq" in package.json
 | ------------------------------------------- | -------------------------------------------------------------------- |
 | [Getting started](docs/getting-started.md) | How do I get from an empty app to a PNG?                             |
 | [Config](docs/config.md)                   | How do I set up envs, devices, the dev server, Playwright options?   |
-| [Captures](docs/captures.md)               | How do I write a capture that takes the right shot?                  |
+| [Sequences](docs/sequences.md)             | How do I write a sequence that takes the right shot?                 |
 | [Running](docs/running.md)                 | How do I run it, and what do the outputs and the terminal mean?      |
 | [Plugins](docs/plugins.md)                 | How do I add a label strip, a PDF or steady `vh` units, or write a plugin? |
-| [Examples](docs/examples.md)               | Complete capture files, basic to complex.                            |
+| [Examples](docs/examples.md)               | Complete sequence files, basic to complex.                            |
 | [Troubleshooting](docs/troubleshooting.md) | Something looks wrong.                                               |
 
 ## Develop and release

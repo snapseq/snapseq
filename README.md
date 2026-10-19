@@ -2,13 +2,13 @@
 
 # snapseq
 
-Playwright Test fixtures for scripted screenshot captures, and plugins for the shots they take.
+Playwright Test fixtures for scripted screenshot sequences, and plugins for the shots they take.
 
 | Package                                  | npm                                                                                     | What it does                                                        |
 | ---------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [`snapseq`](packages/snapseq)            | [![npm](https://img.shields.io/npm/v/snapseq)](https://www.npmjs.com/package/snapseq)   | The core: numbered screenshots per run, capture and device.         |
+| [`snapseq`](packages/snapseq)            | [![npm](https://img.shields.io/npm/v/snapseq)](https://www.npmjs.com/package/snapseq)   | The core: numbered screenshots per run, sequence and device.         |
 | [`@snapseq/label`](packages/label)       | [![npm](https://img.shields.io/npm/v/@snapseq/label)](https://www.npmjs.com/package/@snapseq/label) | A labeled strip above each shot.                        |
-| [`@snapseq/pdf`](packages/pdf)           | [![npm](https://img.shields.io/npm/v/@snapseq/pdf)](https://www.npmjs.com/package/@snapseq/pdf)     | One PDF per capture and device.                         |
+| [`@snapseq/pdf`](packages/pdf)           | [![npm](https://img.shields.io/npm/v/@snapseq/pdf)](https://www.npmjs.com/package/@snapseq/pdf)     | One PDF per sequence and device.                         |
 | [`@snapseq/stabilize`](packages/stabilize) | [![npm](https://img.shields.io/npm/v/@snapseq/stabilize)](https://www.npmjs.com/package/@snapseq/stabilize) | Steady `vh` units for `snapPage`, and no motion before a shot. |
 
 Start with the [core README](packages/snapseq/README.md) and its [docs](packages/snapseq/docs).

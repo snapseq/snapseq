@@ -1,14 +1,14 @@
-# Captures
+# Sequences
 
-A capture is one file in `captures/` that takes an ordered series of shots.
+A sequence is one file in `snapseq/` that takes an ordered series of shots.
 It is a Playwright test with a few fixtures added.
 
 ```ts
-// captures/pricing.capture.ts
-import { capture, disableTransitions } from "snapseq";
+// snapseq/pricing.seq.ts
+import { disableTransitions, sequence } from "snapseq";
 
-capture(async ({ page, seq, device }) => {
-  await disableTransitions(page);                  // once per capture; survives navigation
+sequence(async ({ page, seq, device }) => {
+  await disableTransitions(page);                  // once per sequence; survives navigation
   await page.goto("/pricing");                     // baseURL-relative
   await seq.snap();                                // 01.png  viewport
   await seq.snapPage();                            // 02.png  full page
@@ -22,16 +22,16 @@ capture(async ({ page, seq, device }) => {
 
 ## Files and names
 
-The file name is the capture name: `captures/pricing.capture.ts` writes to
-`.screenshots/<run>/pricing/<device>/`. Folders nest:
-`captures/campaign/pricing.capture.ts` writes to
-`.screenshots/<run>/campaign/pricing/<device>/`.
+The file name is the sequence name: `snapseq/pricing.seq.ts` writes to
+`screenshots/<run>/pricing/<device>/`. Folders nest:
+`snapseq/campaign/pricing.seq.ts` writes to
+`screenshots/<run>/campaign/pricing/<device>/`.
 
-One `capture()` per file. A shot's number is its position in the file, so a
-second capture is a second file. The number is two digits wide and the file a
+One `sequence()` per file. A shot's number is its position in the file, so a
+second sequence is a second file. The number is two digits wide and the file a
 PNG unless the config's `numbering` and `format` say otherwise. A file is a
-capture when its name ends in `.capture.ts` (or `.js`, `.mts`, `.cts`, `.mjs`,
-`.cjs`); other files are not, and helpers can live in `captures/helpers/`.
+sequence when its name ends in `.seq.ts` (or `.js`, `.mts`, `.cts`, `.mjs`,
+`.cjs`); other files are not, and helpers can live in `snapseq/helpers/`.
 
 ## Fixtures
 
@@ -39,12 +39,12 @@ Beyond Playwright's own (`page`, `context`, `browser`, …):
 
 | Fixture  | Value                                                                                   |
 | -------- | --------------------------------------------------------------------------------------- |
-| `seq`    | The shot sequence: `snap`, `snapPage`, `dir`, `shots`.                                  |
+| `seq`    | The handle for this sequence: `snap`, `snapPage`, `dir`, `shots`.                       |
 | `device` | The `devices` key this run is on, e.g. `"mobile"`.                                      |
 | `env`    | The active env name, e.g. `"dev"`.                                                      |
 | `host`   | The resolved base URL.                                                                  |
-| `ctx`    | All of the above plus `page` in one object, for helpers that take a `CaptureContext`.   |
-| `snapseq` | The config's `plugins`, as `defineConfig` set them. Read by `seq`; nothing for a capture to use. |
+| `ctx`    | All of the above plus `page` in one object, for helpers that take a `SequenceContext`. |
+| `snapseq` | The config's `plugins`, as `defineConfig` set them. Read by `seq`; nothing for a sequence to use. |
 
 ## Shots
 
@@ -71,7 +71,7 @@ units, so `snapPage` takes a `100vh` page; see [Plugins](plugins.md).
 
 Both take Playwright's screenshot options (`mask`, `clip`, `style`,
 `omitBackground`, …) except the path, the image type and the quality, which
-the sequence takes from the config's `numbering` and `format`. `snapPage` does
+snapseq takes from the config's `numbering` and `format`. `snapPage` does
 not take `fullPage` either. A plugin can add keys of its own, such as `label`
 from `@snapseq/label`:
 `seq.snap({ label: "0.0 Home" })`. See [Plugins](plugins.md). Both resolve to
@@ -94,11 +94,10 @@ section starts (an observer that sets its `src`) holds the shot or gets a note.
 Each run has its own 5 s image cap, so a slow page can spend two.
 
 A wait that ran out its cap, a shot that may lack something, or a plugin with
-something to say, gets a note on its line in `shots.txt`, printed once in the
-terminal too:
+something to say, prints a note with the shot's line in the terminal:
 
 ```
-07.png  http://…  2 images still loading after 5 s (first: http://…/hero.jpg)
+snapseq: 07.png taken with 2 images still loading after 5 s (first: http://…/hero.jpg)  http://…
 ```
 
 - `N images still loading after 5 s (first: <url>)`: the image wait ran out.
@@ -145,15 +144,15 @@ both.
 
 `stabilize()` from [`@snapseq/stabilize`](../../stabilize/README.md) covers Web
 Animations: its `motion` option, on by default, finishes or cancels them before
-each shot and applies `disableTransitions`, so the capture need not.
+each shot and applies `disableTransitions`, so the sequence need not.
 
 Wait for what the shot needs rather than for `networkidle` as a rule: a page
 that polls or streams never goes idle, and the `goto` then runs to the 120 s
-navigation bound before the capture fails.
+navigation bound before the sequence fails.
 
 ## Helpers
 
-- `disableTransitions(page)`: no transitions, animations or smooth scrolling, on this document and every one the page navigates to afterwards. Once per capture. `animation: none` resets each element to its un-animated base state rather than freezing it mid-keyframe. An element whose base state is hidden and that a `forwards` keyframe animation reveals (a `.hero` with base `opacity: 0` and `animation: fadeIn 1s forwards`) stays hidden in the shot; reveal it with `addPersistentStyle(page, ".hero { opacity: 1 !important }")` or the page's own revealed class.
+- `disableTransitions(page)`: no transitions, animations or smooth scrolling, on this document and every one the page navigates to afterwards. Once per sequence. `animation: none` resets each element to its un-animated base state rather than freezing it mid-keyframe. An element whose base state is hidden and that a `forwards` keyframe animation reveals (a `.hero` with base `opacity: 0` and `animation: fadeIn 1s forwards`) stays hidden in the shot; reveal it with `addPersistentStyle(page, ".hero { opacity: 1 !important }")` or the page's own revealed class.
 - `addPersistentStyle(page, css)`: the same persistence for your own CSS, e.g. `addPersistentStyle(page, "#chat-widget { display: none !important }")`.
 
 Both inject a `<style>` element, which a strict `style-src` blocks. See
@@ -162,20 +161,20 @@ Both inject a `<style>` element, which a strict `style-src` blocks. See
 ## Skipping
 
 ```ts
-// captures/dashboard.capture.ts
-import { capture, skipIf } from "snapseq";
+// snapseq/dashboard.seq.ts
+import { sequence, skipIf } from "snapseq";
 
 // Whole file, decided before any fixture runs: skipped devices get no directory.
 skipIf(({ device }) => device !== "desktop", "desktop only");
 
-capture(async ({ page, seq }) => { /* … */ });
+sequence(async ({ page, seq }) => { /* … */ });
 ```
 
-A condition you only learn mid-capture: `skipIf(condition, reason)` inside the
-body. The reason shows on the capture's line in the terminal. `seq` is already
-set up by then, so a capture that uses it leaves an empty `<capture>/<device>/`
-directory behind; a file-level `skipIf` does not. To run a single capture,
-filter by file: `pnpm screenshot pricing`.
+A condition you only learn mid-sequence: `skipIf(condition, reason)` inside the
+body. The reason shows on the sequence's line in the terminal. `seq` is already
+set up by then, so a sequence that uses it leaves an empty `<sequence>/<device>/`
+directory behind; a file-level `skipIf` does not. To run a single sequence,
+filter by file: `pnpm snapseq pricing`.
 
 ## Page states that flip
 
@@ -183,10 +182,10 @@ A menu that closes on navigation, a panel that opens on click: put the
 precondition in the helper that takes the shot, so every call gets it.
 
 ```ts
-// captures/helpers/snap-menu.ts
-import type { CaptureContext } from "snapseq";
+// snapseq/helpers/snap-menu.ts
+import type { SequenceContext } from "snapseq";
 
-export async function snapMenuOpen({ page, seq }: CaptureContext): Promise<string> {
+export async function snapMenuOpen({ page, seq }: SequenceContext): Promise<string> {
   await page.getByRole("button", { name: "Menu" }).click();
   await page.getByRole("navigation").waitFor();
   return seq.snap();
@@ -208,10 +207,10 @@ the HTTP cache, which does not matter for screenshots.
 
 ## A backend that rejects every request
 
-A widget whose backend the capture cannot use, because it sits behind a bot
+A widget whose backend the sequence cannot use, because it sits behind a bot
 check, charges per call or is down, cannot be fixed from the browser. Give the
 env a `replay` entry for that request ([Config](config.md#replay)): snapseq
-answers it from a recorded file before the first shot, and the capture stays
+answers it from a recorded file before the first shot, and the sequence stays
 what a user does.
 [Example 12](examples.md#12-a-backend-that-rejects-every-request) is the
 complete file.

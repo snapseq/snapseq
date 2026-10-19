@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // Drives the BUILT bin (dist/cli.js) from a temp project, the way a consumer would.
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
-// What /api answers; one test sets it, then runs a capture that fetches it.
+// What /api answers; one test sets it, then runs a sequence that fetches it.
 let api = { status: 200, type: "application/json", body: '{"v":"live"}' };
 let server: ReturnType<typeof createServer>;
 let host: string;
@@ -86,20 +86,20 @@ const config = (extra = "") => `import { defineConfig } from "snapseq";
 export default defineConfig({ envs: { dev: { host: ${JSON.stringify(host)}, ${extra} } }, devices: { d1: {} } });`;
 
 const WIDGET = `
-import { capture } from "snapseq";
-capture(async ({ page, seq }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
   await page.goto("/");
   await page.locator("#v:not(:empty)").waitFor();
   await seq.snap();
 });`;
 
 describe("--record", () => {
-  const record = (replayFile?: string, capture = WIDGET) => {
+  const record = (replayFile?: string, sequence = WIDGET) => {
     const dir = makeApp(tmp(), {
-      "snapseq.config.ts": config(`replay: { "**/api": "captures/replay/api.json" }`),
-      "captures/w.capture.ts": capture,
+      "snapseq.config.ts": config(`replay: { "**/api": "snapseq/replay/api.json" }`),
+      "snapseq/w.seq.ts": sequence,
     });
-    const file = join(dir, "captures/replay/api.json");
+    const file = join(dir, "snapseq/replay/api.json");
     if (replayFile !== undefined) {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, replayFile);
@@ -112,9 +112,9 @@ describe("--record", () => {
     const { dir, file } = record('{"v":"old"}');
     const r = await snapseq(dir, ["--record"]);
     expect(r.status).not.toBe(0);
-    expect(r.out).toContain(`snapseq: --record got 403 for ${host}/api; captures/replay/api.json not written`);
+    expect(r.out).toContain(`snapseq: --record got 403 for ${host}/api; snapseq/replay/api.json not written`);
     expect(readFileSync(file, "utf8")).toBe('{"v":"old"}');
-    expect(existsSync(join(dir, ".screenshots/run1/w/d1/01.png"))).toBe(false); // refused before any shot
+    expect(existsSync(join(dir, "screenshots/run1/w/d1/01.png"))).toBe(false); // refused before any shot
   });
 
   it("refuses a body that is not JSON before writing", async () => {
@@ -122,7 +122,7 @@ describe("--record", () => {
     const { dir, file } = record();
     const r = await snapseq(dir, ["--record"]);
     expect(r.status).not.toBe(0);
-    expect(r.out).toContain(`snapseq: --record got a non-JSON body for ${host}/api; captures/replay/api.json not written`);
+    expect(r.out).toContain(`snapseq: --record got a non-JSON body for ${host}/api; snapseq/replay/api.json not written`);
     expect(existsSync(file)).toBe(false);
   });
 
@@ -162,8 +162,8 @@ describe("--record", () => {
     const { dir, file } = record(
       undefined,
       `
-import { capture } from "snapseq";
-capture(async ({ page, host }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page, host }) => {
   await page.goto("/");
   await page.locator("#v:not(:empty)").waitFor();
   await page.evaluate((u) => fetch(u).catch(() => undefined), host.replace("127.0.0.1", "localhost") + "/api");
@@ -173,7 +173,7 @@ capture(async ({ page, host }) => {
     expect(r.status).not.toBe(0);
     const other = host.replace("127.0.0.1", "localhost");
     expect(r.out).toContain(
-      `snapseq: --record: **/api matched a second request GET ${other}/api; captures/replay/api.json already written from GET ${host}/api`,
+      `snapseq: --record: **/api matched a second request GET ${other}/api; snapseq/replay/api.json already written from GET ${host}/api`,
     );
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ v: "live" }); // the first one's
   });
@@ -182,8 +182,8 @@ capture(async ({ page, host }) => {
     const { dir, file } = record(
       undefined,
       `
-import { capture } from "snapseq";
-capture(async ({ page }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page }) => {
   await page.goto("/blank");
   await page.evaluate(async () => {
     await fetch("/api", { method: "POST", body: "lamps" });
@@ -194,7 +194,7 @@ capture(async ({ page }) => {
     const r = await snapseq(dir, ["--record"]);
     expect(r.status).not.toBe(0);
     expect(r.out).toContain(
-      `snapseq: --record: **/api matched a second request POST ${host}/api; captures/replay/api.json already written from POST ${host}/api`,
+      `snapseq: --record: **/api matched a second request POST ${host}/api; snapseq/replay/api.json already written from POST ${host}/api`,
     );
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ v: "lamps" }); // not overwritten by "chairs"
   });
@@ -204,8 +204,8 @@ capture(async ({ page }) => {
       record(
         undefined,
         `
-import { capture } from "snapseq";
-capture(async ({ page }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page }) => {
   await page.goto("/blank");
   await page.evaluate(async (values) => {
     for (const q of values) {
@@ -225,7 +225,7 @@ capture(async ({ page }) => {
     const d = await snapseq(other.dir, ["--record"]);
     expect(d.status).not.toBe(0);
     expect(d.out).toContain(
-      `snapseq: --record: **/api matched a second request POST ${host}/api; captures/replay/api.json already written from POST ${host}/api (the bodies differ)`,
+      `snapseq: --record: **/api matched a second request POST ${host}/api; snapseq/replay/api.json already written from POST ${host}/api (the bodies differ)`,
     );
     expect(JSON.parse(readFileSync(other.file, "utf8")).v).toContain("lamps"); // not overwritten by "chairs"
   });
@@ -237,8 +237,8 @@ capture(async ({ page }) => {
       record(
         undefined,
         `
-import { capture } from "snapseq";
-capture(async ({ page }) => {
+import { sequence } from "snapseq";
+sequence(async ({ page }) => {
   await page.goto("/blank");
   await page.evaluate(async (sends) => {
     for (const { type, body } of sends) {
@@ -248,7 +248,7 @@ capture(async ({ page }) => {
 });`,
       );
     const mp = (params: string) => `multipart/form-data; ${params}`;
-    const refused = `snapseq: --record: **/api matched a second request POST ${host}/api; captures/replay/api.json already written from POST ${host}/api (the bodies differ)`;
+    const refused = `snapseq: --record: **/api matched a second request POST ${host}/api; snapseq/replay/api.json already written from POST ${host}/api (the bodies differ)`;
     const cases: Array<[string, Array<{ type: string; body: string }>, boolean]> = [
       // A field value that holds the boundary is not a delimiter: these differ, though a global replace would make them equal.
       ["a value holding the boundary", [
@@ -286,11 +286,11 @@ capture(async ({ page }) => {
 });
 
 describe("replay", () => {
-  it("fails before the capture starts when a replay file is not JSON, naming the file and the parse error", async () => {
+  it("fails before the sequence starts when a replay file is not JSON, naming the file and the parse error", async () => {
     const dir = makeApp(tmp(), {
-      "snapseq.config.ts": config(`replay: { "**/api": "captures/replay/api.json" }`),
-      "captures/w.capture.ts": WIDGET,
-      "captures/replay/api.json": '{"v":"old"',
+      "snapseq.config.ts": config(`replay: { "**/api": "snapseq/replay/api.json" }`),
+      "snapseq/w.seq.ts": WIDGET,
+      "snapseq/replay/api.json": '{"v":"old"',
     });
     const r = await snapseq(dir, []);
     expect(r.status).not.toBe(0);
@@ -300,8 +300,8 @@ describe("replay", () => {
     } catch (e) {
       message = (e as Error).message;
     }
-    expect(r.out).toContain(`snapseq: replay file captures/replay/api.json is not JSON: ${message}`);
-    expect(existsSync(join(dir, ".screenshots/run1/w/d1/01.png"))).toBe(false); // refused before any shot
+    expect(r.out).toContain(`snapseq: replay file snapseq/replay/api.json is not JSON: ${message}`);
+    expect(existsSync(join(dir, "screenshots/run1/w/d1/01.png"))).toBe(false); // refused before any shot
   });
 });
 
@@ -310,11 +310,11 @@ describe("Playwright beside the config", () => {
     const root = tmp();
     makeApp(join(root, "apps/web"), {
       "snapseq.config.ts": config(),
-      "captures/w.capture.ts": WIDGET,
+      "snapseq/w.seq.ts": WIDGET,
     });
     const r = await snapseq(root, ["-c", "apps/web/snapseq.config.ts", "--list"]);
     expect(r.out).not.toContain("Cannot find module");
-    expect(r.out).toContain("w.capture.ts");
+    expect(r.out).toContain("w.seq.ts");
     expect(r.status, r.out).toBe(0);
   });
 });

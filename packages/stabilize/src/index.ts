@@ -6,7 +6,7 @@ export interface StabilizeOptions {
   viewportUnits?: boolean;
   /** No transitions or animations, Web Animations finished, SVG and video paused. Default true. */
   motion?: boolean;
-  /** Emulate `prefers-reduced-motion: reduce` for the capture. Default false: the page's own preference stays. */
+  /** Emulate `prefers-reduced-motion: reduce` for the sequence. Default false: the page's own preference stays. */
   reducedMotion?: boolean;
   /** Move the pointer off the page before each shot, so what a click left under it is not drawn in `:hover`. `snap({ hover: "keep" })` skips it for one shot. Default true. */
   hover?: boolean;
@@ -16,7 +16,7 @@ export interface StabilizeOptions {
 
 declare module "snapseq" {
   interface SnapOptions {
-    /** `"keep"`: leave the pointer where the capture put it for this shot. Needs `@snapseq/stabilize` in `plugins`. */
+    /** `"keep"`: leave the pointer where the sequence put it for this shot. Needs `@snapseq/stabilize` in `plugins`. */
     hover?: "keep";
   }
 }
@@ -354,7 +354,7 @@ export function stabilize({
       if (motion) {
         await page.evaluate(stopMotion);
         // Playwright also finishes or cancels an animation that starts after this pass (a resize handler, a late
-        // script) as it takes the screenshot. A capture's own setting wins.
+        // script) as it takes the screenshot. A sequence's own setting wins.
         shot.options.animations ??= "disabled";
       }
       if (viewportUnits) {

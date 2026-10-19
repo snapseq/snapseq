@@ -8,21 +8,21 @@ import {
   type TestInfo,
 } from "@playwright/test";
 import {
-  appendFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SnapseqMetadata } from "./define.js";
 import type { Plugin } from "./plugin.js";
 import { createSequence, type Sequence } from "./sequence.js";
 
 /** The bag handed to helpers that need more than `page`. Also available as the `ctx` fixture. */
-export interface CaptureContext {
+export interface SequenceContext {
   page: Page;
   seq: Sequence;
   /** Active env name, e.g. `"dev"`. */
@@ -33,13 +33,13 @@ export interface CaptureContext {
   device: string;
 }
 
-export interface CaptureFixtures {
+export interface SequenceFixtures {
   seq: Sequence;
   env: string;
   host: string;
   device: string;
-  ctx: CaptureContext;
-  /** Auto fixture: the env's `replay` routes, set up before the capture runs. */
+  ctx: SequenceContext;
+  /** Auto fixture: the env's `replay` routes, set up before the sequence runs. */
   replay: void;
   /** Option: the config's `plugins`, set by `defineConfig` as `use.snapseq`. */
   snapseq: { plugins: Plugin[] };
@@ -49,16 +49,16 @@ interface WorkerFixtures {
   realisticUA: string;
 }
 
-export type CaptureArgs = PlaywrightTestArgs &
+export type SequenceArgs = PlaywrightTestArgs &
   PlaywrightTestOptions &
   PlaywrightWorkerArgs &
   PlaywrightWorkerOptions &
-  CaptureFixtures &
+  SequenceFixtures &
   WorkerFixtures;
 
-export type CaptureFn = (args: CaptureArgs, testInfo: TestInfo) => Promise<void> | void;
+export type SequenceFn = (args: SequenceArgs, testInfo: TestInfo) => Promise<void> | void;
 
-const DEFAULT_TITLE = "capture";
+const DEFAULT_TITLE = "sequence";
 
 // Replay file -> the request (method, URL, body) --record claimed it for, in this worker's run.
 // `label` is what the error shows; `id` adds the body, which can be large.
@@ -78,24 +78,46 @@ function metadataOf(testInfo: TestInfo): SnapseqMetadata {
   return meta;
 }
 
+const SEQUENCE_FILE = /\.seq\.[cm]?[jt]s$/;
+
 /**
- * `captures/nested/pricing.capture.ts` → `nested/pricing`. A titled test or a
+ * `snapseq/nested/pricing.seq.ts` → `nested/pricing`. A titled test or a
  * `describe` block appends its titles, so two "hero" tests in different
  * describes never share (and wipe) one directory.
  */
-export function captureId(testInfo: TestInfo): string {
+export function sequenceId(testInfo: TestInfo): string {
   // realpath both sides: Playwright reports the file through resolved symlinks
   // (macOS /var → /private/var) while testDir keeps the configured path, and a
   // mismatch would make relative() escape the screenshots root.
   const rel = relative(
     realpathSync(testInfo.project.testDir),
     realpathSync(testInfo.file),
-  ).replace(/\.capture\.[cm]?[jt]s$/, "");
+  ).replace(SEQUENCE_FILE, "");
   const titles = testInfo.titlePath.slice(1); // [0] is the file
   return titles.length === 1 && titles[0] === DEFAULT_TITLE ? rel : join(rel, ...titles);
 }
 
-export const test = base.extend<CaptureFixtures, WorkerFixtures>({
+const list = (dir: string): string[] => {
+  try {
+    return readdirSync(dir, { recursive: true, encoding: "utf8" });
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * `home.seq.ts` on mobile wipes `home/mobile/`, where `home/mobile.seq.ts` on any device and every sequence under
+ * `home/mobile/` write too: the first such file, relative to the sequences dir, or undefined. A sequence file since
+ * deleted is not looked for; its output goes with the wipe.
+ */
+function nestedSequence(testDir: string, id: string, device: string): string | undefined {
+  const hit = list(join(testDir, id)).find(
+    (entry) => SEQUENCE_FILE.test(entry) && (entry.replace(SEQUENCE_FILE, "") === device || entry.startsWith(`${device}${sep}`)),
+  );
+  return hit ? join(id, hit) : undefined;
+}
+
+export const test = base.extend<SequenceFixtures, WorkerFixtures>({
   // Headless Chromium announces itself as "HeadlessChrome", which some WAFs 403.
   // The UA is fixed per browser process, so read it once per worker.
   realisticUA: [
@@ -124,8 +146,8 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
 
   snapseq: [{ plugins: [] }, { option: true }],
 
-  // Not auto: a capture skipped by a file-level skipIf must get no directory,
-  // and a capture that never touches `seq` has no sequence and no plugin hooks.
+  // Not auto: a sequence skipped by a file-level skipIf must get no directory,
+  // and a sequence that never touches `seq` has no sequence and no plugin hooks.
   seq: async ({ page, snapseq, deviceScaleFactor }, use, testInfo) => {
     if (testInfo.repeatEachIndex > 0 || testInfo.retry > 0) {
       throw new Error(
@@ -133,6 +155,11 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
       );
     }
     const meta = metadataOf(testInfo);
+    const id = sequenceId(testInfo);
+    const inside = nestedSequence(testInfo.project.testDir, id, testInfo.project.name);
+    if (inside) {
+      throw new Error(`snapseq: refusing to wipe ${join(meta.run, id, testInfo.project.name)}: ${inside} writes inside it; rename one of the sequences`);
+    }
     const root = resolve(configDirOf(testInfo), meta.screenshotsDir);
     mkdirSync(root, { recursive: true });
     const ignore = join(root, ".gitignore");
@@ -140,7 +167,7 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
 
     // Each shot is a step named after its file, so the terminal view can count
     // shots as they land, and moves the deadline: the timeout is the time
-    // allowed between shots, not per capture, so a long capture that keeps
+    // allowed between shots, not per sequence, so a long sequence that keeps
     // landing shots never needs a bigger one and a hung one still dies.
     // ponytail: the renewal is short by the page setup Playwright charged before
     // this line (sub-second); an auto fixture taken first would make it exact.
@@ -148,8 +175,8 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
     const idle = testInfo.timeout;
     const ended = new AbortController();
     // The hooks' context, built here: the ctx fixture depends on seq. seq is bound below.
-    const ctx = { page, env: meta.env, host: meta.host, device: testInfo.project.name } as CaptureContext;
-    const seq = createSequence(page, root, join(meta.run, captureId(testInfo), testInfo.project.name), {
+    const ctx = { page, env: meta.env, host: meta.host, device: testInfo.project.name } as SequenceContext;
+    const seq = createSequence(page, root, join(meta.run, id, testInfo.project.name), {
       wrap: (title, shoot) =>
         test.step(title, async () => {
           await shoot();
@@ -176,7 +203,7 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
     }
     await use(seq);
     ended.abort();
-    // A done or failed hook gets the capture timeout. Playwright's own budget for
+    // A done or failed hook gets the sequence timeout. Playwright's own budget for
     // this teardown grows with every renewal above, and a hung PDF would get it all.
     const bounded = <T>(work: Promise<T>): Promise<T> => {
       if (idle <= 0) return work;
@@ -202,7 +229,7 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
       }
     };
     if (testInfo.status === "passed") await after("done");
-    // The page as it was when the capture died, beside the shots it did take.
+    // The page as it was when the sequence died, beside the shots it did take.
     // A step, like a shot, so the terminal view learns where it died: the page
     // the teardown found, which is not always the last shot's.
     if (testInfo.status === "failed" || testInfo.status === "timedOut") {
@@ -210,8 +237,8 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
       await test
         .step(`failed.png  ${url}`, async () => {
           // An image that never answers holds the load event, which the screenshot waits for: without this,
-          // failed.png times out exactly when a stalled asset is why the capture died. Abandoning pending images
-          // changes the page, which a shot never does; here the capture has failed and this is its last look.
+          // failed.png times out exactly when a stalled asset is why the sequence died. Abandoning pending images
+          // changes the page, which a shot never does; here the sequence has failed and this is its last look.
           // A <picture> keeps its selected <source> when the <img> loses its own attributes, and a frame's image
           // holds the parent's load event too, so every frame is visited, under one 2 s deadline: a page too stuck
           // to evaluate still gets its 5 s try at the screenshot.
@@ -230,7 +257,6 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
           );
           await Promise.race([Promise.all(abandon), sleep(2_000, undefined, { ref: false })]);
           await page.screenshot({ path: join(seq.dir, "failed.png"), timeout: 5_000 });
-          appendFileSync(join(seq.dir, "shots.txt"), `failed.png  ${url}\n`);
         })
         .catch(() => {});
       // Not swallowed like failed.png: a failed hook that throws says so.
@@ -242,7 +268,7 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
     await use({ page, seq, env, host, device });
   },
 
-  // The env's `replay` requests, answered from their files before the capture
+  // The env's `replay` requests, answered from their files before the sequence
   // runs; with --record, fetched live and written first. A missing file fails
   // here, before any shot, rather than silently replaying nothing.
   replay: [
@@ -322,17 +348,17 @@ export const test = base.extend<CaptureFixtures, WorkerFixtures>({
 });
 
 /**
- * Declare the capture in this file. One per file; the file name is the capture's
+ * Declare the sequence in this file. One per file; the file name is the sequence's
  * name. Bound rather than wrapped so Playwright attributes the test to the
  * calling file, not to this one. The extended `test` is not exported: a second
- * capture is a second file, so a shot's number stays its position in the file.
+ * sequence is a second file, so a shot's number stays its position in the file.
  */
-export const capture: (fn: CaptureFn) => void = (
-  test as unknown as (title: string, fn: CaptureFn) => void
+export const sequence: (fn: SequenceFn) => void = (
+  test as unknown as (title: string, fn: SequenceFn) => void
 ).bind(null, DEFAULT_TITLE);
 
 /**
- * Skip a capture: `skipIf(device !== "desktop", "desktop only")` inside the
+ * Skip a sequence: `skipIf(device !== "desktop", "desktop only")` inside the
  * body, or `skipIf(({ device }) => device !== "desktop", "desktop only")` at
  * the top of the file, which runs before any fixture. Playwright's `test.skip`.
  */

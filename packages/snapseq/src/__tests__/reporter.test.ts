@@ -26,7 +26,7 @@ function fakeTty(rows: number, columns = 80) {
   return { stream, text: () => text, resize: () => onResize?.() };
 }
 
-const project = { name: "d1", testDir: "/t/captures", timeout: 600_000 };
+const project = { name: "d1", testDir: "/t/snapseq", timeout: 600_000 };
 const config = {
   metadata: { snapseq: { env: "dev", host: "http://h", run: "run1", screenshotsDir: "out" } },
   quiet: false,
@@ -37,12 +37,12 @@ const config = {
 function fakeTest(
   id: string,
   file: string,
-  titles: string[] = ["capture"],
+  titles: string[] = ["sequence"],
   annotations: { type: string; description?: string }[] = [],
 ): TestCase {
   return {
     id,
-    location: { file: `/t/captures/${file}`, line: 1, column: 1 },
+    location: { file: `/t/snapseq/${file}`, line: 1, column: 1 },
     parent: { project: () => project },
     titlePath: () => ["", "d1", file, ...titles],
     annotations,
@@ -61,13 +61,13 @@ const plain = (s: string): string => s.replace(/\x1b\[\d+m/g, "");
 
 /** The frame drawn last, after the clear that preceded it. */
 const lastFrame = (text: string): string => plain(text.slice(text.lastIndexOf("\x1b[0J") + 4));
-/** The captures and the "+N above / more" lines of a frame, top to bottom. */
+/** The sequences and the "+N above / more" lines of a frame, top to bottom. */
 const names = (frame: string): string[] => [...frame.matchAll(/(c\d) \/ d1|\+\d+ (?:above|more)/g)].map((m) => m[1] ?? m[0]);
-/** A terminal of `rows` lines with `count` captures planned and the run begun. */
+/** A terminal of `rows` lines with `count` sequences planned and the run begun. */
 const run = (rows: number, count: number, columns = 80) => {
   const tty = fakeTty(rows, columns);
   const r = new SnapseqReporter({ stream: tty.stream, open: () => {} });
-  const tests = Array.from({ length: count }, (_, i) => fakeTest(`t${i}`, `c${i}.capture.ts`));
+  const tests = Array.from({ length: count }, (_, i) => fakeTest(`t${i}`, `c${i}.seq.ts`));
   r.onBegin(config, { allTests: () => tests } as unknown as Suite);
   return { tty, r, tests };
 };
@@ -89,7 +89,7 @@ describe("SnapseqReporter", () => {
   it("counts a shot whatever the width of its number or its format, and says where a .jpg is", () => {
     const tty = fakeTty(10);
     const r = new SnapseqReporter({ stream: tty.stream });
-    const a = fakeTest("t0", "c0.capture.ts", ["capture"], []);
+    const a = fakeTest("t0", "c0.seq.ts", ["sequence"], []);
     r.onBegin(config, { allTests: () => [a] } as unknown as Suite);
     r.onTestBegin(a);
     r.onStepEnd(a, result("passed"), shotStep("01.png  http://h/a"));
@@ -105,7 +105,7 @@ describe("SnapseqReporter", () => {
     const tty = fakeTty(10);
     const r = new SnapseqReporter({ stream: tty.stream });
     const tests = Array.from({ length: 10 }, (_, i) =>
-      fakeTest(`t${i}`, `c${i}.capture.ts`, ["capture"], i === 2 ? [{ type: "skip", description: "desktop only" }] : []),
+      fakeTest(`t${i}`, `c${i}.seq.ts`, ["sequence"], i === 2 ? [{ type: "skip", description: "desktop only" }] : []),
     );
     r.onBegin(config, { allTests: () => tests } as unknown as Suite);
     // 10 rows do not fit in 10 terminal lines: 3 shown, the rest counted.
@@ -155,10 +155,10 @@ describe("SnapseqReporter", () => {
     const tty = fakeTty(24);
     const r = new SnapseqReporter({ stream: tty.stream, open: () => {} });
     const tests = [
-      fakeTest("t0", "a.capture.ts"),
-      fakeTest("t1", "b.capture.ts"),
-      fakeTest("t2", "a-much-longer-capture-name.capture.ts"), // never started
-      fakeTest("t3", "c.capture.ts"), // never started
+      fakeTest("t0", "a.seq.ts"),
+      fakeTest("t1", "b.seq.ts"),
+      fakeTest("t2", "a-much-longer-sequence-name.seq.ts"), // never started
+      fakeTest("t3", "c.seq.ts"), // never started
     ];
     r.onBegin(config, { allTests: () => tests } as unknown as Suite);
     r.onTestBegin(tests[0]!);
@@ -181,7 +181,7 @@ describe("SnapseqReporter", () => {
     const dir = mkdtempSync(join(tmpdir(), "snapseq-rep-"));
     mkdirSync(join(dir, "out", "run1"), { recursive: true });
     const cfg = { ...config, configFile: join(dir, "snapseq.config.ts"), rootDir: dir } as FullConfig;
-    const t = fakeTest("t0", "home.capture.ts");
+    const t = fakeTest("t0", "home.seq.ts");
     const opened: string[] = [];
 
     const live = new SnapseqReporter({ stream: fakeTty(24).stream, open: (d) => opened.push(d) });
@@ -200,7 +200,7 @@ describe("SnapseqReporter", () => {
     const dir = mkdtempSync(join(tmpdir(), "snapseq-rep-"));
     mkdirSync(join(dir, "out", "run1"), { recursive: true });
     const cfg = { ...config, configFile: join(dir, "snapseq.config.ts"), rootDir: dir } as FullConfig;
-    const t = fakeTest("t0", "home.capture.ts");
+    const t = fakeTest("t0", "home.seq.ts");
     const opened: string[] = [];
     for (const [name, value] of [["SNAPSEQ_OPEN", "0"], ["SNAPSEQ_OPEN", "False"], ["CI", "true"]] as const) {
       vi.stubEnv(name, value);
@@ -218,18 +218,18 @@ describe("SnapseqReporter", () => {
   it("names the configured timeout, not the deadline the shots pushed out", () => {
     let text = "";
     const r = new SnapseqReporter({ stream: { write: (s: string) => (text += s) } });
-    const t = fakeTest("t0", "home.capture.ts");
+    const t = fakeTest("t0", "home.seq.ts");
     r.onBegin(config, { allTests: () => [t] } as unknown as Suite);
     r.onTestBegin(t);
     r.onTestEnd(
       t,
       result("timedOut", [
-        { message: "\x1b[31mTest timeout of 612345.5ms exceeded.\x1b[39m\n    at /t/captures/home.capture.ts:3:1" },
+        { message: "\x1b[31mTest timeout of 612345.5ms exceeded.\x1b[39m\n    at /t/snapseq/home.seq.ts:3:1" },
       ]),
     );
     expect(text).toMatch(/TIME\s+home \/ d1\s+0 shots\s+1\.2s\s+No shot for 10 min\./);
     expect(text).not.toContain("612345");
-    expect(text).toContain("at /t/captures/home.capture.ts:3:1");
+    expect(text).toContain("at /t/snapseq/home.seq.ts:3:1");
   });
 
   it("keeps the plan's order like a todo list, and scrolls to the first unfinished row", () => {
@@ -261,7 +261,7 @@ describe("SnapseqReporter", () => {
   });
 
   it("keeps the running row in view on a short terminal, and prints one line per event below 7 rows", () => {
-    // Three captures done, the fourth running, four queued; a frame plus the prompt must fit the screen.
+    // Three sequences done, the fourth running, four queued; a frame plus the prompt must fit the screen.
     const go = (rows: number) => {
       const t = run(rows, 8);
       for (const i of [0, 1, 2]) {
@@ -307,7 +307,7 @@ describe("SnapseqReporter", () => {
     vi.advanceTimersByTime(2200);
     expect(plain(tty.text())).toContain("waiting for http://localhost:3002  pnpm dev  00:03");
     expect(tty.text()).not.toContain("\n"); // one line, redrawn in place
-    r.onBegin(config, { allTests: () => [fakeTest("t0", "home.capture.ts")] } as unknown as Suite);
+    r.onBegin(config, { allTests: () => [fakeTest("t0", "home.seq.ts")] } as unknown as Suite);
     const out = tty.text();
     const frame = out.slice(out.lastIndexOf("\r\x1b[2K") + 5); // the line is cleared, the frame follows
     expect(frame).toContain("snapseq  dev  http://h  run1");
@@ -326,7 +326,7 @@ describe("SnapseqReporter", () => {
     vi.stubEnv("NO_COLOR", "1");
     const tty = fakeTty(24);
     const r = new SnapseqReporter({ stream: tty.stream, open: () => {} });
-    const t = fakeTest("t0", "home.capture.ts");
+    const t = fakeTest("t0", "home.seq.ts");
     r.onBegin(config, { allTests: () => [t] } as unknown as Suite);
     r.onTestBegin(t);
     r.onTestEnd(t, result("passed"));
@@ -350,13 +350,13 @@ describe("SnapseqReporter", () => {
     const tty = fakeTty(24);
     const opened: string[] = [];
     const r = new SnapseqReporter({ stream: tty.stream, open: (d) => opened.push(d) });
-    const a = fakeTest("t0", "a.capture.ts");
-    const b = fakeTest("t1", "b.capture.ts");
+    const a = fakeTest("t0", "a.seq.ts");
+    const b = fakeTest("t1", "b.seq.ts");
     r.onBegin(config, { allTests: () => [a, b] } as unknown as Suite);
     r.onTestBegin(a);
     r.onStepBegin(a, result("passed"), shotStep("001.png  http://h/legal"));
     r.onStepEnd(a, result("passed"), shotStep("001.png  http://h/legal"));
-    // The teardown shoots the page the capture died on; not a shot to count.
+    // The teardown shoots the page the sequence died on; not a shot to count.
     r.onStepBegin(a, result("passed"), shotStep("failed.png  http://h/contact-us"));
     r.onStepEnd(a, result("passed"), shotStep("failed.png  http://h/contact-us"));
     r.onTestEnd(a, result("failed", [{ message: "boom\n  at x\n  Call log:\n    - waiting for button\n" }]));
@@ -381,7 +381,7 @@ describe("SnapseqReporter", () => {
   it("prints an error's lines and colors, but no other control or format characters", () => {
     let text = "";
     const r = new SnapseqReporter({ stream: { write: (s: string) => (text += s) } });
-    const t = fakeTest("t0", "home.capture.ts");
+    const t = fakeTest("t0", "home.seq.ts");
     r.onBegin(config, { allTests: () => [t] } as unknown as Suite);
     r.onTestBegin(t);
     // A terminal title sequence and a right-to-left override, from a page's message.
@@ -396,7 +396,7 @@ describe("SnapseqReporter", () => {
   it("prints one line per event after a resize", () => {
     const tty = fakeTty(24);
     const r = new SnapseqReporter({ stream: tty.stream });
-    const t = fakeTest("t0", "home.capture.ts", ["menu"]);
+    const t = fakeTest("t0", "home.seq.ts", ["menu"]);
     r.onBegin(config, { allTests: () => [t] } as unknown as Suite);
     r.onError({ message: "hidden by the frame" });
     tty.resize();
@@ -418,7 +418,7 @@ describe("SnapseqReporter", () => {
   it("keeps the last real page when the teardown's page is a failed navigation", () => {
     const tty = fakeTty(24);
     const r = new SnapseqReporter({ stream: tty.stream, open: () => {} });
-    const a = fakeTest("t0", "a.capture.ts");
+    const a = fakeTest("t0", "a.seq.ts");
     r.onBegin(config, { allTests: () => [a] } as unknown as Suite);
     r.onTestBegin(a);
     r.onStepBegin(a, result("passed"), shotStep("001.png  http://h/pricing"));
@@ -434,7 +434,7 @@ describe("SnapseqReporter", () => {
   it("cuts a long label and path from the left, so the count and the clock keep their columns", () => {
     const tty = fakeTty(12, 60);
     const r = new SnapseqReporter({ stream: tty.stream, open: () => {} });
-    const t = fakeTest("t0", "clients/acme/campaign-2026/landing-pages/enterprise-pricing.capture.ts");
+    const t = fakeTest("t0", "clients/acme/campaign-2026/landing-pages/enterprise-pricing.seq.ts");
     r.onBegin(config, { allTests: () => [t] } as unknown as Suite);
     r.onTestBegin(t);
     r.onStepBegin(t, result("passed"), shotStep("07.png  http://h/pricing/enterprise"));
@@ -457,7 +457,7 @@ describe("SnapseqReporter", () => {
     expect(plain(tty.text())).toContain("waiting for");
     const before = tty.text().length;
     tty.resize();
-    r.onBegin(config, { allTests: () => [fakeTest("t0", "home.capture.ts")] } as unknown as Suite);
+    r.onBegin(config, { allTests: () => [fakeTest("t0", "home.seq.ts")] } as unknown as Suite);
     expect(tty.text().slice(before)).toBe("\r\x1b[2K  snapseq  dev  http://h  run1\n"); // the header on a line of its own
     r.onEnd({ status: "passed" } as FullResult);
   });
@@ -466,7 +466,7 @@ describe("SnapseqReporter", () => {
     const dir = mkdtempSync(join(tmpdir(), "snapseq-rep-"));
     mkdirSync(join(dir, "out", "run1"), { recursive: true });
     const cfg = { ...config, configFile: join(dir, "snapseq.config.ts"), rootDir: dir } as FullConfig;
-    const t = fakeTest("t0", "home.capture.ts");
+    const t = fakeTest("t0", "home.seq.ts");
     const opened: string[] = [];
     for (const status of ["interrupted", "failed"] as const) {
       const r = new SnapseqReporter({ stream: fakeTty(24).stream, open: (d) => opened.push(d) });
@@ -481,10 +481,10 @@ describe("SnapseqReporter", () => {
     const tty = fakeTty(24);
     const r = new SnapseqReporter({ stream: tty.stream, open: () => {} });
     const tests = [
-      fakeTest("t0", "über-uns.capture.ts"), // decomposed, as macOS lists file names
-      fakeTest("t1", "abcdefgh.capture.ts"),
-      fakeTest("t2", "日本.capture.ts"),
-      fakeTest("t3", "m.capture.ts", ["capture"], [{ type: "skip", description: "für mobile" }]),
+      fakeTest("t0", "über-uns.seq.ts"), // decomposed, as macOS lists file names
+      fakeTest("t1", "abcdefgh.seq.ts"),
+      fakeTest("t2", "日本.seq.ts"),
+      fakeTest("t3", "m.seq.ts", ["sequence"], [{ type: "skip", description: "für mobile" }]),
     ];
     r.onBegin(config, { allTests: () => tests } as unknown as Suite);
     r.onTestBegin(tests[3]!);

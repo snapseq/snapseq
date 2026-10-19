@@ -4,7 +4,7 @@ import type { Page } from "@playwright/test";
  * Inject CSS into the current document and into every document this page
  * navigates to afterwards. `addStyleTag` styles the page now (and throws if a
  * CSP rejects it); the init script re-adds the rules to each new document
- * before its own scripts run. Call once per capture.
+ * before its own scripts run. Call once per sequence.
  */
 export async function addPersistentStyle(page: Page, css: string): Promise<void> {
   await page.addInitScript((css) => {

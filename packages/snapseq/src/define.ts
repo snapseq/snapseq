@@ -28,10 +28,10 @@ export interface EnvConfig {
   /**
    * Requests answered from files instead of this env's backend: a URL glob
    * (Playwright's `page.route` pattern) to a file path relative to the config
-   * file, e.g. `{ "**\/api/search": "captures/replay/search.json" }`.
+   * file, e.g. `{ "**\/api/search": "snapseq/replay/search.json" }`.
    * `--record` fetches each one live and writes its file; every other run
-   * fulfills from the file, as JSON, before the capture starts. A glob without a
-   * host also matches third-party requests; `--record` stops the capture on the
+   * fulfills from the file, as JSON, before the sequence starts. A glob without a
+   * host also matches third-party requests; `--record` stops the sequence on the
    * second, different request for the same file.
    */
   replay?: Record<string, string>;
@@ -46,9 +46,9 @@ export interface SnapseqConfig {
   defaultEnv?: string;
   /** One Playwright project per key. Defaults to `desktop` and `mobile`. */
   devices?: Record<string, DeviceConfig>;
-  /** Where `*.capture.ts` files live, relative to the config file. Default `captures`. */
-  capturesDir?: string;
-  /** Where screenshots are written, relative to the config file. Default `.screenshots`. Self-gitignored. */
+  /** Where `*.seq.ts` files live, relative to the config file. Default `snapseq`. */
+  sequencesDir?: string;
+  /** Where screenshots are written, relative to the config file. Default `screenshots`. Self-gitignored. */
   screenshotsDir?: string;
   /** The shape of a shot number: `"00"` (default) gives `01.png`, `"000"` gives `001.png`. Zeros only. */
   numbering?: string;
@@ -122,7 +122,7 @@ function defaultReporter(
 }
 
 /**
- * Build a Playwright Test config for screenshot captures. Extra arguments are
+ * Build a Playwright Test config for screenshot sequences. Extra arguments are
  * overrides, merged the way Playwright's own `defineConfig` merges them.
  * Env vars: `SNAPSEQ_ENV` picks the env, `SNAPSEQ_HOST` overrides its host,
  * `SNAPSEQ_RUN` names the run directory (default: the time the run started),
@@ -154,7 +154,7 @@ export function defineConfig(
   if (!url || !/^https?:$/.test(url.protocol) || !url.hostname) {
     throw new Error(`snapseq: host must be an http(s) URL, got "${host}"`);
   }
-  const screenshotsDir = config.screenshotsDir ?? ".screenshots";
+  const screenshotsDir = config.screenshotsDir ?? "screenshots";
   // Stamped once per run: this file is evaluated again in every worker process,
   // but workers inherit the env of the main process, which set it first.
   const run = (process.env.SNAPSEQ_RUN ||= runStamp());
@@ -189,8 +189,8 @@ export function defineConfig(
   // intact; metadata arrives as a JSON copy.
   const result = definePlaywrightConfig<{ snapseq: { plugins: Plugin[] } }>(
     {
-    testDir: config.capturesDir ?? "captures",
-    testMatch: /\.capture\.[cm]?[jt]s$/,
+    testDir: config.sequencesDir ?? "snapseq",
+    testMatch: /\.seq\.[cm]?[jt]s$/,
     // Playwright's own artifacts (.last-run.json, traces, error context) stay out
     // of the screenshots dir. Playwright wipes this dir whole before a run.
     outputDir: "node_modules/.cache/snapseq",
@@ -218,7 +218,7 @@ export function defineConfig(
       actionTimeout: 30_000,
       // Playwright's own default is no limit, and a page that keeps polling
       // never reaches networkidle: without this a goto could run out the whole
-      // capture timeout. Long enough for a cold dev build, like the server wait.
+      // sequence timeout. Long enough for a cold dev build, like the server wait.
       navigationTimeout: 120_000,
       // Without an origin Playwright answers any Basic challenge with these,
       // a third-party image's included.

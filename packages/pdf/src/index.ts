@@ -4,7 +4,7 @@ import { PDFDocument } from "@cantoo/pdf-lib";
 import type { Plugin, Shot } from "snapseq";
 
 // The PDF sits next to the device folder and takes its name: <run>/home/desktop.pdf.
-// After a failed capture it is <run>/home/desktop.partial.pdf.
+// After a failed sequence it is <run>/home/desktop.partial.pdf.
 const file = (dir: string, partial = false) => join(dirname(dir), `${basename(dir)}${partial ? ".partial" : ""}.pdf`);
 
 // Many readers (Acrobat) refuse a page longer than 14400 pt on a side.
@@ -30,7 +30,7 @@ async function build(shots: readonly Shot[], dir: string, partial: boolean) {
   await writeFile(file(dir, partial), await doc.save());
 }
 
-/** One PDF per capture and device, one page per shot at its CSS size, next to the device folder. */
+/** One PDF per sequence and device, one page per shot at its CSS size, next to the device folder. */
 export function pdf(): Plugin {
   return {
     name: "pdf",

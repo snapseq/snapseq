@@ -28,7 +28,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("defineConfig", () => {
-  it("bounds navigation on its own, apart from actions and the capture timeout", () => {
+  it("bounds navigation on its own, apart from actions and the sequence timeout", () => {
     const u = use(defineConfig({ envs }));
     expect(u.navigationTimeout).toBe(120_000);
     expect(u.actionTimeout).toBe(30_000);
@@ -89,7 +89,7 @@ describe("defineConfig", () => {
     vi.stubEnv("SNAPSEQ_RUN", "review 1");
     expect(() => defineConfig({ envs })).not.toThrow();
     expect(() => defineConfig({ envs, devices: { "../d": {} } })).toThrow("a device name must be a directory name");
-    // "" would make the device's directory the capture's own, wiped whole.
+    // "" would make the device's directory the sequence's own, wiped whole.
     expect(() => defineConfig({ envs, devices: { "": {} } })).toThrow('a device name must be a directory name, not a path: ""');
     expect(() => defineConfig({ envs, devices: { "300x250": { viewport: { width: 300, height: 250 } } } })).not.toThrow();
   });
@@ -97,7 +97,7 @@ describe("defineConfig", () => {
   it("carries the env's replay map and the record flag to the fixtures", () => {
     const meta = (c: ReturnType<typeof defineConfig>) =>
       (c.metadata as { snapseq: { replay?: unknown; record: boolean } }).snapseq;
-    const replay = { "**/api": "captures/replay/api.json" };
+    const replay = { "**/api": "snapseq/replay/api.json" };
     expect(meta(defineConfig({ envs: { ...envs, dev: { ...envs.dev, replay } } }))).toMatchObject({ replay, record: false });
     expect(meta(defineConfig({ envs }))).not.toHaveProperty("replay");
     vi.stubEnv("SNAPSEQ_RECORD", "1");

@@ -1,4 +1,4 @@
-import type { CaptureContext } from "./fixtures.js";
+import type { SequenceContext } from "./fixtures.js";
 import type { ShotFormat, SnapOptions } from "./sequence.js";
 
 /**
@@ -13,12 +13,12 @@ export interface Shot {
   path: string;
   /** The page URL at screenshot time; in `beforeSnap`, the URL when the snap started. */
   url: string;
-  /** Position in the capture, from 1. */
+  /** Position in the sequence, from 1. */
   index: number;
-  /** What the capture passed to `snap` or `snapPage`, plugin keys included. A `beforeSnap` hook may edit it. */
+  /** What the sequence passed to `snap` or `snapPage`, plugin keys included. A `beforeSnap` hook may edit it. */
   options: SnapOptions;
   /**
-   * The notes on the shot's line in `shots.txt`: what `beforeSnap` hooks pushed, in order, then the readiness caps
+   * The shot's notes, printed with it in the terminal: what `beforeSnap` hooks pushed, in order, then the readiness caps
    * that ran out, e.g. `2 images still loading after 5 s (first: …)`. Each is cleaned (control, format and line-separator
    * characters to spaces, trimmed, at most 200 characters) and listed once. In `beforeSnap`, what earlier hooks pushed.
    */
@@ -35,20 +35,20 @@ export interface Shot {
 
 /**
  * An addon listed in the config's `plugins`. Hooks run in the worker, inside
- * the capture, in the order the plugins are listed; a hook that throws fails
- * the capture. A factory must be pure: Playwright evaluates the config, and
+ * the sequence, in the order the plugins are listed; a hook that throws fails
+ * the sequence. A factory must be pure: Playwright evaluates the config, and
  * so the factory, in every process it starts.
  */
 export interface Plugin {
   name: string;
-  /** The page exists and the capture body has not run: cookies, headers, init scripts, routes, viewport, emulateMedia, persistent CSS. */
-  begin?(ctx: CaptureContext): Promise<void>;
+  /** The page exists and the sequence body has not run: cookies, headers, init scripts, routes, viewport, emulateMedia, persistent CSS. */
+  begin?(ctx: SequenceContext): Promise<void>;
   /** At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. No file yet. May change the page, edit `shot.options`, or push to `shot.notes`. */
-  beforeSnap?(shot: Shot, ctx: CaptureContext): Promise<void>;
-  /** After the file is written and before it is listed in `shots.txt`. May rewrite the file in place. */
-  afterSnap?(shot: Shot, ctx: CaptureContext): Promise<void>;
-  /** After the capture body passed, with every shot in order, before the page closes. */
-  done?(shots: readonly Shot[], ctx: CaptureContext): Promise<void>;
-  /** After the capture body failed or timed out and `failed.png` was attempted, with the shots listed so far. */
-  failed?(shots: readonly Shot[], ctx: CaptureContext): Promise<void>;
+  beforeSnap?(shot: Shot, ctx: SequenceContext): Promise<void>;
+  /** After the file is written and before the shot joins `seq.shots`. May rewrite the file in place. */
+  afterSnap?(shot: Shot, ctx: SequenceContext): Promise<void>;
+  /** After the sequence body passed, with every shot in order, before the page closes. */
+  done?(shots: readonly Shot[], ctx: SequenceContext): Promise<void>;
+  /** After the sequence body failed or timed out and `failed.png` was attempted, with the shots listed so far. */
+  failed?(shots: readonly Shot[], ctx: SequenceContext): Promise<void>;
 }

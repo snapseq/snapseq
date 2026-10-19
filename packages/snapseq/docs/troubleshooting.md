@@ -20,13 +20,13 @@ inside the evaluated callback. `tsx` and esbuild wrap named functions in a
 **Fix.** Arrow functions only inside `page.evaluate`, `locator.evaluate` and
 `addInitScript`.
 
-## The capture dies 10 minutes after its last shot, inside an evaluate
+## The sequence dies 10 minutes after its last shot, inside an evaluate
 
 **Symptom.** `No shot for 10 min.` in the live terminal view (the list
 reporter prints `Test timeout of …ms exceeded.`), and the stack points into a
 `page.evaluate`.
 **Cause.** The callback awaited a DOM event (`seeked`, `load`, a custom event)
-that never fired. `page.evaluate` has no timeout of its own, so the capture
+that never fired. `page.evaluate` has no timeout of its own, so the sequence
 waits until the shot timeout ends it.
 **Fix.** Race every in-page wait against a timer.
 [Example 8](examples.md#8-a-state-that-arrives-later) shows the pattern.
@@ -43,7 +43,7 @@ API calls fail, see the CORS entry below and [Example 9](examples.md#9-an-api-wi
 
 **Cause.** Node 26. The browser archive extraction deadlocks.
 **Fix.** Run the install under Node 20 or 22 (`nvm use 22`), once per machine.
-Captures themselves run under any supported Node.
+Sequences themselves run under any supported Node.
 
 ## A `goto` times out after 120 s
 
@@ -54,11 +54,10 @@ keeps a socket open: it never goes idle. Or a dev server doing a cold build.
 heading, after the `goto`. For a slow build, warm the server before the run or
 raise `navigationTimeout` on the env's `use`.
 
-## `shots.txt` says a wait ran out
+## The terminal says a wait ran out
 
-**Symptom.** A line like `03.png  http://…  2 images still loading after 5 s (first: http://…/hero.jpg)`,
-`font readiness still pending after 5 s` or `DOM still changing after 3 s (most changed: div#ticker)`,
-printed once in the terminal too.
+**Symptom.** A line like `snapseq: 03.png taken with 2 images still loading after 5 s (first: http://…/hero.jpg)  http://…`,
+or the same line with `font readiness still pending after 5 s` or `DOM still changing after 3 s (most changed: div#ticker)` as the note.
 **Cause.** The readiness wait hit its cap and took the shot anyway. Images:
 a stalled or very slow asset, the first one named. Fonts: a face that never
 arrives, or a page whose load event is still pending. DOM: something mutates
@@ -66,27 +65,27 @@ the document every frame, a clock, a ticker, an infinite loader; the note names
 the element that changed most.
 **Fix.** The shot may be fine; check it. If not, hide or stop the moving part
 with `addPersistentStyle`, route the stalled asset with `page.route`, or wait
-for the specific state before the shot. [Captures](captures.md#readiness) lists
+for the specific state before the shot. [Sequences](sequences.md#readiness) lists
 what the wait does and does not see.
 
 An image in the initial HTML that never answers is the exception: it holds the
-page's load event, which Playwright's screenshot waits for. Where the capture
+page's load event, which Playwright's screenshot waits for. Where the sequence
 fails depends on its `goto`:
 
 - A plain `goto(url)` waits for the load event, so it fails at the navigation
   timeout (120 s by default) with no readiness note.
 - `goto(url, { waitUntil: "domcontentloaded" })` gets past the navigation. The
-  capture then fails at the shot, with the notes at the end of its message
+  sequence then fails at the shot, with the notes at the end of its message
   (`page.screenshot: Timeout 30000ms exceeded. … ; readiness: 1 image still
   loading after 5 s (first: http://…/hero.jpg)`), so the image is named.
 
 The `timeout` screenshot option (`seq.snap({ timeout: 5000 })`) only makes the
-capture fail sooner. To make it pass, answer the URL: a `page.route` in
-a `begin` hook, or in the capture before the `goto`, that aborts it
+sequence fail sooner. To make it pass, answer the URL: a `page.route` in
+a `begin` hook, or in the sequence before the `goto`, that aborts it
 (`page.route("**/hero.jpg", (route) => route.abort())`; the shot then notes one
 image that failed to load) or fulfills it with a small image of your own.
 
-## `shots.txt` says `N images failed to load (first: …)`
+## The terminal says `N images failed to load (first: …)`
 
 **Cause.** An image the shot shows finished loading with no pixels: a 404, a
 file that is not an image, or a URL the browser blocks, such as one with a
@@ -96,7 +95,7 @@ one, without its query.
 `page.route`; if the shot does not need the image, hide it with
 `addPersistentStyle`.
 
-## `shots.txt` says `the page scrolls inside <…> not the document: scrollable content may be omitted`
+## The terminal says `the page scrolls inside <…> not the document: scrollable content may be omitted`
 
 **Cause.** The page is about one screen tall to the document, and its content
 scrolls inside an element: `html` and `body` at 100% height with `overflow:
@@ -108,7 +107,7 @@ allows, let the content flow in the document for the shot, then `snapPage`:
 Otherwise shoot it section by section, scrolling the element between shots:
 `await page.locator("main.content").evaluate((el) => el.scrollBy(0, el.clientHeight))`.
 
-## `shots.txt` says `scroll pass stopped after N steps`
+## The terminal says `scroll pass stopped after N steps`
 
 **Cause.** `@snapseq/stabilize` with `scroll: true` scrolls a native full page
 (`snap({ fullPage: true })`) from its top to its end, to wake lazy content, and
@@ -118,7 +117,7 @@ scrolls, like an infinite feed.
 scroll to it yourself and `snap()`. See the stabilize
 [README](../../stabilize/README.md).
 
-## `shots.txt` says `cannot read <url>: its viewport units stay live`
+## The terminal says `cannot read <url>: its viewport units stay live`
 
 **Cause.** `@snapseq/stabilize` could not read the rules of a stylesheet from
 another origin, so its viewport units were not frozen. The note is on every
@@ -166,12 +165,12 @@ flow and a tray lands in its slot.
 **Cause.** `disableTransitions` was not called, or was called after the
 `goto` of a later document and the motion comes from the Web Animations API,
 which the readiness wait cannot see.
-**Fix.** Call `disableTransitions(page)` once at the top of the capture, before
+**Fix.** Call `disableTransitions(page)` once at the top of the sequence, before
 the first `goto`. For Web Animations API motion, wait for the element's final
 state with a locator, or `await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))` raced against a timer.
 Or list `stabilize()` from `@snapseq/stabilize` in `plugins`: its `motion`
 option, on by default, finishes or cancels Web Animations before each shot and
-applies `disableTransitions` itself, so a capture need not call it.
+applies `disableTransitions` itself, so a sequence need not call it.
 
 ## An element that fades in is missing from the shot
 
@@ -198,7 +197,7 @@ message lists the available ones.
 ## `snapseq: SNAPSEQ_RUN must be a directory name, not a path: "…"`
 
 **Cause.** The run name contains a slash or backslash, or is `.` or `..`. The
-run's capture directories are wiped, so the name may not point outside the
+run's sequence directories are wiped, so the name may not point outside the
 screenshots dir.
 **Fix.** A plain name: `SNAPSEQ_RUN=review-1`.
 
@@ -242,13 +241,12 @@ Playwright as a file filter.
 missing `await`, a `Promise.all`, or a plugin hook that took a shot of its own.
 **Fix.** Await each shot; take none from a plugin hook.
 
-## `snapseq: the capture ended before … was listed`
+## `snapseq: the sequence ended before … was listed`
 
-**Cause.** A `snap` or `snapPage` was still running when the capture ended:
-the body returned without awaiting it, or the capture failed or timed out
-during the shot. The file may be on disk, but the shot is not listed in
-`shots.txt` and does not count.
-**Fix.** Await every shot before the body returns. If the capture failed or
+**Cause.** A `snap` or `snapPage` was still running when the sequence ended:
+the body returned without awaiting it, or the sequence failed or timed out
+during the shot. The file may be on disk, but the shot does not count.
+**Fix.** Await every shot before the body returns. If the sequence failed or
 timed out, read its first error; this one follows it.
 
 ## `snapPage: the page has no viewport size`
@@ -260,32 +258,32 @@ that device.
 
 ## `snapseq: refusing to wipe …: not inside …`
 
-**Cause.** A `describe` or test title with `..` in it points the capture's
-directory outside the screenshots dir. That directory is wiped when the capture
+**Cause.** A `describe` or test title with `..` in it points the sequence's
+directory outside the screenshots dir. That directory is wiped when the sequence
 starts, so snapseq refuses.
 **Fix.** Plain titles, no `..`.
 
-## `snapseq: refusing to wipe …: it holds another capture's output (…)`
+## `snapseq: refusing to wipe …: … writes inside it; rename one of the sequences`
 
-**Cause.** One capture's directory sits inside another's. `home.capture.ts` on
-device `mobile` writes `home/mobile/`; `home/mobile.capture.ts` on `desktop`
-writes `home/mobile/desktop/`. A capture's directory is wiped when it starts,
-and a directory in it with a `shots.txt` is another capture's output: snapseq
-refuses, and nothing is deleted. Any other directory in it, such as one a
-plugin hook wrote, is wiped with the rest.
-**Fix.** Rename one of the captures so its name is not a device's, such as
-`home/mobile-menu.capture.ts`.
+**Cause.** One sequence's directory sits inside another's. `home.seq.ts` on
+device `mobile` writes `home/mobile/`; `home/mobile.seq.ts` on `desktop`
+writes `home/mobile/desktop/`, and so does every sequence under `home/mobile/`.
+A sequence's directory is wiped when it starts, so snapseq refuses first,
+naming the sequence file that writes inside it, and nothing is deleted. A
+directory a plugin hook wrote in it is wiped with the rest.
+**Fix.** Rename one of the sequences so its name is not a device's, such as
+`home/mobile-menu.seq.ts`.
 
 ## `snapseq: --repeat-each and retries are not supported`
 
-**Cause.** A second run of the same capture would wipe and overwrite the
+**Cause.** A second run of the same sequence would wipe and overwrite the
 first run's numbered shots.
 **Fix.** Run again with a new run directory instead. For a flaky step, wait
-for the state the shot needs rather than retrying the capture.
+for the state the shot needs rather than retrying the sequence.
 
 ## `snapseq: the Playwright config must come from snapseq's defineConfig()`
 
-**Cause.** The capture ran under a config that did not come from
+**Cause.** The sequence ran under a config that did not come from
 `defineConfig`, usually the wrong `-c <path>` or a plain Playwright
 config picked up from the directory.
 **Fix.** Point the command at `snapseq.config.ts`, and pass extra Playwright
@@ -314,7 +312,7 @@ the terminal cannot draw them; `NO_COLOR` drops colors on purpose.
 ## `snapseq: no replay file for …`
 
 The env has a `replay` entry whose file does not exist yet. Record it with
-`pnpm screenshot --record` against a host where the request succeeds
+`pnpm snapseq --record` against a host where the request succeeds
 (`--host` points the env there for that one run), check the shot, and keep
 the file. See [Config](config.md#replay).
 
@@ -322,7 +320,7 @@ the file. See [Config](config.md#replay).
 
 **Cause.** The live response was not a 2xx or not JSON (a 403 from a bot check,
 an HTML error page). Saving it would replay it as a 200 on every later run, so
-the capture fails at that request (shots already taken stay) and the existing
+the sequence fails at that request (shots already taken stay) and the existing
 file is left as it was for that response.
 **Fix.** Record against a host where the request succeeds (`--host`). A page
 that renders a 4xx on purpose needs `page.route` or a HAR. See
@@ -333,8 +331,8 @@ that renders a 4xx on purpose needs `page.route` or a HAR. See
 **Cause.** A replay file does not parse as JSON, usually after a hand edit (a
 trailing comma, a cut-off paste). Replay serves it as `application/json`, so the
 page's widget would break without a word. The message ends with the parser's
-reason and position. The capture stops before its first shot.
-**Fix.** Correct the file, or record it again with `pnpm screenshot --record`.
+reason and position. The sequence stops before its first shot.
+**Fix.** Correct the file, or record it again with `pnpm snapseq --record`.
 See [Config](config.md#replay).
 
 ## `snapseq: --record: … matched a second request …; … already written from …`

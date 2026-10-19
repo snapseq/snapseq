@@ -1,8 +1,8 @@
 export { defineConfig } from "./define.js";
 export type { DeviceConfig, EnvConfig, SnapseqConfig } from "./define.js";
 
-export { capture, skipIf } from "./fixtures.js";
-export type { CaptureArgs, CaptureContext, CaptureFn } from "./fixtures.js";
+export { sequence, skipIf } from "./fixtures.js";
+export type { SequenceArgs, SequenceContext, SequenceFn } from "./fixtures.js";
 
 export type { Sequence, ShotFormat, SnapOptions } from "./sequence.js";
 

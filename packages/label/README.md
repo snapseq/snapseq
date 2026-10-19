@@ -39,10 +39,10 @@ understands: named colors, hex and `rgb()`. An unknown color draws black.
 ## Use
 
 ```ts
-// captures/home.capture.ts
-import { capture } from "snapseq";
+// snapseq/home.seq.ts
+import { sequence } from "snapseq";
 
-capture(async ({ page, seq }) => {
+sequence(async ({ page, seq }) => {
   await page.goto("/");
   await seq.snap({ label: "0.0 Home" });      // 01.png, with the strip
   await seq.snapPage({ label: "0.1 Full" });  // 02.png, with the strip
@@ -54,9 +54,9 @@ capture(async ({ page, seq }) => {
 (`theme`, `background`, `color`). A shot's style wins over the factory's.
 
 `label` is typed once the package's types are in your TypeScript program. The
-config's import does that when the config and the captures share a
+config's import does that when the config and the sequences share a
 `tsconfig.json`; otherwise add `/// <reference types="@snapseq/label" />` to
-the capture file.
+the sequence file.
 
 ## What it writes
 

@@ -19,7 +19,7 @@ const LINKS: Record<string, string> = {
 };
 
 const BODY = `
-import { defineConfig, capture } from "snapseq";
+import { defineConfig, sequence } from "snapseq";
 import { label } from "@snapseq/label";
 import { pdf } from "@snapseq/pdf";
 import { stabilize } from "@snapseq/stabilize";
@@ -29,7 +29,7 @@ export const config = defineConfig({
   plugins: [label(), pdf(), stabilize()],
 });
 
-capture(async ({ seq }) => {
+sequence(async ({ seq }) => {
   await seq.snap({ label: "x", hover: "keep" });
 });
 `;

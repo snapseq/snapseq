@@ -39,8 +39,8 @@ stabilize({ reducedMotion: true })   // emulate prefers-reduced-motion: reduce
 No option: take the shots as usual.
 
 ```ts
-// captures/home.capture.ts
-capture(async ({ page, seq }) => {
+// snapseq/home.seq.ts
+sequence(async ({ page, seq }) => {
   await page.goto("/");
   await seq.snapPage();  // a 100vh hero stays one screen tall; the shot is the whole page
 });
@@ -78,8 +78,8 @@ in flow. Width units (`vw`) are left alone: the width never changes.
   If the server refuses, or the stylesheet redirects, the stylesheet stays as
   the page had it, and each shot taken while it is unreadable carries the note
   `cannot read <url>: its viewport units stay live`, noted on the shot's line in
-  `shots.txt` and in the terminal (the URL without its query string, cut to 80
-  characters). The refetch is tried once per page load.
+  the terminal (the URL without its query string, cut to 80 characters). The
+  refetch is tried once per page load.
 
   Security: the URLs to fetch again come from the page, which may name any URL.
   While a cross-origin stylesheet is fetched again, a route answers that URL
@@ -99,9 +99,9 @@ each shot the plugin moves the pointer off the viewport, so nothing is
 hovered. The move fires the page's `mouseleave` handlers: a menu that opens on
 hover closes. The pointer leaves through the left edge at mid-height, so
 exit-intent scripts that watch the top edge are not triggered. It then sits off
-the page until the capture's next action: `page.click` and locator actions move
+the page until the sequence's next action: `page.click` and locator actions move
 it first, a bare `mouse.down`, `mouse.up` or `mouse.wheel` does not. `hover:
-false` turns the move off. For a hover state the capture set up on purpose,
+false` turns the move off. For a hover state the sequence set up on purpose,
 leave it for that shot:
 
 ```ts
@@ -124,17 +124,17 @@ content under the kept pointer. A reveal done by a keyframe animation, not by
 a class, stays hidden by `disableTransitions`: see
 [An element that fades in is missing from the shot](https://github.com/snapseq/snapseq/blob/main/packages/snapseq/docs/troubleshooting.md#an-element-that-fades-in-is-missing-from-the-shot).
 
-**Motion** (`motion`). When the capture begins, `disableTransitions` from
+**Motion** (`motion`). When the sequence begins, `disableTransitions` from
 snapseq is applied (no transitions, animations or smooth scrolling, on every
 document). Before each shot: Web Animations are finished, or cancelled when
 they cannot finish (an infinite one); SVG animations are paused where they are,
 like a video, so a draw-in that finished stays drawn; videos stop playing.
 The screenshot itself runs with Playwright's `animations: "disabled"` unless
-the capture sets its own, so an animation that starts after that pass (from a
+the sequence sets its own, so an animation that starts after that pass (from a
 resize handler, say) is finished or cancelled too.
 
 **Reduced motion** (`reducedMotion`, off by default). Emulates
-`prefers-reduced-motion: reduce` for the capture, for a page that has a quieter
+`prefers-reduced-motion: reduce` for the sequence, for a page that has a quieter
 variant. Off, the page's own preference is left alone.
 
 ## What it does not do

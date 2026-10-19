@@ -1,5 +1,5 @@
 // Live terminal view of a run: a waiting line while the dev server comes up,
-// then one line per capture and device with a spinner and the shot count, then
+// then one line per sequence and device with a spinner and the shot count, then
 // a frozen summary with errors and the run directory. Zero dependencies.
 // Playwright owns exit codes and Ctrl-C; this only draws.
 import { spawn } from "node:child_process";
@@ -26,13 +26,13 @@ interface Row {
   shots: number;
   duration: number;
   error?: string;
-  /** Why a capture was skipped. */
+  /** Why a sequence was skipped. */
   note?: string;
-  /** Path of the capture's last shot, or of the page it died on. */
+  /** Path of the sequence's last shot, or of the page it died on. */
   at?: string;
   /** Its final line went out as an event, errors and all. */
   reported?: boolean;
-  /** When the capture began, for the running row's clock. */
+  /** When the sequence began, for the running row's clock. */
   started?: number;
 }
 
@@ -47,7 +47,7 @@ export interface OutStream {
 
 // `01.png  http://host/path` (or `.jpg`): the file, then the URL it is taken at.
 const SHOT = /^\d+\.(?:png|jpg)(?:  (.+))?$/;
-// The same, plus the teardown's `failed.png  <url>`: where a capture is, or died.
+// The same, plus the teardown's `failed.png  <url>`: where a sequence is, or died.
 const AT = /^(?:\d+\.(?:png|jpg)|failed\.png)  (.+)$/;
 const SPINNER = ["|", "/", "-", "\\"];
 const GLYPH: Record<State, string> = {
@@ -81,7 +81,7 @@ const COLOR: Partial<Record<State, number>> = {
   timedOut: 31,
   interrupted: 31,
 };
-// Fewest rows a frame fits: header, blank, one capture, blank, footer, the prompt, and a line to spare.
+// Fewest rows a frame fits: header, blank, one sequence, blank, footer, the prompt, and a line to spare.
 const MIN_ROWS = 7;
 const DIM: ReadonlySet<State> = new Set<State>(["queued", "not run", "skipped"]);
 // Frame rows must be exactly one terminal line each: dynamic text carries no
@@ -96,7 +96,7 @@ const ascii = (s: string): string =>
 const left = (s: string, n: number): string =>
   s.length <= n ? s : `\u2026${s.slice(s.length - Math.max(n - 1, 0))}`;
 const errorText = (e: TestError): string => e.message ?? e.value ?? "unknown error";
-// Error text carries what a page or a capture put in a message: keep the lines and the colors, drop what moves the
+// Error text carries what a page or a sequence put in a message: keep the lines and the colors, drop what moves the
 // cursor, retitles the terminal or reorders the text (other control and format characters). A tab is a space.
 const printable = (s: string): string =>
   s.replace(/\x1b\[[0-9;]*m|[\p{Cc}\p{Cf}]/gu, (m) => (m === "\t" ? " " : m === "\n" || m.length > 1 ? m : ""));
@@ -137,9 +137,9 @@ function labelOf(test: TestCase): string {
   const file = project
     ? relative(real(project.testDir), real(test.location.file))
     : test.location.file;
-  const base = file.replace(/\.capture\.[cm]?[jt]s$/, "");
+  const base = file.replace(/\.seq\.[cm]?[jt]s$/, "");
   const titles = test.titlePath().slice(3); // root, project, file
-  const path = titles.length === 1 && titles[0] === "capture" ? base : [base, ...titles].join("/");
+  const path = titles.length === 1 && titles[0] === "sequence" ? base : [base, ...titles].join("/");
   return `${path} / ${project?.name ?? ""}`.normalize("NFC"); // macOS hands file names over decomposed
 }
 
@@ -231,7 +231,7 @@ export default class SnapseqReporter implements Reporter {
     this.event(row);
   }
 
-  // A shot is starting, or the teardown is shooting the page a capture died on: say where.
+  // A shot is starting, or the teardown is shooting the page a sequence died on: say where.
   onStepBegin(test: TestCase, _result: TestResult, step: TestStep): void {
     const url = step.category === "test.step" ? AT.exec(step.title)?.[1] : undefined;
     // about:blank and chrome-error:// are not pages: the last real one stays.
