@@ -329,8 +329,9 @@ const freezeUnits = async () => {
   // what the page applied. It is harmless (false) only for a text/css answer that, with comments and strings taken out,
   // has no viewport unit outside url() and no escape, and whose @imports, one level down, are harmless in the same way
   // (each counts toward the 10; an @import inside an imported sheet, or one that cannot be read as a plain URL, keeps the
-  // note). Anything else keeps the note. A sheet the 10 ran out for, itself or an import of it (undefined), is not recorded,
-  // so the next shot tries it again, as it does one not checked yet (over the 10, or found while these were out).
+  // note). Anything else keeps the note. A sheet with 10 or more imports can never fit, and keeps it too. A sheet whose imports
+  // are more than what is left of the 10 spends nothing on them, all or nothing, and is not recorded (undefined): nor is one
+  // the 10 ran out for, so the next shot tries it again, as it does one not checked yet (over the 10, or found while these were out).
   const deadline = AbortSignal.timeout(3000);
   let budget = 10;
   // Comments and strings are tokens, so an @import inside one is not found; the @import token carries its URL.
@@ -355,7 +356,8 @@ const freezeUnits = async () => {
       const bare = text.replace(/\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)/gi, " ");
       if (bare.includes("\\") || convert(bare) !== bare) return false;
       const specs = Array.from(text.matchAll(token), (m) => m[1] ?? m[2] ?? m[3]).filter((spec) => spec !== undefined);
-      if (specs.length !== (bare.match(/@import/gi) ?? []).length || (depth > 0 && specs.length > 0)) return false;
+      if (specs.length !== (bare.match(/@import/gi) ?? []).length || (depth > 0 && specs.length > 0) || specs.length > 9) return false;
+      if (specs.length > budget) return undefined;
       const imported = await Promise.all(specs.map((spec) => harmlessText(new URL(spec, href).href, depth + 1)));
       return imported.includes(false) ? false : imported.includes(undefined) ? undefined : true;
     } catch {

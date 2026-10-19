@@ -91,9 +91,10 @@ alone: the width never changes.
   in it (`url("…")`, `url('…')`, `url(…)`, `"…"` or `'…'`, with media or layer
   text after it or not, resolved against the sheet) is a stylesheet that passes
   the same check. That is one level: an `@import` inside an imported sheet keeps
-  the note. Each imported sheet counts toward the 10, and a sheet that one of its
-  imports ran the limit out for keeps the note for that shot and is tried again at
-  the next. Anything else keeps it too: a fetch that fails or runs out of
+  the note. Each imported sheet counts toward the 10. A sheet with more than 9
+  imports can never fit and keeps the note. A sheet whose imports are more than
+  what is left of the 10 waits, all or nothing, and is tried again at the next
+  shot; so is one that an import ran the limit out for. Anything else keeps it too: a fetch that fails or runs out of
   time, another content type, a stylesheet not checked yet. It is a best-effort look: the
   anonymous fetch may not get the stylesheet the page applied (a CDN that
   varies by cookie, say).

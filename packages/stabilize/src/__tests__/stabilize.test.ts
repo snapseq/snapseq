@@ -123,6 +123,7 @@ const CHECKED_CSS: Record<string, string> = {
   cap9: Array.from({ length: 9 }, (_, i) => `@import url("./beacon.css?${i + 1}");`).join(""),
   cap10: Array.from({ length: 10 }, (_, i) => `@import url("./beacon.css?${i + 1}");`).join(""),
   ...Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`par${i + 1}`, `@import url("./beacon.css?p${i + 1}");`])), // six parents, each with a beacon: 12 fetches
+  slowimp: '@import url("./beacon.css");',
   beacon: "/* beacon */",
   vh: "#u { height: 100vh }",
   deep: '@import url("./beacon.css");',
@@ -682,6 +683,15 @@ sequence(async ({ page, seq }) => {
     await page.goto(path);
     await seq.snap();
   }
+  await seq.snap();
+});
+`,
+  importab: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/importab");
+  await seq.snap();
+  await seq.snap();
 });
 `,
   importbudget: `
@@ -1028,8 +1038,11 @@ function cdnServer() {
     else if (url.startsWith("/x/")) {
       const name = url.slice(3).split(".")[0]!;
       const sheet = name !== "login" || req.headers.accept?.startsWith("text/css"); // the import asks for a stylesheet, a fetch for */*
-      res.writeHead(200, { "content-type": sheet ? "text/css" : "text/html", "access-control-allow-origin": "*" });
-      res.end(sheet ? CHECKED_CSS[name] : "<html><body>Sign in</body></html>");
+      // slow...: answers late, so the sheets beside it are read first.
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": sheet ? "text/css" : "text/html", "access-control-allow-origin": "*" });
+        res.end(sheet ? CHECKED_CSS[name] : "<html><body>Sign in</body></html>");
+      }, name.startsWith("slow") ? 300 : 0);
     } else if (url.startsWith("/img.png") || url.startsWith("/v1/img.png")) send(res, "image/png", PNG_1x1);
     else if (url.startsWith("/old/style.css")) {
       res.writeHead(302, { location: "/v1/style.css" });
@@ -1060,6 +1073,7 @@ function appServer(cdn: string) {
     "/importforms": importsPage([`${cdn}/x/impforms.css`]),
     "/importcap9": importsPage([`${cdn}/x/cap9.css`]),
     "/importbudget": importsPage(Array.from({ length: 6 }, (_, i) => `${cdn}/x/par${i + 1}.css`)),
+    "/importab": importsPage([`${cdn}/x/cap9.css`, `${cdn}/x/slowimp.css`]),
     "/importcap10": importsPage([`${cdn}/x/cap10.css`]),
     "/many": importsPage(Array.from({ length: 12 }, (_, i) => `${cdn}/x/font.css?${i + 1}`)),
     "/unitimport": sheetImportPage("/units.css"),
@@ -1456,14 +1470,26 @@ describe("the text check, one @import level down", () => {
   // imp: an import of a beacon sheet (a comment) and a harmless rule. impvh: of a sheet with a viewport unit. impdeep: of a
   // sheet that imports a third. impforms: every spelling of an @import, with media and layer text after some. cap9 and cap10:
   // nine and ten imports, which with the sheet itself are ten and eleven fetches against a limit of ten.
-  it("drops the note for sheets whose imports are harmless, and keeps it for a viewport unit, a deeper import and an import over the limit", async () => {
+  it("drops the note for sheets whose imports are harmless, and keeps it for a viewport unit, a deeper import and an import over the limit, which is not tried again", async () => {
+    const before = cdn.hits.length;
     const r = await run("importchain");
     expect(r.status, r.out).toBe(0);
     const note = (name: string) => `cannot read ${cdn.url}/x/${name}.css: its viewport units stay live`;
     expect(noted(r.out)).toEqual([
       `snapseq: 01.png taken with ${["impvh", "impdeep"].map(note).join(", ")}  ${app.url}/nestedimports`,
       `snapseq: 04.png taken with ${note("cap10")}  ${app.url}/importcap10`,
+      `snapseq: 05.png taken with ${note("cap10")}  ${app.url}/importcap10`, // a second shot of the same page
     ]);
+    // Ten imports can never fit with the sheet itself: answered at once, its text fetched once (and the browser's own load of it).
+    expect(cdn.hits.slice(before).filter((u) => u.startsWith("/x/cap10.css"))).toHaveLength(2);
+  });
+
+  // cap9 has nine imports and slowimp one, which answers late: after the two sheets 8 of the 10 are left, so cap9 (9 > 8)
+  // spends nothing and waits, and slowimp is answered at once, whichever is read first. The next shot has the budget for cap9.
+  it("answers the sheet whose imports fit when another's do not, and the other on the next shot", async () => {
+    const r = await run("importab");
+    expect(r.status, r.out).toBe(0);
+    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/x/cap9.css: its viewport units stay live  ${app.url}/importab`]);
   });
 });
 

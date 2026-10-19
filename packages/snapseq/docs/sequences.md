@@ -98,7 +98,8 @@ Every shot waits for the page to be ready first, in this order:
 `snapPage` runs the wait once the viewport has grown, and again after its second
 grow when landing in flow changed the height, so an image that a newly shown
 section starts (an observer that sets its `src`) holds the shot or gets a note.
-Each run has its own 5 s image cap, so a slow page can spend two. That second
+Each run has its own 5 s image cap, so a slow page can spend two, or three when the
+second grow turns out too short and goes back (below). That second
 grow also follows a page that got shorter: the scroll height never reads below
 the viewport, so content that shrank once the viewport grew (a tray and the spacer
 under the footer, hidden by a scroll handler) is measured by its boxes, fixed
