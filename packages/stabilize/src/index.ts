@@ -559,7 +559,7 @@ export function stabilize({
       if (floating) await page.evaluate(fixedElements, "pin");
     },
     // The file is written and the viewport is still grown: the page's own insets come back. A shot that threw before this
-    // leaves the pin until the next shot, whose discovery clears it; at the device viewport a pinned element sits where it was.
+    // leaves the pin until the next shot, which clears it first; at the device viewport a pinned element sits where it was.
     async afterSnap(_shot, { page }) {
       // The page may have navigated by now (a timer): the file is written, so that is not the shot's failure.
       if (floating) await page.evaluate(fixedElements, "release").catch(() => undefined);
