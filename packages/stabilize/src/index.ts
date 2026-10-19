@@ -12,8 +12,10 @@ export interface StabilizeOptions {
   hover?: boolean;
   /** For a shot with `fullPage: true`: scroll from the top to the end first, so reveals on scroll and lazy loaders fire. Default false. */
   scroll?: boolean;
-  /** A scroll event after `snapPage` grows the viewport, and before each shot, for UI that follows scroll events only (a tray that hides at the page end). Default false. */
+  /** A scroll event after `snapPage` grows the viewport, and before each shot, for UI that follows scroll events only (a tray that hides once its inline counterpart is in view, a back-to-top button). Default true. */
   scrollEvent?: boolean;
+  /** For `snapPage`: a `position: fixed` element keeps the top it had at the device viewport, instead of following its `bottom` inset to the end of the grown page (a promo drawer, a chat bubble, a cookie banner). Default true. */
+  floating?: boolean;
 }
 
 declare module "snapseq" {
@@ -358,6 +360,84 @@ const freezeUnits = async () => {
   return { unreadable: Array.from(state.unreadable).filter((href) => state.checked.get(href) !== false) };
 };
 
+// Fixed elements keep the top they had at the device viewport. "discover" records them at the end of beforeSnap, "pin" sets an
+// override on each at the end of afterGrow, "release" takes the page's inline values back and forgets them. The records live in
+// the page, per document, never in the DOM. Elements never cross evaluate: each call finds the map itself.
+const fixedElements = (mode: string) => {
+  type Side = "top" | "bottom";
+  type Entry = { top: number; width: number; height: number; pin?: { was: Record<Side, [string, string]>; wrote: Record<Side, string> } };
+  const host = window as unknown as Record<symbol, Map<HTMLElement, Entry> | undefined>;
+  const records = (host[Symbol.for("snapseq.floating")] ??= new Map());
+  const shows = (el: HTMLElement) => el.checkVisibility({ visibilityProperty: true, opacityProperty: true });
+
+  // Each side goes back only while it still holds what was written, value and priority: a page that wrote its own since keeps it.
+  const restore = (el: HTMLElement, entry: Entry) => {
+    for (const side of ["top", "bottom"] as const) {
+      if (!entry.pin || el.style.getPropertyValue(side) !== entry.pin.wrote[side] || el.style.getPropertyPriority(side) !== "important") continue;
+      const [value, priority] = entry.pin.was[side];
+      if (value) el.style.setProperty(side, value, priority);
+      else el.style.removeProperty(side);
+    }
+    delete entry.pin;
+  };
+  // The viewport-unit step watches style attributes for the page's writes; ours are not the page's, or it would forget the
+  // vh value it keeps for an inline `bottom` and not freeze it again at the next viewport.
+  const ours = () => (window as unknown as { __snapseqViewportUnits?: { observer?: MutationObserver } }).__snapseqViewportUnits?.observer?.takeRecords();
+
+  // A shot that threw leaves a pin behind; the next discovery starts clean. Pinning again starts from the page's own layout.
+  for (const [el, entry] of records) restore(el, entry);
+  ours();
+  if (mode !== "pin") records.clear();
+  if (mode === "release") return;
+
+  if (mode === "discover") {
+    // Only fixed elements are measured. One parked off the screen (a hidden drawer) is not recorded: pinning it would pull it in.
+    const walk = (root: Document | ShadowRoot) => {
+      for (const el of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
+        if (el.shadowRoot) walk(el.shadowRoot);
+        if (!el.style || getComputedStyle(el).position !== "fixed" || !shows(el)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth) {
+          records.set(el, { top: r.top, width: r.width, height: r.height });
+        }
+      }
+    };
+    walk(document);
+    return;
+  }
+
+  // Not pinned: gone, no longer fixed, hidden, or resized by the grow (a `top: 10%; bottom: 0` panel stretched: it has its
+  // own layout, and clearing its bottom would collapse it). Everything is read before anything is written.
+  const todo: { el: HTMLElement; entry: Entry; top: number }[] = [];
+  for (const [el, entry] of records) {
+    if (!el.isConnected) continue;
+    const style = getComputedStyle(el);
+    if (style.position !== "fixed" || !shows(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (Math.abs(r.width - entry.width) >= 1 || Math.abs(r.height - entry.height) >= 1) continue;
+    const used = parseFloat(style.top);
+    if (!Number.isFinite(used) || Math.abs(entry.top - r.top) < 1) continue;
+    todo.push({ el, entry, top: +(used + entry.top - r.top).toFixed(3) });
+  }
+  for (const { el, entry, top } of todo) {
+    const was = { top: [el.style.getPropertyValue("top"), el.style.getPropertyPriority("top")], bottom: [el.style.getPropertyValue("bottom"), el.style.getPropertyPriority("bottom")] } as Record<Side, [string, string]>;
+    el.style.setProperty("top", `${top}px`, "important");
+    el.style.setProperty("bottom", "auto", "important");
+    entry.pin = { was, wrote: { top: el.style.getPropertyValue("top"), bottom: el.style.getPropertyValue("bottom") } };
+  }
+  // A containing block that is not the viewport (a transformed, filtered or contained ancestor) puts the override
+  // elsewhere, and a fixed child of a pinned fixed ancestor would move twice: whatever did not land is put back.
+  const misses = todo.filter(({ el, entry }) => {
+    const r = el.getBoundingClientRect();
+    return Math.abs(r.top - entry.top) >= 1 || Math.abs(r.width - entry.width) >= 1 || Math.abs(r.height - entry.height) >= 1;
+  });
+  for (const { el, entry } of misses) {
+    restore(el, entry);
+    records.delete(el);
+  }
+  ours();
+};
+
 // What goes into the manifest and the terminal: no credentials, query string or fragment (a signed CDN URL), at most 80 characters.
 const shown = (href: string) => {
   try {
@@ -379,7 +459,8 @@ export function stabilize({
   reducedMotion = false,
   hover = true,
   scroll = false,
-  scrollEvent = false,
+  scrollEvent = true,
+  floating = true,
 }: StabilizeOptions = {}): Plugin {
   return {
     name: "stabilize",
@@ -449,16 +530,23 @@ export function stabilize({
         const { unreadable } = await page.evaluate(freezeUnits);
         for (const href of unreadable) shot.notes.push(`cannot read ${shown(href)}: its viewport units stay live`);
       }
+      // Last, so the page is in the state it wants at this viewport and the vh insets are frozen.
+      if (floating) await page.evaluate(fixedElements, "discover");
     },
     // Grown from the top, nothing scrolls, so no scroll event fires. What the grow brought into view (an observer adding
     // .inView) may start an animation, which grows the page while it runs: once the DOM is quiet it is finished, so
     // snapPage measures the page at its end state. freezeUnits does not run again: it would freeze at the grown viewport.
+    // The fixed elements go back to their top last, once the page has settled, from the baseline beforeSnap took.
     async afterGrow(_shot, { page }) {
       if (scrollEvent) await page.evaluate(fireScroll);
-      if (motion) {
-        await page.evaluate(quiet);
-        await page.evaluate(stopMotion);
-      }
+      if (floating || motion) await page.evaluate(quiet);
+      if (motion) await page.evaluate(stopMotion);
+      if (floating) await page.evaluate(fixedElements, "pin");
+    },
+    // The file is written and the viewport is still grown: the page's own insets come back. A shot that threw before this
+    // leaves the pin until the next shot, whose discovery clears it; at the device viewport a pinned element sits where it was.
+    async afterSnap(_shot, { page }) {
+      if (floating) await page.evaluate(fixedElements, "release");
     },
   };
 }

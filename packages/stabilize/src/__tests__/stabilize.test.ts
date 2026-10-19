@@ -307,6 +307,115 @@ addEventListener("scroll", () => (heard = "yes"));
 window.__facts = () => ({ tray: getComputedStyle(tray).display, heard });
 </script></body></html>`;
 
+// A promo drawer: fixed, 325 px up from the bottom of a 1920x1080 viewport (top 497), 258 px tall, with a transform of its
+// own. The footer fills the last 600 px of the 4583 px page, which is where the drawer lands when it follows its bottom inset.
+const DRAWER_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#filler { height: 3983px; background: rgb(240, 240, 240) }
+#footer { height: 600px; background: rgb(10, 120, 10) }
+#drawer { position: fixed; bottom: 325px; left: 100px; width: 300px; height: 258px; transform: translateX(0); background: rgb(200, 0, 100) }
+</style></head><body><div id="filler"></div><div id="footer"></div><div id="drawer"></div><script>
+window.__facts = () => {
+  const el = document.getElementById("drawer");
+  return { inline: el.style.top + "|" + el.style.bottom, bottom: getComputedStyle(el).bottom, transform: getComputedStyle(el).transform };
+};
+</script></body></html>`;
+
+// The drawer again, anchored by an inline `bottom: 0 !important` of the page's own, with a page script that writes a top of
+// its own once the plugin has pinned it, as the page grows.
+const OWN_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#drawer { position: fixed; left: 0; width: 200px; height: 100px; background: rgb(200, 0, 100) }
+</style></head><body><div style="height:1500px"></div><div id="drawer" style="bottom: 0 !important"></div><script>
+const el = document.getElementById("drawer");
+addEventListener("resize", () => {
+  if (window.armed) return;
+  window.armed = true;
+  const timer = setInterval(() => {
+    if (el.style.bottom !== "auto") return;
+    el.style.top = "24px";
+    clearInterval(timer);
+  }, 5);
+});
+window.__facts = () => ({ inline: el.style.top + "|" + el.style.bottom + "|" + el.style.getPropertyPriority("bottom") });
+</script></body></html>`;
+
+// Fixed elements the plugin has to leave alone, or move without breaking them, on a 3000 px page at 1280x720: a header
+// at the top, a dimmer over everything (behind the page), a panel from 10 % down to the bottom whose height is the
+// viewport's, a box centred by top: 50 % and a transform, and one parked below the first screen.
+const SHAPES_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#header { position: fixed; top: 0; left: 0; right: 0; height: 40px; background: rgb(255, 0, 0) }
+#dimmer { position: fixed; inset: 0; z-index: -1; background: rgb(250, 235, 215) }
+#panel { position: fixed; top: 10%; bottom: 0; right: 0; width: 100px; background: rgb(0, 0, 255) }
+#centered { position: fixed; top: 50%; left: 200px; width: 100px; height: 100px; transform: translateY(-50%); background: rgb(0, 160, 0) }
+#parked { position: fixed; bottom: -100%; left: 400px; width: 100px; height: 100px; background: rgb(255, 0, 255) }
+</style></head><body><div style="height:3000px"></div><div id="header"></div><div id="dimmer"></div><div id="panel"></div><div id="centered"></div><div id="parked"></div><script>
+const inline = (id) => document.getElementById(id).style.top + "|" + document.getElementById(id).style.bottom;
+window.__facts = () => ({
+  header: inline("header"),
+  dimmer: inline("dimmer"),
+  panel: inline("panel"),
+  centered: inline("centered"),
+  parked: inline("parked"),
+  transform: getComputedStyle(document.getElementById("centered")).transform,
+});
+</script></body></html>`;
+
+// A fixed child in a fixed ancestor that is scaled: the ancestor is the child's containing block.
+const SCALED_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#parent { position: fixed; bottom: 0; left: 0; width: 400px; height: 200px; transform: scale(0.5); background: rgb(0, 0, 200) }
+#child { position: fixed; top: 20px; left: 20px; width: 100px; height: 100px; background: rgb(255, 200, 0) }
+</style></head><body><div style="height:2000px"></div><div id="parent"><div id="child"></div></div><script>
+const inline = (id) => document.getElementById(id).style.top + "|" + document.getElementById(id).style.bottom;
+window.__facts = () => ({ parent: inline("parent"), child: inline("child") });
+</script></body></html>`;
+
+// A fixed box in an open shadow root.
+const SHADOWFLOAT_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:2000px"></div><x-box></x-box><script>
+customElements.define("x-box", class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" }).innerHTML = '<div id="inshadow" style="position:fixed;bottom:0;left:0;width:200px;height:100px;background:rgb(0,150,150)"></div>';
+  }
+});
+window.__facts = () => ({ inline: document.querySelector("x-box").shadowRoot.getElementById("inshadow").style.top });
+</script></body></html>`;
+
+// The page is taller once the first grow landed, so there is a second grow, and the drawer hides in it. #stay is still there.
+const REGROW_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#drawer { position: fixed; bottom: 0; left: 0; width: 200px; height: 100px; background: rgb(200, 0, 100) }
+#stay { position: fixed; bottom: 0; right: 0; width: 100px; height: 100px; background: rgb(0, 0, 200) }
+</style></head><body><div style="height:1000px"></div><div id="more"></div><div id="drawer"></div><div id="stay"></div><script>
+let resizes = 0;
+addEventListener("resize", () => {
+  resizes++;
+  if (resizes === 1) document.getElementById("more").style.height = "500px";
+  if (resizes === 2) document.getElementById("drawer").style.display = "none";
+});
+const inline = (id) => document.getElementById(id).style.top + "|" + document.getElementById(id).style.bottom;
+window.__facts = () => ({ drawer: inline("drawer"), stay: inline("stay") });
+</script></body></html>`;
+
+// A drawer whose inline bottom is a viewport unit: the freeze keeps the page's value for the next shot's viewport.
+const VHDRAWER_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#drawer { position: fixed; left: 0; width: 200px; height: 100px; background: rgb(200, 0, 100) }
+</style></head><body><div style="height:2000px"></div><div id="drawer" style="bottom: 10vh"></div><script>
+window.__facts = () => ({ inline: document.getElementById("drawer").style.bottom, bottom: getComputedStyle(document.getElementById("drawer")).bottom });
+</script></body></html>`;
+
+// FOLLOW_PAGE with a drawer: the shot is refused after the plugin pinned it.
+const FOLLOWDRAWER_PAGE = `<!doctype html><html><head><style>
+body { margin: 0 }
+#drawer { position: fixed; bottom: 0; left: 0; width: 200px; height: 100px; background: rgb(200, 0, 100) }
+</style></head><body><div style="height:1000px"></div><div id="drawer"></div><script>
+addEventListener("resize", () => { document.body.style.height = innerHeight * 2 + "px"; });
+window.__facts = () => ({ inline: document.getElementById("drawer").style.top + "|" + document.getElementById("drawer").style.bottom });
+</script></body></html>`;
+
 // A click inserts 300 px above the button, which moves the card under the still pointer: the button sits at 300-340 px
 // before the click, at 600-640 after it, and the click was at y 320.
 const HOVER_PAGE = `<!doctype html><html><head><style>
@@ -386,7 +495,8 @@ window.__facts = () => ({ y: String(scrollY) });
 </script></body></html>`;
 
 // What the config hands to Playwright. The probe writes, beside each shot and while snapPage still has the
-// viewport grown, the geometry of every element with an id, inside open shadow roots too. STAB is the plugin's options as JSON; NO_STAB leaves it out.
+// viewport grown, the geometry of every element with an id, inside open shadow roots too. It is listed before the plugin,
+// whose afterSnap hands the page's own insets back: the probe sees the page as the screenshot did. STAB is the plugin's options as JSON; NO_STAB leaves it out.
 const CONFIG = (host: string) => `
 import { writeFileSync } from "node:fs";
 import { defineConfig } from "snapseq";
@@ -414,7 +524,20 @@ export default defineConfig({
   envs: { dev: { host: "${host}" } },
   devices: { d1: { viewport: { width: 1280, height: 720 } } },
   screenshotsDir: "out",
-  plugins: process.env.NO_STAB ? [probe()] : [stabilize(JSON.parse(process.env.STAB ?? "{}")), probe()],
+  plugins: process.env.NO_STAB ? [probe()] : [probe(), stabilize(JSON.parse(process.env.STAB ?? "{}"))],
+});
+`;
+
+// snapPage, then what the page holds once it returned (the viewport restored, the shot's hooks done), then a plain snap.
+const floatSequence = (path: string, before = "") => `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {${before}
+  await page.goto("${path}");
+  await seq.snapPage();
+  writeFileSync(join(seq.dir, "after.json"), JSON.stringify(await page.evaluate(() => window.__facts())));
+  await seq.snap();
 });
 `;
 
@@ -628,6 +751,56 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
+  drawer: floatSequence("/drawer", "\n  await page.setViewportSize({ width: 1920, height: 1080 });"),
+  own: floatSequence("/own"),
+  shapes: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/shapes");
+  await seq.snapPage();
+});
+`,
+  scaled: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/scaled");
+  await seq.snapPage();
+});
+`,
+  shadowfloat: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/shadowfloat");
+  await seq.snapPage();
+});
+`,
+  regrow: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/regrow");
+  await seq.snapPage();
+});
+`,
+  vhdrawer: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/vhdrawer");
+  await seq.snapPage();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await seq.snap();
+});
+`,
+  followdrawer: `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/followdrawer");
+  const refused = await seq.snapPage().then(() => false, () => true);
+  writeFileSync(join(seq.dir, "after.json"), JSON.stringify({ refused, ...(await page.evaluate(() => window.__facts())) }));
+  await seq.snap();
+});
+`,
   hover: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -780,6 +953,14 @@ function appServer(cdn: string) {
     "/chart": CHART_PAGE,
     "/open": OPEN_PAGE,
     "/scrollevent": SCROLLEVENT_PAGE,
+    "/drawer": DRAWER_PAGE,
+    "/own": OWN_PAGE,
+    "/shapes": SHAPES_PAGE,
+    "/scaled": SCALED_PAGE,
+    "/shadowfloat": SHADOWFLOAT_PAGE,
+    "/regrow": REGROW_PAGE,
+    "/followdrawer": FOLLOWDRAWER_PAGE,
+    "/vhdrawer": VHDRAWER_PAGE,
     "/hover": HOVER_PAGE,
     "/reveal": REVEAL_PAGE,
     "/hydrate": HYDRATE_PAGE,
@@ -853,6 +1034,8 @@ interface Probe {
   facts: Record<string, string> | null;
 }
 const probe = (dir: string, shot = "01"): Probe => JSON.parse(readFileSync(join(dir, `${shot}.json`), "utf8"));
+// What the sequence read from the page right after snapPage returned.
+const after = (dir: string): Record<string, string | boolean> => JSON.parse(readFileSync(join(dir, "after.json"), "utf8"));
 // The notes the run printed, one line per shot taken with any: `snapseq: 01.png taken with <notes>  <url>`.
 const noted = (out: string) => out.match(/snapseq: \d+\.png taken with .*/g) ?? [];
 
@@ -891,12 +1074,13 @@ describe("snapPage on a 100vh page", () => {
     expect(p.innerHeight).toBe(3960);
     expect(p.rects.sub?.top).toBe(720); // sticky, right below the hero
     expect(p.rects.aside?.top).toBe(760); // sticky, at rest in flow
-    expect(p.rects.banner?.bottom).toBe(3960); // fixed to the bottom of the grown viewport: the document end
+    expect(p.rects.banner?.bottom).toBe(720); // fixed: back where the first screen had it, not at the document end
     expect(pngSize(join(dir, "01.png"))).toEqual([1280, 3960]);
 
     const img = await image(join(dir, "01.png"));
     for (const y of [0, 30, 59]) expect(img.at(640, y)).toEqual([255, 0, 0]); // the fixed header
-    for (const y of [3880, 3920, 3959]) expect(img.at(640, y)).toEqual([0, 0, 255]); // the fixed banner
+    for (const y of [640, 680, 719]) expect(img.at(640, y)).toEqual([0, 0, 255]); // the fixed banner
+    for (const y of [3880, 3920, 3959]) expect(img.at(640, y)).toEqual([238, 238, 238]); // the page end, free of it
     expect(img.at(640, 400)).toEqual([204, 204, 204]); // the hero
     for (const y of [720, 740, 759]) expect(img.at(640, y)).toEqual([0, 255, 0]); // the sub-header
     expect(img.at(100, 800)).toEqual([255, 255, 0]); // the aside
@@ -1258,20 +1442,153 @@ describe("motion after snapPage grows the viewport", () => {
 });
 
 describe("scrollEvent", () => {
-  it("fires a scroll event once snapPage grew the viewport, and again before the next shot: the tray hides, then shows", async () => {
-    const r = await run("scrollevent", { STAB: JSON.stringify({ scrollEvent: true }) });
+  it("is on by default: a scroll event fires once snapPage grew the viewport, and again before the next shot: the tray hides, then shows", async () => {
+    const r = await run("scrollevent");
     expect(r.status, r.out).toBe(0);
     expect(probe(r.dir, "01").facts).toEqual({ tray: "none", heard: "yes" }); // at the document, bubbling to the window
-    expect((await image(join(r.dir, "01.png"))).at(640, 1499)).toEqual([255, 255, 255]);
+    const full = await image(join(r.dir, "01.png"));
+    expect(full.at(640, 1499)).toEqual([255, 255, 255]); // not at the page end
+    expect(full.at(640, 719)).toEqual([255, 255, 255]); // and not pinned at the first screen either: it is gone
     expect(probe(r.dir, "02").facts?.tray).toBe("block"); // back at one screen from the top
     expect((await image(join(r.dir, "02.png"))).at(640, 719)).toEqual([200, 0, 0]);
   });
 
-  it("is off by default: grown from the top, no scroll event fires and the tray is drawn over the page end", async () => {
-    const r = await run("scrollevent");
+  it("with scrollEvent: false no scroll event fires on the grow: the tray stays, where the first screen had it", async () => {
+    const r = await run("scrollevent", { STAB: JSON.stringify({ scrollEvent: false }) });
     expect(r.status, r.out).toBe(0);
     expect(probe(r.dir, "01").facts).toEqual({ tray: "block", heard: "no" });
-    expect((await image(join(r.dir, "01.png"))).at(640, 1499)).toEqual([200, 0, 0]);
+    const full = await image(join(r.dir, "01.png"));
+    expect(full.at(640, 719)).toEqual([200, 0, 0]);
+    expect(full.at(640, 1499)).toEqual([255, 255, 255]);
+  });
+});
+
+describe("floating", () => {
+  describe("a drawer anchored by its bottom inset", () => {
+    let r: Awaited<ReturnType<typeof run>>;
+    beforeAll(async () => {
+      r = await run("drawer");
+    });
+
+    it("sits at the top it had on the first screen, not at the page end, with its width, height and transform unchanged", async () => {
+      expect(r.status, r.out).toBe(0);
+      expect(pngSize(join(r.dir, "01.png"))).toEqual([1920, 4583]);
+      const p = probe(r.dir, "01");
+      expect(p.rects.drawer).toMatchObject({ top: 497, width: 300, height: 258 });
+      expect(p.facts?.inline).toBe("497px|auto"); // what the plugin wrote while the shot was taken
+      expect(p.facts?.transform).toBe("matrix(1, 0, 0, 1, 0, 0)");
+      const img = await image(join(r.dir, "01.png"));
+      expect(img.at(150, 496)).toEqual([240, 240, 240]);
+      expect(img.at(150, 497)).toEqual([200, 0, 100]);
+      expect(img.at(150, 754)).toEqual([200, 0, 100]);
+      expect(img.at(150, 755)).toEqual([240, 240, 240]);
+      expect(img.at(99, 600)).toEqual([240, 240, 240]);
+      expect(img.at(100, 600)).toEqual([200, 0, 100]);
+      expect(img.at(399, 600)).toEqual([200, 0, 100]);
+      expect(img.at(400, 600)).toEqual([240, 240, 240]);
+      for (const y of [4001, 4100, 4257]) expect(img.at(150, y)).toEqual([10, 120, 10]); // the footer, where the drawer used to be
+    });
+
+    it("hands the page's insets back once the shot is taken, so the next snap shows it bottom-anchored with no inline top or bottom", () => {
+      // Read in the sequence right after snapPage returned, then by the probe on the plain snap.
+      expect(after(r.dir).inline).toBe("|");
+      expect(after(r.dir).bottom).toBe("325px");
+      const p = probe(r.dir, "02");
+      expect(p.facts).toMatchObject({ inline: "|", bottom: "325px", transform: "matrix(1, 0, 0, 1, 0, 0)" });
+      expect(p.rects.drawer).toMatchObject({ top: 497, height: 258 });
+    });
+  });
+
+  it("with floating: false leaves the drawer at the page end", async () => {
+    const r = await run("drawer", { STAB: JSON.stringify({ floating: false }) });
+    expect(r.status, r.out).toBe(0);
+    const p = probe(r.dir, "01");
+    expect(p.rects.drawer?.top).toBe(4000);
+    expect(p.facts?.inline).toBe("|");
+    const img = await image(join(r.dir, "01.png"));
+    expect(img.at(150, 4100)).toEqual([200, 0, 100]);
+    expect(img.at(150, 600)).toEqual([240, 240, 240]);
+  });
+
+  it("leaves a value the page wrote itself while the page was grown, takes back only its own, and returns the page's inline bottom with its priority", async () => {
+    const r = await run("own");
+    expect(r.status, r.out).toBe(0);
+    expect(probe(r.dir, "01").facts?.inline).toBe("24px|auto|important"); // the page's write landed after the pin, before the shot ended
+    expect(after(r.dir).inline).toBe("24px|0px|important"); // the page's top stays, its bottom is back
+  });
+
+  it("leaves a header, a dimmer, a stretched panel and a parked box alone, and centres a transformed box once", async () => {
+    const r = await run("shapes");
+    expect(r.status, r.out).toBe(0);
+    const p = probe(r.dir);
+    expect(p.facts).toMatchObject({
+      header: "|", // already at its first-screen top
+      dimmer: "|",
+      panel: "|", // its height follows the viewport: rolled back or skipped, with its own layout
+      centered: "360px|auto",
+      parked: "|", // never recorded: it was below the first screen
+      transform: "matrix(1, 0, 0, 1, 0, -50)", // applied once
+    });
+    expect(p.rects.header).toMatchObject({ top: 0, height: 40 });
+    expect(p.rects.dimmer?.height).toBe(3000);
+    expect(p.rects.panel).toMatchObject({ top: 300, height: 2700 });
+    expect(p.rects.centered?.top).toBe(310);
+    const img = await image(join(r.dir, "01.png"));
+    expect(img.at(640, 20)).toEqual([255, 0, 0]);
+    expect(img.at(640, 2990)).toEqual([250, 235, 215]); // the dimmer covers the whole page
+    expect(img.at(1230, 2990)).toEqual([0, 0, 255]); // the panel runs to the page end
+    expect(img.at(250, 309)).toEqual([250, 235, 215]);
+    expect(img.at(250, 310)).toEqual([0, 160, 0]);
+    expect(img.at(250, 409)).toEqual([0, 160, 0]);
+    expect(img.at(250, 410)).toEqual([250, 235, 215]);
+    expect(img.at(450, 1390)).toEqual([250, 235, 215]); // where the parked box would be if it were pulled in
+  });
+
+  it("moves a fixed child with its scaled fixed ancestor, and gives the child no top of its own", async () => {
+    const r = await run("scaled");
+    expect(r.status, r.out).toBe(0);
+    const p = probe(r.dir);
+    expect(p.facts).toEqual({ parent: "520px|auto", child: "|" });
+    expect(p.rects.parent?.top).toBe(570);
+    expect(p.rects.child?.top).toBe(580);
+    const img = await image(join(r.dir, "01.png"));
+    expect(img.at(290, 660)).toEqual([0, 0, 200]);
+    expect(img.at(135, 600)).toEqual([255, 200, 0]);
+    expect(img.at(135, 1900)).toEqual([255, 255, 255]);
+  });
+
+  it("leaves the page's viewport-unit inline bottom to be frozen again at the next shot's viewport", async () => {
+    const r = await run("vhdrawer");
+    expect(r.status, r.out).toBe(0);
+    expect(probe(r.dir, "01").facts?.inline).toBe("auto"); // pinned while the shot was taken
+    expect(probe(r.dir, "02").facts?.bottom).toBe("90px"); // 10vh of 900, not the 72 px of the first viewport
+  });
+
+  it("pins a fixed box in an open shadow root like one in the document", async () => {
+    const r = await run("shadowfloat");
+    expect(r.status, r.out).toBe(0);
+    const p = probe(r.dir);
+    expect(p.facts?.inline).toBe("620px");
+    expect(p.rects.inshadow?.top).toBe(620);
+    const img = await image(join(r.dir, "01.png"));
+    expect(img.at(100, 650)).toEqual([0, 150, 150]);
+    expect(img.at(100, 1950)).toEqual([255, 255, 255]);
+  });
+
+  it("pins again after a second grow, and leaves no override on a drawer that hid in it", async () => {
+    const r = await run("regrow");
+    expect(r.status, r.out).toBe(0);
+    const p = probe(r.dir);
+    expect(p.scrollHeight).toBe(1500); // the second grow happened
+    expect(p.facts).toEqual({ drawer: "|", stay: "620px|auto" });
+    expect(p.rects.stay?.top).toBe(620);
+  });
+
+  it("leaves a pin only until the next shot: a refused snapPage, then a snap with no override", async () => {
+    const r = await run("followdrawer");
+    expect(r.status, r.out).toBe(0);
+    expect(after(r.dir)).toEqual({ refused: true, inline: "620px|auto" }); // where the refusal left it
+    expect(probe(r.dir, "01").facts?.inline).toBe("|");
   });
 });
 

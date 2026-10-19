@@ -149,7 +149,8 @@ A page whose height follows the viewport, a `100vh` hero or a loader pinned
 to the page end, grows again with every resize. `snapPage` refuses it; use
 Playwright's native full page there, or list `stabilize()` from
 `@snapseq/stabilize` in `plugins` ([Plugins](plugins.md)) so `snapPage` takes a
-`100vh` hero (`stabilize({ motion: false, hover: false })` for that alone).
+`100vh` hero (`stabilize({ motion: false, hover: false, floating: false, scrollEvent: false })`
+for that alone).
 
 ```ts
 // snapseq/landing.seq.ts

@@ -15,7 +15,7 @@ pnpm add -D @snapseq/label @snapseq/pdf @snapseq/stabilize
 
 All three peer-depend on `snapseq`. `label` and `pdf` work on the shot files,
 not in a browser, so any Playwright browser will do. `stabilize` works in the
-page through `ctx.page`, in `begin`, `beforeSnap` and `afterGrow`, and is
+page through `ctx.page`, in `begin`, `beforeSnap`, `afterGrow` and `afterSnap`, and is
 tested on Chromium. List them in the config:
 
 ```ts
@@ -36,7 +36,7 @@ export default defineConfig({
 | --------------------------------------- | ------------------------------------------------------------------------------------------ |
 | [`@snapseq/label`](../../label/README.md) | A `label` option on `snap` and `snapPage`: a strip with that text above the shot, styled and scaled from the config. |
 | [`@snapseq/pdf`](../../pdf/README.md)     | One PDF per sequence and device, a page per shot.                                           |
-| [`@snapseq/stabilize`](../../stabilize/README.md) | Freezes viewport-height units so `snapPage` works on `100vh` pages, stops motion before each shot, moves the pointer off the content (`hover`), and can scroll a native full page first (`scroll`). |
+| [`@snapseq/stabilize`](../../stabilize/README.md) | Freezes viewport-height units so `snapPage` works on `100vh` pages, keeps fixed elements where the first screen had them in `snapPage` (`floating`), fires a scroll event after the grow (`scrollEvent`), stops motion before each shot, moves the pointer off the content (`hover`), and can scroll a native full page first (`scroll`). |
 
 A sequence asks a plugin for something through the shot's options:
 

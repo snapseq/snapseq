@@ -144,8 +144,8 @@ readiness note (such as `DOM still changing after 3 s`), the message ends with
 **Fix.** List `stabilize()` from `@snapseq/stabilize` in the config's `plugins`:
 it freezes viewport-height units to px before the viewport grows, so a `100vh`
 section stays one screen tall ([Plugins](plugins.md)).
-`stabilize({ motion: false, hover: false })` if you want only that. If the
-page is still refused, something the plugin cannot freeze follows the
+`stabilize({ motion: false, hover: false, floating: false, scrollEvent: false })`
+if you want only that. If the page is still refused, something the plugin cannot freeze follows the
 viewport (its README lists what); use
 `seq.snap({ fullPage: true })` for that page, Playwright's native full page.
 Sticky elements stay pinned where the scroll left them. For `isMobile` on a

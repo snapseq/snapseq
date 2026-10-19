@@ -2,8 +2,9 @@
 
 A [snapseq](https://github.com/snapseq/snapseq/tree/main/packages/snapseq)
 plugin that makes a page hold still for its shots. It freezes viewport-height
-units, so `snapPage` works on a page with a `100vh` section, stops motion
-before each shot, and moves the pointer off the content.
+units, so `snapPage` works on a page with a `100vh` section, keeps fixed
+elements where the first screen had them, stops motion before each shot, and
+moves the pointer off the content.
 
 ## Install
 
@@ -23,15 +24,16 @@ import { stabilize } from "@snapseq/stabilize";
 export default defineConfig({ envs: { /* … */ }, plugins: [stabilize()] });
 ```
 
-Viewport units, motion and hover are on; scroll, scroll events and reduced
-motion are off. Each has a switch:
+Viewport units, floating, scroll events, motion and hover are on; scroll and
+reduced motion are off. Each has a switch:
 
 ```ts
 stabilize({ viewportUnits: false })  // no freezing of viewport units
+stabilize({ floating: false })       // fixed elements follow their insets in the grown viewport
+stabilize({ scrollEvent: false })    // no scroll event after snapPage grew the viewport
 stabilize({ motion: false })         // motion is left alone
 stabilize({ hover: false })          // the pointer is left where it is
 stabilize({ scroll: true })          // scroll pass before a native full page
-stabilize({ scrollEvent: true })     // a scroll event once snapPage grew the viewport
 stabilize({ reducedMotion: true })   // emulate prefers-reduced-motion: reduce
 ```
 
@@ -54,8 +56,9 @@ page height, and a `100vh` section grows with it, so the page never settles
 and `snapPage` refuses it. Before each shot, while the viewport is still the
 device's, the plugin rewrites the page's viewport-height units to px: `vh`,
 `vmin`, `vmax`, `vb` and their `s`, `l` and `d` variants. The hero stays one
-screen tall, a fixed banner lands at the end of the page, sticky elements rest
-in flow. Width units (`vw`) are left alone: the width never changes.
+screen tall and sticky elements rest in flow; `floating` below puts fixed
+elements back where the first screen had them. Width units (`vw`) are left
+alone: the width never changes.
 
 - It reaches stylesheets (media, supports, layer, container, nested rules,
   keyframes, `@import`), inline `style` attributes and custom properties
@@ -132,21 +135,65 @@ with the scroll direction, is not helped. With `hover: "keep"` the pass moves
 content under the kept pointer. A reveal done by a keyframe animation is
 brought to its end by the motion step below.
 
-**Scroll event** (`scrollEvent`, off by default). `snapPage` grows the
-viewport from where the page is; from the top nothing scrolls, so no scroll
-event fires, and UI that follows scroll events only stays as it was: a fixed
-tray that hides once the page end is in view is drawn over the footer, a
-back-to-top button stays hidden. With `scrollEvent: true` the plugin fires
-one scroll event after each grow, at the document and bubbling to the window
-as the browser's own does, and one before each shot, so the tray shows again
-once the viewport is back. The event is synthetic: `isTrusted` is `false`,
-and a handler that checks it ignores it. Any scroll handler runs, not only
-the tray's: one that reads "bottom reached" (an infinite scroll that loads
-more, a 100 % scroll beacon) or compares with the last `scrollY` (a header
-that hides on scroll down) can react too, and so can a reveal script that
-judges what is in view against the window height it read at load: it takes
-its in-view class off everything below the first screen, and an animated
-chart there goes back to its base state. That is why it is off by default.
+**Scroll event** (`scrollEvent`). `snapPage` grows the viewport from where the
+page is; from the top nothing scrolls, so no scroll event fires, and UI that
+follows scroll events only stays as it was: a fixed tray that hides on scroll
+once its inline counterpart is in view is drawn over the footer, a back-to-top
+button stays hidden. The plugin fires one scroll event after each grow, at the
+document and bubbling to the window as the browser's own does, and one before
+each shot, so the tray shows again once the viewport is back. Between shots the
+page keeps the state of the grown viewport until the next shot's event. The
+event is synthetic: `isTrusted` is `false`, and a handler that checks it
+ignores it. Any scroll handler runs, not only the tray's, and some react in
+ways you do not want:
+
+- A header that hides on scroll down and treats a zero delta as down is hidden.
+- A "bottom reached" handler, such as an infinite scroll that appends on each
+  event or a 100 % scroll beacon, runs on each grow. One that appends content
+  every time keeps the document growing, and `snapPage` refuses the page.
+- A reveal script that judges what is in view against the window height it read
+  at load takes its in-view class off everything below the first screen, and an
+  animated chart there goes back to its base state.
+
+`scrollEvent: false` turns the event off.
+
+**Floating** (`floating`). `snapPage` grows the viewport to the page height, and
+a `position: fixed` element follows its insets with it: a promo drawer at
+`bottom: 325px`, a chat bubble or a cookie banner ends up at the page end, over
+the footer, where the reader saw it on the first screen. Before each shot, at the
+device's viewport, the plugin records every fixed element that is on the screen:
+rendered (not `display: none`, `visibility: hidden` or `opacity: 0`, on itself or
+an ancestor) and inside the viewport. After each grow, once the page has settled,
+it sets `top: <px> !important; bottom: auto !important` inline on each, so it sits
+at the top it had. Height, width, `left`, `right` and `transform` are not
+touched: a box centred by `top: 50%` and `translateY(-50%)` keeps its transform.
+Once the file is written, and before the viewport is restored, the page's own
+inline `top` and `bottom` come back. A property is restored only while it still
+holds what the plugin wrote, so a value the page wrote in the meantime stays.
+
+It leaves alone:
+
+- A fixed element off the screen at the device's viewport, such as a drawer
+  parked at `bottom: -100%`: it is not recorded, and pinning it would pull it
+  into the full page.
+- An element the page removed, hid or un-fixed in response to the grow or to the
+  scroll event.
+- An element whose size changed with the viewport, such as a `top: 10%;
+  bottom: 0` panel or an `inset: 0` dimmer: it has its own layout, and clearing
+  its `bottom` would collapse it.
+- An element already at its top (a `top: 0` header).
+- An element the override does not bring to where it was, found by reading its
+  position after the write: a fixed element inside a transformed, filtered or
+  `contain`ed ancestor, whose containing block is that ancestor, and a fixed child
+  of a pinned fixed ancestor, which follows it. Its inline values are put back.
+
+It cannot see fixed elements inside iframes (frames are not entered), in closed
+shadow roots, or made by pseudo-elements. Open shadow roots are walked. A shot that
+throws (a refused `snapPage`, a failed screenshot) leaves the pin until the next
+shot, whose start clears it; at the restored device viewport a pinned element sits
+where it was, so only its inline `top` and `bottom` remain. `floating: false`
+turns the step off; a fixed element then sits where its insets put it in the grown
+viewport, and a `bottom: 0` bar is drawn at the page end.
 
 **Motion** (`motion`). When the sequence begins, transitions and smooth
 scrolling are turned off on every document: `disableTransitions` from snapseq

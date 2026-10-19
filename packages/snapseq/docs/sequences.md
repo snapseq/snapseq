@@ -51,11 +51,14 @@ Beyond Playwright's own (`page`, `context`, `browser`, …):
 `seq.snap()` is a viewport shot.
 
 `seq.snapPage()` is the whole page the way a reviewer expects it: the viewport
-grows to the document height, so sticky and fixed elements rest in flow and a
-tray whose slot comes into view gets to land; one shot; the viewport and the
-scroll position are restored. Growing from the top scrolls nothing, so no
-scroll event fires: a page whose tray hides on scroll events needs
-`stabilize({ scrollEvent: true })` from `@snapseq/stabilize`.
+grows to the document height, so sticky elements rest in flow and a tray whose
+slot comes into view gets to land; one shot; the viewport and the scroll
+position are restored. Fixed elements are out of flow: without a plugin a fixed
+element sits where its insets put it in the grown viewport (a `bottom: 0` bar at
+the page end). With `@snapseq/stabilize` it keeps the vertical position it had at
+the device's viewport, and a tray the page hides on scroll is hidden: growing from
+the top scrolls nothing, so the plugin fires the scroll event itself
+(`scrollEvent`).
 A page about one screen tall whose content
 scrolls inside an element rather than the document (`html` and `body` at 100%
 height with `overflow: hidden`, a scrolling `main`) is not grown: the shot is
