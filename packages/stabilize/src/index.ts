@@ -325,38 +325,43 @@ const freezeUnits = async () => {
   run();
 
   // An unreadable sheet no refetch can open (a cross-origin @import loads without CORS) is fetched as text, once per
-  // document, at most 10 per call, 512 K characters each and 3 s in all. Best effort: this anonymous fetch may not get
+  // document, at most 10 sheets per call, 512 K characters each and 3 s in all. Best effort: this anonymous fetch may not get
   // what the page applied. It is harmless (false) only for a text/css answer that, with comments and strings taken out,
-  // has no viewport unit outside url(), no escape and no @import (whose sheet would stay unseen). Anything else, or
-  // not checked yet (over the 10, or found while these were out), keeps the note.
+  // has no viewport unit outside url() and no escape, and whose @imports, one level down, are harmless in the same way
+  // (each counts toward the 10; an @import inside an imported sheet, or one that cannot be read as a plain URL, keeps the
+  // note). Anything else, or not checked yet (over the 10, or found while these were out), keeps the note.
   const deadline = AbortSignal.timeout(3000);
-  const todo = Array.from(state.unreadable).filter((href) => !state.checked.has(href)).slice(0, 10);
-  await Promise.all(
-    todo.map(async (href) => {
-      let harmless = false;
-      try {
-        const response = await fetch(href, { signal: deadline });
-        if (response.ok && response.body && response.headers.get("content-type")?.toLowerCase().startsWith("text/css")) {
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let text = "";
-          for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
-            text += decoder.decode(chunk.value, { stream: true });
-            if (text.length > 512 * 1024) {
-              await reader.cancel();
-              throw new Error("too long");
-            }
-          }
-          // An unquoted url() goes too, so a /* inside it is not taken for a comment; one with a backslash stays.
-          const bare = (text + decoder.decode()).replace(/\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)/gi, " ");
-          harmless = !bare.includes("\\") && !/@import/i.test(bare) && convert(bare) === bare;
+  let budget = 10;
+  // Comments and strings are tokens, so an @import inside one is not found; the @import token carries its URL.
+  const token = /\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)|@import\s*(?:url\(\s*)?(?:"([^"\\\n]*)"|'([^'\\\n]*)'|([^\s"'()\\;]+))/gi;
+  const harmlessText = async (href: string, depth: number): Promise<boolean> => {
+    if (budget-- <= 0) return false;
+    try {
+      const response = await fetch(href, { signal: deadline });
+      if (!response.ok || !response.body || !response.headers.get("content-type")?.toLowerCase().startsWith("text/css")) return false;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        text += decoder.decode(chunk.value, { stream: true });
+        if (text.length > 512 * 1024) {
+          await reader.cancel();
+          throw new Error("too long");
         }
-      } catch {
-        // no answer in time, too long, refused by CORS or the page's CSP: unknown
       }
-      state.checked.set(href, !harmless);
-    }),
-  );
+      text += decoder.decode();
+      // An unquoted url() goes too, so a /* inside it is not taken for a comment; one with a backslash stays.
+      const bare = text.replace(/\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)/gi, " ");
+      if (bare.includes("\\") || convert(bare) !== bare) return false;
+      const specs = Array.from(text.matchAll(token), (m) => m[1] ?? m[2] ?? m[3]).filter((spec) => spec !== undefined);
+      if (specs.length !== (bare.match(/@import/gi) ?? []).length || (depth > 0 && specs.length > 0)) return false;
+      return (await Promise.all(specs.map((spec) => harmlessText(new URL(spec, href).href, depth + 1)))).every(Boolean);
+    } catch {
+      return false; // no answer in time, too long, refused by CORS or the page's CSP, a spec that is no URL: unknown
+    }
+  };
+  const todo = Array.from(state.unreadable).filter((href) => !state.checked.has(href)).slice(0, 10);
+  await Promise.all(todo.map(async (href) => state.checked.set(href, !(await harmlessText(href, 0)))));
   return { unreadable: Array.from(state.unreadable).filter((href) => state.checked.get(href) !== false) };
 };
 

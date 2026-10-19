@@ -84,12 +84,16 @@ alone: the width never changes.
   `cannot read <url>: its viewport units stay live`, noted on the shot's line in
   the terminal (the URL without its query string, cut to 80 characters). The
   refetch is tried once per page load. A stylesheet that stays unreadable is
-  then fetched once per page load as text, with CORS: at most 10 a shot,
+  then fetched once per page load as text, with CORS: at most 10 sheets a shot,
   512 K characters each, 3 s in all. The note is dropped only when the answer
   is `text/css` and, with comments and quoted strings taken out, has no
-  viewport unit outside `url(...)`, no backslash escape and no `@import`.
-  Anything else keeps it: a fetch that fails or runs out of time, another
-  content type, a stylesheet not checked yet. It is a best-effort look: the
+  viewport unit outside `url(...)` and no backslash escape, and every `@import`
+  in it (`url("…")`, `url('…')`, `url(…)`, `"…"` or `'…'`, with media or layer
+  text after it or not, resolved against the sheet) is a stylesheet that passes
+  the same check. That is one level: an `@import` inside an imported sheet keeps
+  the note. Each imported sheet counts toward the 10, and one over the limit
+  keeps the note. Anything else keeps it too: a fetch that fails or runs out of
+  time, another content type, a stylesheet not checked yet. It is a best-effort look: the
   anonymous fetch may not get the stylesheet the page applied (a CDN that
   varies by cookie, say).
 
@@ -251,8 +255,9 @@ variant. Off, the page's own preference is left alone.
   its own `@import` (a font service's CSS): the browser loads an import without
   CORS, so no refetch can open it, and its viewport units stay live. It is
   noted on the shots unless its text, fetched as above, rules a viewport unit
-  out; `@font-face` rules alone say nothing. An `@import` inside that text is
-  not followed: it keeps the note. A stylesheet that arrives after the first
+  out; `@font-face` rules alone say nothing. Its `@import`s are checked one level
+  down (a font service's sheet that imports an empty beacon sheet is quiet); a
+  deeper one keeps the note. A stylesheet that arrives after the first
   shot, or whose imports load after it, carries the note from the next shot on.
 - A cross-origin stylesheet that a `replay` entry or a HAR route serves: the
   plugin's route runs first and fetches it live, falling back to the earlier

@@ -111,8 +111,20 @@ const sheetImportPage = (sheet: string) =>
   `<!doctype html><html><head><link rel="stylesheet" href="${sheet}"></head><body style="margin:0"><div id="u"></div><div style="height:1000px"></div></body></html>`;
 
 // What the text check of an imported sheet has to read right, served from the CDN with the CORS header. login is a
-// stylesheet for the import and a login page for the check's fetch; big is font rules past the 512 K cap.
+// stylesheet for the import and a login page for the check's fetch; big is font rules past the 512 K cap. imp... are sheets
+// that @import another by a relative URL: beacon is a comment only (a tracking pixel's sheet), vh has a viewport unit, deep
+// imports one itself; cap9 and cap10 import nine and ten beacons.
 const CHECKED_CSS: Record<string, string> = {
+  imp: '@import url("./beacon.css"); .a { color: red }',
+  impforms:
+    "@import url(\"./beacon.css\"); @import url('./beacon.css?2'); @import url(./beacon.css?3); @import \"./beacon.css?4\" screen; @import './beacon.css?5' layer(x);",
+  impvh: '@import url("./vh.css");',
+  impdeep: '@import "./deep.css";',
+  cap9: Array.from({ length: 9 }, (_, i) => `@import url("./beacon.css?${i + 1}");`).join(""),
+  cap10: Array.from({ length: 10 }, (_, i) => `@import url("./beacon.css?${i + 1}");`).join(""),
+  beacon: "/* beacon */",
+  vh: "#u { height: 100vh }",
+  deep: '@import url("./beacon.css");',
   nested: '@import url("/x/font.css");',
   comment: "/* ' */ #u { height: 100vh } /* ' */",
   escape: "#u { height: 100v\\68 }",
@@ -662,6 +674,15 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
+  importchain: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  for (const path of ["/nestedimports", "/importforms", "/importcap9", "/importcap10"]) {
+    await page.goto(path);
+    await seq.snap();
+  }
+});
+`,
   redirect: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -1026,6 +1047,10 @@ function appServer(cdn: string) {
     "/import": importPage(cdn),
     "/fontimport": sheetImportPage("/fonts.css"),
     "/checked": importsPage(["nested", "comment", "escape", "fontcomment", "login", "big"].map((name) => `${cdn}/x/${name}.css`)),
+    "/nestedimports": importsPage(["imp", "impvh", "impdeep"].map((name) => `${cdn}/x/${name}.css`)),
+    "/importforms": importsPage([`${cdn}/x/impforms.css`]),
+    "/importcap9": importsPage([`${cdn}/x/cap9.css`]),
+    "/importcap10": importsPage([`${cdn}/x/cap10.css`]),
     "/many": importsPage(Array.from({ length: 12 }, (_, i) => `${cdn}/x/font.css?${i + 1}`)),
     "/unitimport": sheetImportPage("/units.css"),
     "/disabled": disabledPage(cdn),
@@ -1403,7 +1428,7 @@ describe("a cross-origin sheet that a same-origin sheet imports", () => {
 });
 
 describe("the text check of an imported sheet", () => {
-  // nested: its own @import is not followed. comment: quotes inside comments. escape: 100v\68 is 100vh. login: the
+  // nested: its @import of a font-only sheet is followed, one level down. comment: quotes inside comments. escape: 100v\68 is 100vh. login: the
   // check's fetch gets HTML, not the sheet the page applied. big: past the cap. fontcomment: a unit in a comment only.
   // many: twelve font-only imports, ten checked per shot; the two not checked yet keep the note until the next shot.
   it("keeps the note for what it cannot rule out, and checks at most ten sheets a shot", async () => {
@@ -1411,8 +1436,23 @@ describe("the text check of an imported sheet", () => {
     expect(r.status, r.out).toBe(0);
     const note = (name: string) => `cannot read ${cdn.url}/x/${name}.css: its viewport units stay live`;
     expect(noted(r.out)).toEqual([
-      `snapseq: 01.png taken with ${["nested", "comment", "escape", "login", "big"].map(note).join(", ")}  ${app.url}/checked`,
+      `snapseq: 01.png taken with ${["comment", "escape", "login", "big"].map(note).join(", ")}  ${app.url}/checked`,
       `snapseq: 02.png taken with ${note("font")}  ${app.url}/many`, // the URL without its query: the two notes are one
+    ]);
+  });
+});
+
+describe("the text check, one @import level down", () => {
+  // imp: an import of a beacon sheet (a comment) and a harmless rule. impvh: of a sheet with a viewport unit. impdeep: of a
+  // sheet that imports a third. impforms: every spelling of an @import, with media and layer text after some. cap9 and cap10:
+  // nine and ten imports, which with the sheet itself are ten and eleven fetches against a limit of ten.
+  it("drops the note for sheets whose imports are harmless, and keeps it for a viewport unit, a deeper import and an import over the limit", async () => {
+    const r = await run("importchain");
+    expect(r.status, r.out).toBe(0);
+    const note = (name: string) => `cannot read ${cdn.url}/x/${name}.css: its viewport units stay live`;
+    expect(noted(r.out)).toEqual([
+      `snapseq: 01.png taken with ${["impvh", "impdeep"].map(note).join(", ")}  ${app.url}/nestedimports`,
+      `snapseq: 04.png taken with ${note("cap10")}  ${app.url}/importcap10`,
     ]);
   });
 });
