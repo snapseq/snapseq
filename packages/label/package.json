@@ -5,12 +5,12 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/syantra/snapseq.git",
+    "url": "git+https://github.com/snapseq/snapseq.git",
     "directory": "packages/label"
   },
-  "homepage": "https://github.com/syantra/snapseq/tree/main/packages/label#readme",
+  "homepage": "https://github.com/snapseq/snapseq/tree/main/packages/label#readme",
   "bugs": {
-    "url": "https://github.com/syantra/snapseq/issues"
+    "url": "https://github.com/snapseq/snapseq/issues"
   },
   "keywords": [
     "snapseq",

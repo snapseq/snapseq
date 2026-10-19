@@ -1,4 +1,4 @@
-<p align="center"><img src="https://raw.githubusercontent.com/syantra/snapseq/main/assets/logo.svg" width="128" alt=""></p>
+<p align="center"><img src="https://raw.githubusercontent.com/snapseq/snapseq/main/assets/logo.svg" width="128" alt=""></p>
 
 # snapseq
 
@@ -74,5 +74,5 @@ pnpm screenshot   # "screenshot": "snapseq" in package.json
 ## Develop and release
 
 The commands run at the workspace root: see
-[Develop and release](https://github.com/syantra/snapseq#develop-and-release).
+[Develop and release](https://github.com/snapseq/snapseq#develop-and-release).
 `docs/` is the API reference; a public change updates it and gets a changeset.

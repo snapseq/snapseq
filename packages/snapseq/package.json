@@ -5,12 +5,12 @@
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/syantra/snapseq.git",
+    "url": "git+https://github.com/snapseq/snapseq.git",
     "directory": "packages/snapseq"
   },
-  "homepage": "https://github.com/syantra/snapseq#readme",
+  "homepage": "https://github.com/snapseq/snapseq#readme",
   "bugs": {
-    "url": "https://github.com/syantra/snapseq/issues"
+    "url": "https://github.com/snapseq/snapseq/issues"
   },
   "keywords": [
     "playwright",

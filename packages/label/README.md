@@ -1,6 +1,6 @@
 # snapseq-label
 
-A [snapseq](https://github.com/syantra/snapseq/tree/main/packages/snapseq)
+A [snapseq](https://github.com/snapseq/snapseq/tree/main/packages/snapseq)
 plugin that puts a labeled strip above a screenshot. Pass `label` to
 `seq.snap` or `seq.snapPage` and the shot gets a strip with that text centered
 in it, white with black text unless you style it. A shot without `label` is
@@ -83,4 +83,4 @@ never resampled. The file is rewritten in place.
 - Color emoji may render as monochrome or solid shapes in the SVG path the
   strip uses (sharp through librsvg), so keep them out of a label.
 
-More: [Plugins](https://github.com/syantra/snapseq/blob/main/packages/snapseq/docs/plugins.md), on how they run and how to write one.
+More: [Plugins](https://github.com/snapseq/snapseq/blob/main/packages/snapseq/docs/plugins.md), on how they run and how to write one.

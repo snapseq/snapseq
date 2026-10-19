@@ -1,6 +1,6 @@
 # snapseq-pdf
 
-A [snapseq](https://github.com/syantra/snapseq/tree/main/packages/snapseq)
+A [snapseq](https://github.com/snapseq/snapseq/tree/main/packages/snapseq)
 plugin that writes one PDF per capture and device from the shots that capture
 took. One page per shot, in shot order, each page the shot's CSS size.
 
@@ -76,4 +76,4 @@ failed in `begin` or `done` writes no partial PDF.
 - A capture with no shots writes no PDF, partial or not. A rerun removes the
   previous PDF and partial PDF first.
 
-More: [Plugins](https://github.com/syantra/snapseq/blob/main/packages/snapseq/docs/plugins.md), on how they run and how to write one.
+More: [Plugins](https://github.com/snapseq/snapseq/blob/main/packages/snapseq/docs/plugins.md), on how they run and how to write one.

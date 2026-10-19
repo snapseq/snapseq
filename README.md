@@ -1,4 +1,4 @@
-<p align="center"><img src="https://raw.githubusercontent.com/syantra/snapseq/main/assets/logo.svg" width="128" alt=""></p>
+<p align="center"><img src="https://raw.githubusercontent.com/snapseq/snapseq/main/assets/logo.svg" width="128" alt=""></p>
 
 # snapseq
 

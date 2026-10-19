@@ -1,6 +1,6 @@
 # snapseq-stabilize
 
-A [snapseq](https://github.com/syantra/snapseq/tree/main/packages/snapseq)
+A [snapseq](https://github.com/snapseq/snapseq/tree/main/packages/snapseq)
 plugin that makes a page hold still for its shots. It freezes viewport-height
 units, so `snapPage` works on a page with a `100vh` section, stops motion
 before each shot, and moves the pointer off the content.
@@ -122,7 +122,7 @@ which shows everything already. A virtualized list, or a header that changes
 with the scroll direction, is not helped. With `hover: "keep"` the pass moves
 content under the kept pointer. A reveal done by a keyframe animation, not by
 a class, stays hidden by `disableTransitions`: see
-[An element that fades in is missing from the shot](https://github.com/syantra/snapseq/blob/main/packages/snapseq/docs/troubleshooting.md#an-element-that-fades-in-is-missing-from-the-shot).
+[An element that fades in is missing from the shot](https://github.com/snapseq/snapseq/blob/main/packages/snapseq/docs/troubleshooting.md#an-element-that-fades-in-is-missing-from-the-shot).
 
 **Motion** (`motion`). When the capture begins, `disableTransitions` from
 snapseq is applied (no transitions, animations or smooth scrolling, on every
@@ -169,4 +169,4 @@ variant. Off, the page's own preference is left alone.
 
 Developed and tested on Chromium.
 
-More: [Plugins](https://github.com/syantra/snapseq/blob/main/packages/snapseq/docs/plugins.md), on how they run and how to write one.
+More: [Plugins](https://github.com/snapseq/snapseq/blob/main/packages/snapseq/docs/plugins.md), on how they run and how to write one.
