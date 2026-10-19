@@ -122,6 +122,7 @@ const CHECKED_CSS: Record<string, string> = {
   impdeep: '@import "./deep.css";',
   cap9: Array.from({ length: 9 }, (_, i) => `@import url("./beacon.css?${i + 1}");`).join(""),
   cap10: Array.from({ length: 10 }, (_, i) => `@import url("./beacon.css?${i + 1}");`).join(""),
+  ...Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`par${i + 1}`, `@import url("./beacon.css?p${i + 1}");`])), // six parents, each with a beacon: 12 fetches
   beacon: "/* beacon */",
   vh: "#u { height: 100vh }",
   deep: '@import url("./beacon.css");',
@@ -683,6 +684,14 @@ sequence(async ({ page, seq }) => {
   }
 });
 `,
+  importbudget: `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/importbudget");
+  await seq.snap();
+  await seq.snap();
+});
+`,
   redirect: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -1050,6 +1059,7 @@ function appServer(cdn: string) {
     "/nestedimports": importsPage(["imp", "impvh", "impdeep"].map((name) => `${cdn}/x/${name}.css`)),
     "/importforms": importsPage([`${cdn}/x/impforms.css`]),
     "/importcap9": importsPage([`${cdn}/x/cap9.css`]),
+    "/importbudget": importsPage(Array.from({ length: 6 }, (_, i) => `${cdn}/x/par${i + 1}.css`)),
     "/importcap10": importsPage([`${cdn}/x/cap10.css`]),
     "/many": importsPage(Array.from({ length: 12 }, (_, i) => `${cdn}/x/font.css?${i + 1}`)),
     "/unitimport": sheetImportPage("/units.css"),
@@ -1454,6 +1464,19 @@ describe("the text check, one @import level down", () => {
       `snapseq: 01.png taken with ${["impvh", "impdeep"].map(note).join(", ")}  ${app.url}/nestedimports`,
       `snapseq: 04.png taken with ${note("cap10")}  ${app.url}/importcap10`,
     ]);
+  });
+});
+
+describe("the text check when the ten sheets of a shot run out", () => {
+  // Six sheets that each import a beacon are twelve fetches: the six come first, so four imports get a slot and two do not.
+  // Their parents are not recorded as unreadable, and the next shot tries them again.
+  it("notes the two sheets it could not finish on the first shot, and tries them again on the second", async () => {
+    const r = await run("importbudget");
+    expect(r.status, r.out).toBe(0);
+    const lines = noted(r.out);
+    expect(lines).toHaveLength(1); // the first shot only
+    expect(lines[0]).toContain("snapseq: 01.png");
+    expect(lines[0]!.match(/cannot read/g)).toHaveLength(2);
   });
 });
 

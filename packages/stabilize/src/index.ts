@@ -329,13 +329,14 @@ const freezeUnits = async () => {
   // what the page applied. It is harmless (false) only for a text/css answer that, with comments and strings taken out,
   // has no viewport unit outside url() and no escape, and whose @imports, one level down, are harmless in the same way
   // (each counts toward the 10; an @import inside an imported sheet, or one that cannot be read as a plain URL, keeps the
-  // note). Anything else, or not checked yet (over the 10, or found while these were out), keeps the note.
+  // note). Anything else keeps the note. A sheet the 10 ran out for, itself or an import of it (undefined), is not recorded,
+  // so the next shot tries it again, as it does one not checked yet (over the 10, or found while these were out).
   const deadline = AbortSignal.timeout(3000);
   let budget = 10;
   // Comments and strings are tokens, so an @import inside one is not found; the @import token carries its URL.
   const token = /\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)|@import\s*(?:url\(\s*)?(?:"([^"\\\n]*)"|'([^'\\\n]*)'|([^\s"'()\\;]+))/gi;
-  const harmlessText = async (href: string, depth: number): Promise<boolean> => {
-    if (budget-- <= 0) return false;
+  const harmlessText = async (href: string, depth: number): Promise<boolean | undefined> => {
+    if (budget-- <= 0) return undefined;
     try {
       const response = await fetch(href, { signal: deadline });
       if (!response.ok || !response.body || !response.headers.get("content-type")?.toLowerCase().startsWith("text/css")) return false;
@@ -355,13 +356,19 @@ const freezeUnits = async () => {
       if (bare.includes("\\") || convert(bare) !== bare) return false;
       const specs = Array.from(text.matchAll(token), (m) => m[1] ?? m[2] ?? m[3]).filter((spec) => spec !== undefined);
       if (specs.length !== (bare.match(/@import/gi) ?? []).length || (depth > 0 && specs.length > 0)) return false;
-      return (await Promise.all(specs.map((spec) => harmlessText(new URL(spec, href).href, depth + 1)))).every(Boolean);
+      const imported = await Promise.all(specs.map((spec) => harmlessText(new URL(spec, href).href, depth + 1)));
+      return imported.includes(false) ? false : imported.includes(undefined) ? undefined : true;
     } catch {
       return false; // no answer in time, too long, refused by CORS or the page's CSP, a spec that is no URL: unknown
     }
   };
   const todo = Array.from(state.unreadable).filter((href) => !state.checked.has(href)).slice(0, 10);
-  await Promise.all(todo.map(async (href) => state.checked.set(href, !(await harmlessText(href, 0)))));
+  await Promise.all(
+    todo.map(async (href) => {
+      const harmless = await harmlessText(href, 0);
+      if (harmless !== undefined) state.checked.set(href, !harmless);
+    }),
+  );
   return { unreadable: Array.from(state.unreadable).filter((href) => state.checked.get(href) !== false) };
 };
 
