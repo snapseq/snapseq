@@ -2,11 +2,12 @@
 
 A [snapseq](https://github.com/syantra/snapseq/tree/main/packages/snapseq)
 plugin that writes one PDF per capture and device from the shots that capture
-took. One page per shot, in shot order, each page the size of its image.
+took. One page per shot, in shot order, each page the shot's CSS size.
 
 ## Install
 
-In the app that has snapseq. Peer dependency: `snapseq`.
+In the app that has snapseq. Peer dependency: `snapseq`. Runtime dependency:
+`@cantoo/pdf-lib` 2.11.
 
 ```bash
 pnpm add -D snapseq-pdf
@@ -28,6 +29,8 @@ No option: take the shots as usual; the PDF follows once the capture passes.
 
 ```ts
 // captures/home.capture.ts
+import { capture } from "snapseq";
+
 capture(async ({ page, seq }) => {
   await page.goto("/");
   await seq.snap();      // page 1
@@ -48,11 +51,29 @@ One PDF per device, next to the device folder and named after it:
 
 With `snapseq-label` in `plugins`, the labels are on the pages, in either order.
 
+A page whose longer side would exceed 14400 pt, the limit many readers (Acrobat
+among them) enforce, is scaled down to fit, and the image keeps every pixel.
+`format: { type: "jpeg", quality: 80 }` in the config makes much smaller PDFs
+for long pages, at the cost of text crispness and transparency (JPEGs are
+embedded as they are).
+
+## When the capture fails
+
+The shots listed so far go to `<device>.partial.pdf`, next to the device
+folder, so a review can start from what was taken:
+
+```
+.screenshots/2026-10-01 at 04.07.16 PM/home/desktop.partial.pdf
+```
+
+`failed.png` and a shot whose `afterSnap` threw are not in it. A capture that
+failed in `begin` or `done` writes no partial PDF.
+
 ## Limits
 
 - A page is the shot's CSS size, at 0.75 pt per CSS px: a 2x phone shot gives
   a phone-sized page with the full 2x image on it.
-- A very tall full-page shot is one very tall page; some PDF viewers dislike them.
-- Only for a capture that passed. A rerun removes the previous PDF first.
+- A capture with no shots writes no PDF, partial or not. A rerun removes the
+  previous PDF and partial PDF first.
 
 More: [Plugins](https://github.com/syantra/snapseq/blob/main/packages/snapseq/docs/plugins.md), on how they run and how to write one.
