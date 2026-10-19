@@ -44,6 +44,23 @@ export interface Sequence {
 const documentHeight = (page: Page): Promise<number> =>
   page.evaluate(() => document.documentElement.scrollHeight);
 
+// The bottom of the content by its boxes. scrollHeight never reads below the viewport, so it cannot say that a document got
+// shorter once the viewport grew to its old height (a tray hidden by a scroll handler, and the spacer under the footer with
+// it). A fixed element and what is inside it sit at the viewport's end, and are left out. Never more than scrollHeight: an
+// overflow-clipped descendant can report more than the scroll area, and this measure may only shrink the viewport.
+const contentBottom = (page: Page): Promise<number> =>
+  page.evaluate(() => {
+    let bottom = 0;
+    const walk = (el: Element): void => {
+      const style = getComputedStyle(el);
+      if (style.position === "fixed") return;
+      bottom = Math.max(bottom, el.getBoundingClientRect().bottom + window.scrollY + parseFloat(style.marginBottom));
+      for (const child of [...Array.from(el.children), ...Array.from(el.shadowRoot?.children ?? [])]) walk(child);
+    };
+    walk(document.body);
+    return Math.min(document.documentElement.scrollHeight, Math.ceil(bottom));
+  });
+
 // checkVisibility() options under both names, Chromium's and the spec's (a browser ignores the ones it does not
 // know). VISIBLE: visibility: hidden is not. SHOWN: nor is opacity: 0, which also hides an image that fades in
 // once loaded (lazysizes, an onLoad class), so it only decides what counts as broken or as the page's scroller.
@@ -502,7 +519,13 @@ export function createSequence(
           // arrived, has its height now.
           await ready(page, notes, true);
           // Landing in flow can change the height; measure once more.
-          const grown = await documentHeight(page);
+          let grown = await documentHeight(page);
+          // scrollHeight reads unchanged when the page got shorter than the viewport: the boxes say whether it did. Not
+          // below the device's viewport, which is as short as a page gets.
+          if (grown === height) {
+            const content = Math.max(await contentBottom(page), viewport.height);
+            if (content <= height - 1) grown = content;
+          }
           if (grown !== height) {
             height = grown;
             await grow(height);

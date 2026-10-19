@@ -51,6 +51,14 @@ const FONT_PAGE = `<!doctype html><html><head><style>@font-face { font-family: L
 // A block as tall as the viewport, then 500 px more: the page grows with every viewport the shot sets.
 const VH_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:100vh;background:#cde"></div><div style="height:500px;background:#eee"></div></body></html>`;
 
+// 3000 px of content and a 200 px spacer under it that a resize handler removes once the viewport is taller than 2000 px, as a scroll
+// handler takes a tray and its spacer away: the page is then shorter than the viewport that was grown to its old height. A fixed bar
+// with a child sits at the viewport's end. ?stay keeps the spacer, and ends it with a margin that collapses through <body>.
+const SHRINK_PAGE = (stay: boolean) => `<!doctype html><html><body style="margin:0"><div style="height:3000px;background:#cde"></div>
+<div id="spacer" style="height:200px;background:#eee;${stay ? "margin-bottom:20px" : ""}"></div>
+<div style="position:fixed;bottom:0;left:0;right:0;background:#f00"><div style="height:40px;margin-bottom:20px"></div></div>
+<script>addEventListener("resize", () => { if (innerHeight > 2000 && ${!stay}) document.getElementById("spacer").remove(); });</script></body></html>`;
+
 // A lazy image 2000 px down whose bytes arrive 1.5 s after they are asked for; 100 px tall once loaded.
 const LAZY_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:2000px"></div><img id="lazy" loading="lazy" src="/slow.png" style="display:block;width:100px"></body></html>`;
 // Renders one field of a JSON response, so a replayed body shows in the page.
@@ -128,6 +136,7 @@ function startServer() {
       return;
     }
     res.writeHead(200, { "content-type": "text/html" });
+    if (url.startsWith("/shrink")) return void res.end(SHRINK_PAGE(url.includes("stay")));
     res.end(
       url.startsWith("/sticky")
         ? STICKY_PAGE
@@ -1203,6 +1212,30 @@ sequence(async ({ page, seq }) => {
     const r = await playwright(p, ["--reporter", REPORTER]);
     expect(r.out).toContain("1 passed  1 shot");
     expect(r.status).toBe(0);
+  });
+
+  it("measures a page that got shorter once the viewport grew by its boxes, and keeps the height of one that did not", async () => {
+    const p = makeProject({
+      esm: true,
+      config: config(),
+      sequences: {
+        "shrink.seq.ts": `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/shrink");
+  await seq.snapPage();
+  await page.goto("/shrink?stay");
+  await seq.snapPage();
+});
+`,
+      },
+    });
+    dirs.push(p);
+    const r = await playwright(p, ["--reporter", REPORTER]);
+    expect(r.out).toContain("1 passed  2 shots");
+    expect(r.status).toBe(0);
+    expect(pngSize(join(p, "out", "run1", "shrink", "d1", "01.png"))).toEqual([400, 3000]); // the spacer went with the grow
+    expect(pngSize(join(p, "out", "run1", "shrink", "d1", "02.png"))).toEqual([400, 3220]); // spacer, its margin; not the fixed bar's child
   });
 
   it("refuses a layout that follows the viewport, restores the viewport, and points at the native full page", async () => {

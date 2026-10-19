@@ -225,6 +225,23 @@ describe("createSequence", () => {
     expect(viewports.at(-1)).toEqual({ width: 400, height: 300 });
   });
 
+  it("snapPage grows again to the content's bottom when scrollHeight reads unchanged but the page got shorter, never below the device viewport", async () => {
+    const run = async (content: number) => {
+      const { page, viewports } = makePageStub(900);
+      // scrollHeight never reads below the viewport: 900 however short the content is. The boxes say where it ends.
+      const serve = page.evaluate.getMockImplementation();
+      page.evaluate.mockImplementation(async (fn: unknown, arg?: unknown) => (String(fn).includes("getBoundingClientRect") ? content : serve(fn, arg)));
+      let grows = 0;
+      const plugins: Plugin[] = [{ name: "a", afterGrow: async () => void grows++ }];
+      await createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as SequenceContext }).snapPage();
+      return { heights: viewports.map((v) => v.height), grows };
+    };
+    expect(await run(700)).toEqual({ heights: [900, 700, 300], grows: 2 }); // grown, grown again to the content, restored
+    expect(await run(900)).toEqual({ heights: [900, 300], grows: 1 }); // as tall as it was: no second grow
+    expect(await run(899.5)).toEqual({ heights: [900, 300], grows: 1 }); // less than 1 px shorter is rounding
+    expect(await run(200)).toEqual({ heights: [900, 300, 300], grows: 2 }); // not below the device's 300 px
+  });
+
   it("snapPage names what the hooks noted when it refuses, as the refused shot is never listed", async () => {
     const { page } = makePageStub();
     page.evaluate.mockImplementation(async (fn: unknown) => {
