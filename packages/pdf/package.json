@@ -1,8 +1,9 @@
 {
-  "name": "snapseq-pdf",
+  "name": "@snapseq/pdf",
   "version": "0.1.0",
   "description": "snapseq plugin: one PDF per capture and device from its screenshots.",
   "license": "ISC",
+  "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/snapseq/snapseq.git",

@@ -1,4 +1,4 @@
-# snapseq-pdf
+# @snapseq/pdf
 
 A [snapseq](https://github.com/snapseq/snapseq/tree/main/packages/snapseq)
 plugin that writes one PDF per capture and device from the shots that capture
@@ -10,7 +10,7 @@ In the app that has snapseq. Peer dependency: `snapseq`. Runtime dependency:
 `@cantoo/pdf-lib` 2.11.
 
 ```bash
-pnpm add -D snapseq-pdf
+pnpm add -D @snapseq/pdf
 ```
 
 ## Config
@@ -18,7 +18,7 @@ pnpm add -D snapseq-pdf
 ```ts
 // snapseq.config.ts
 import { defineConfig } from "snapseq";
-import { pdf } from "snapseq-pdf";
+import { pdf } from "@snapseq/pdf";
 
 export default defineConfig({ envs: { /* … */ }, plugins: [pdf()] });
 ```
@@ -49,7 +49,7 @@ One PDF per device, next to the device folder and named after it:
 .screenshots/2026-10-01 at 04.07.16 PM/home/mobile.pdf
 ```
 
-With `snapseq-label` in `plugins`, the labels are on the pages, in either order.
+With `@snapseq/label` in `plugins`, the labels are on the pages, in either order.
 
 A page whose longer side would exceed 14400 pt, the limit many readers (Acrobat
 among them) enforce, is scaled down to fit, and the image keeps every pixel.

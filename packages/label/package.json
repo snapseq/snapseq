@@ -1,8 +1,9 @@
 {
-  "name": "snapseq-label",
+  "name": "@snapseq/label",
   "version": "0.1.0",
   "description": "snapseq plugin: a labeled strip above each screenshot.",
   "license": "ISC",
+  "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/snapseq/snapseq.git",

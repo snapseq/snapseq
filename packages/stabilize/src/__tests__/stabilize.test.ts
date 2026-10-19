@@ -331,7 +331,7 @@ window.__facts = () => ({ y: String(scrollY) });
 const CONFIG = (host: string) => `
 import { writeFileSync } from "node:fs";
 import { defineConfig } from "snapseq";
-import { stabilize } from "snapseq-stabilize";
+import { stabilize } from "@snapseq/stabilize";
 
 const probe = () => ({
   name: "probe",
@@ -685,8 +685,9 @@ function appServer(cdn: string) {
 function makeProject(host: string): string {
   const dir = mkdtempSync(join(tmpdir(), "snapseq-stab-"));
   mkdirSync(join(dir, "node_modules", "@playwright"), { recursive: true });
+  mkdirSync(join(dir, "node_modules", "@snapseq"), { recursive: true });
   symlinkSync(CORE, join(dir, "node_modules", "snapseq"));
-  symlinkSync(PKG, join(dir, "node_modules", "snapseq-stabilize"));
+  symlinkSync(PKG, join(dir, "node_modules", "@snapseq", "stabilize"));
   // The consumer's own Playwright; same realpath as the core's, so one runner instance.
   symlinkSync(join(PKG, "node_modules", "@playwright", "test"), join(dir, "node_modules", "@playwright", "test"));
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));

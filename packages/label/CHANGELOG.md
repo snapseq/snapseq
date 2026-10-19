@@ -1,4 +1,4 @@
-# snapseq-label
+# @snapseq/label
 
 ## 0.1.0
 

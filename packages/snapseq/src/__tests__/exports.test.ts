@@ -12,17 +12,17 @@ const PACKAGES = resolve(PKG, "..");
 const TSC = join(PKG, "node_modules/.bin/tsc");
 const LINKS: Record<string, string> = {
   snapseq: PKG,
-  "snapseq-label": join(PACKAGES, "label"),
-  "snapseq-pdf": join(PACKAGES, "pdf"),
-  "snapseq-stabilize": join(PACKAGES, "stabilize"),
+  "@snapseq/label": join(PACKAGES, "label"),
+  "@snapseq/pdf": join(PACKAGES, "pdf"),
+  "@snapseq/stabilize": join(PACKAGES, "stabilize"),
   "@playwright/test": join(PKG, "node_modules/@playwright/test"),
 };
 
 const BODY = `
 import { defineConfig, capture } from "snapseq";
-import { label } from "snapseq-label";
-import { pdf } from "snapseq-pdf";
-import { stabilize } from "snapseq-stabilize";
+import { label } from "@snapseq/label";
+import { pdf } from "@snapseq/pdf";
+import { stabilize } from "@snapseq/stabilize";
 
 export const config = defineConfig({
   envs: { dev: { host: "http://localhost:3000" } },
@@ -56,7 +56,7 @@ beforeAll(() => {
     join(dir, "resolve.mjs"),
     `import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const names = ${JSON.stringify(["snapseq", "snapseq-label", "snapseq-pdf", "snapseq-stabilize"])};
+const names = ${JSON.stringify(["snapseq", "@snapseq/label", "@snapseq/pdf", "@snapseq/stabilize"])};
 console.log(JSON.stringify(Object.fromEntries(names.map((n) => [n, { require: require.resolve(n), import: import.meta.resolve(n) }]))));
 `,
   );

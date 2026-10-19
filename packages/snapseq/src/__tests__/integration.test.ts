@@ -279,6 +279,7 @@ function makeProject(opts: {
 }): string {
   const dir = mkdtempSync(join(tmpdir(), "snapseq-it-"));
   mkdirSync(join(dir, "node_modules", "@playwright"), { recursive: true });
+  mkdirSync(join(dir, "node_modules", "@snapseq"), { recursive: true });
   symlinkSync(PKG, join(dir, "node_modules", "snapseq"));
   // The consumer's own Playwright; same realpath as the package's, so one runner instance.
   symlinkSync(
@@ -287,7 +288,7 @@ function makeProject(opts: {
   );
   // The workspace's plugins, built by their own prepare/test scripts.
   for (const name of ["label", "pdf"]) {
-    symlinkSync(resolve(PKG, "..", name), join(dir, "node_modules", `snapseq-${name}`));
+    symlinkSync(resolve(PKG, "..", name), join(dir, "node_modules", "@snapseq", name));
   }
   if (opts.esm) writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   writeFileSync(join(dir, "snapseq.config.ts"), opts.config);
@@ -1482,13 +1483,13 @@ capture(async ({ page, seq }) => { await page.goto("/early"); await seq.snap(); 
     expect(readdirSync(join(out, "early", "d1"))).toEqual([]);
   });
 
-  it("snapseq-label adds a strip to a labeled shot and snapseq-pdf binds the capture, labels included", async () => {
+  it("@snapseq/label adds a strip to a labeled shot and @snapseq/pdf binds the capture, labels included", async () => {
     const p = makeProject({
       esm: true,
       config: `
 import { defineConfig } from "snapseq";
-import { label } from "snapseq-label";
-import { pdf } from "snapseq-pdf";
+import { label } from "@snapseq/label";
+import { pdf } from "@snapseq/pdf";
 export default defineConfig({
   envs: { dev: { host: "${server.url}" } },
   devices: {

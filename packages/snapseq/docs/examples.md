@@ -157,7 +157,7 @@ height, so the tray lands and the shot shows it in place.
 A page whose height follows the viewport, a `100vh` hero or a loader pinned
 to the page end, grows again with every resize. `snapPage` refuses it; use
 Playwright's native full page there, or list `stabilize()` from
-`snapseq-stabilize` in `plugins` ([Plugins](plugins.md)) so `snapPage` takes a
+`@snapseq/stabilize` in `plugins` ([Plugins](plugins.md)) so `snapPage` takes a
 `100vh` hero (`stabilize({ motion: false, hover: false })` for that alone).
 
 ```ts

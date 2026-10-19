@@ -54,7 +54,7 @@ export interface SnapseqConfig {
   numbering?: string;
   /** Playwright's screenshot `type` (`"png"`, the default, or `"jpeg"`) and `quality` (JPEG only, 0 to 100). */
   format?: ShotFormat;
-  /** Addons such as `label()` from `snapseq-label`. Their hooks run in this order. */
+  /** Addons such as `label()` from `@snapseq/label`. Their hooks run in this order. */
   plugins?: Plugin[];
 }
 

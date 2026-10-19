@@ -197,7 +197,7 @@ describe("label", () => {
     const path = await source(dir, "01.png");
     const before = readFileSync(path);
     await expect(run(dir, path, "0.0 Home", { plugin: { scale: () => value } })).rejects.toThrow(
-      `snapseq-label: scale must be a positive number, got ${value}`,
+      `@snapseq/label: scale must be a positive number, got ${value}`,
     );
     expect(readFileSync(path).equals(before)).toBe(true);
   });

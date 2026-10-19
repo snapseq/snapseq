@@ -1,8 +1,9 @@
 {
-  "name": "snapseq-stabilize",
+  "name": "@snapseq/stabilize",
   "version": "0.0.0",
   "description": "snapseq plugin: freezes viewport units so snapPage works on 100vh pages, and stops motion before each shot.",
   "license": "ISC",
+  "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/snapseq/snapseq.git",

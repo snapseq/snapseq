@@ -22,7 +22,7 @@ export interface LabelOptions extends LabelStyle {
 
 declare module "snapseq" {
   interface SnapOptions {
-    /** Text for the strip above this shot, or the text with a style of its own; no strip without it. Needs `snapseq-label` in `plugins`. */
+    /** Text for the strip above this shot, or the text with a style of its own; no strip without it. Needs `@snapseq/label` in `plugins`. */
     label?: string | ({ text: string } & LabelStyle);
   }
 }
@@ -65,7 +65,7 @@ export function label(options: LabelOptions = {}): Plugin {
       const colors = { ...THEMES.light, ...pick(options), ...pick(spec) };
       const { scale } = options;
       const s = scale === true ? shot.deviceScaleFactor : typeof scale === "function" ? scale(shot.deviceScaleFactor) : 1;
-      if (!(Number.isFinite(s) && s > 0)) throw new Error(`snapseq-label: scale must be a positive number, got ${s}`);
+      if (!(Number.isFinite(s) && s > 0)) throw new Error(`@snapseq/label: scale must be a positive number, got ${s}`);
       const [height, size, y, inset] = [Math.round(STRIP * s), 12 * s, 16 * s, 8 * s];
       const img = sharp(shot.path);
       const { width, hasAlpha } = await img.metadata();

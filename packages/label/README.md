@@ -1,4 +1,4 @@
-# snapseq-label
+# @snapseq/label
 
 A [snapseq](https://github.com/snapseq/snapseq/tree/main/packages/snapseq)
 plugin that puts a labeled strip above a screenshot. Pass `label` to
@@ -12,7 +12,7 @@ In the app that has snapseq. Peer dependency: `snapseq`. Runtime dependency:
 `sharp` 0.35.
 
 ```bash
-pnpm add -D snapseq-label
+pnpm add -D @snapseq/label
 ```
 
 ## Config
@@ -20,7 +20,7 @@ pnpm add -D snapseq-label
 ```ts
 // snapseq.config.ts
 import { defineConfig } from "snapseq";
-import { label } from "snapseq-label";
+import { label } from "@snapseq/label";
 
 export default defineConfig({ envs: { /* … */ }, plugins: [label()] });
 ```
@@ -55,7 +55,7 @@ capture(async ({ page, seq }) => {
 
 `label` is typed once the package's types are in your TypeScript program. The
 config's import does that when the config and the captures share a
-`tsconfig.json`; otherwise add `/// <reference types="snapseq-label" />` to
+`tsconfig.json`; otherwise add `/// <reference types="@snapseq/label" />` to
 the capture file.
 
 ## What it writes

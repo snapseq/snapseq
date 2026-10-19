@@ -110,7 +110,7 @@ Otherwise shoot it section by section, scrolling the element between shots:
 
 ## `shots.txt` says `scroll pass stopped after N steps`
 
-**Cause.** `snapseq-stabilize` with `scroll: true` scrolls a native full page
+**Cause.** `@snapseq/stabilize` with `scroll: true` scrolls a native full page
 (`snap({ fullPage: true })`) from its top to its end, to wake lazy content, and
 stops at 60 steps or 5 s. The page is longer than that, or grows as it
 scrolls, like an infinite feed.
@@ -120,7 +120,7 @@ scroll to it yourself and `snap()`. See the stabilize
 
 ## `shots.txt` says `cannot read <url>: its viewport units stay live`
 
-**Cause.** `snapseq-stabilize` could not read the rules of a stylesheet from
+**Cause.** `@snapseq/stabilize` could not read the rules of a stylesheet from
 another origin, so its viewport units were not frozen. The note is on every
 shot taken while the sheet is unreadable. The plugin fetches such a sheet again
 as a CORS request; that fails when the server refuses, the sheet redirects, a
@@ -139,10 +139,10 @@ again, so no viewport could ever contain it. Or the device has `isMobile:
 true` and the page has no viewport meta, or a fixed-width one: the layout
 viewport scales with the grown viewport ([Config](config.md#devices)), and
 `stabilize()` does not change that. When the shot has notes before the
-refusal, a plugin's (such as `snapseq-stabilize`'s `cannot read <url>`) or a
+refusal, a plugin's (such as `@snapseq/stabilize`'s `cannot read <url>`) or a
 readiness note (such as `DOM still changing after 3 s`), the message ends with
 `Notes: …`.
-**Fix.** List `stabilize()` from `snapseq-stabilize` in the config's `plugins`:
+**Fix.** List `stabilize()` from `@snapseq/stabilize` in the config's `plugins`:
 it freezes viewport-height units to px before the viewport grows, so a `100vh`
 section stays one screen tall ([Plugins](plugins.md)).
 `stabilize({ motion: false, hover: false })` if you want only that. If the
@@ -169,7 +169,7 @@ which the readiness wait cannot see.
 **Fix.** Call `disableTransitions(page)` once at the top of the capture, before
 the first `goto`. For Web Animations API motion, wait for the element's final
 state with a locator, or `await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))` raced against a timer.
-Or list `stabilize()` from `snapseq-stabilize` in `plugins`: its `motion`
+Or list `stabilize()` from `@snapseq/stabilize` in `plugins`: its `motion`
 option, on by default, finishes or cancels Web Animations before each shot and
 applies `disableTransitions` itself, so a capture need not call it.
 

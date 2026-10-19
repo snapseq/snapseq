@@ -9,7 +9,7 @@ In the app that owns the pages. In a monorepo, each app gets its own install
 and its own config.
 
 ```bash
-pnpm add -D @playwright/test snapseq snapseq-stabilize
+pnpm add -D @playwright/test snapseq @snapseq/stabilize
 pnpm exec playwright install chromium
 ```
 
@@ -20,7 +20,7 @@ Without access to the registry, vendor it instead: run `pnpm build` in a
 checkout, copy `dist/`, `README.md` and `package.json` (without `scripts`,
 `devDependencies` and `files`) into the consumer, e.g. `vendor/snapseq`, and
 depend on it with `"snapseq": "file:../../vendor/snapseq"`. Do the same for
-`snapseq-stabilize`.
+`@snapseq/stabilize`.
 
 ## 2. Add the script
 
@@ -37,7 +37,7 @@ depend on it with `"snapseq": "file:../../vendor/snapseq"`. Do the same for
 ```ts
 // snapseq.config.ts
 import { defineConfig } from "snapseq";
-import { stabilize } from "snapseq-stabilize";
+import { stabilize } from "@snapseq/stabilize";
 
 export default defineConfig({
   envs: {

@@ -185,8 +185,8 @@ instances in `plugins`; their hooks run in that order.
 
 ```ts
 import { defineConfig } from "snapseq";
-import { label } from "snapseq-label";
-import { pdf } from "snapseq-pdf";
+import { label } from "@snapseq/label";
+import { pdf } from "@snapseq/pdf";
 
 export default defineConfig({
   envs: { dev: { host: "http://localhost:3000" } },

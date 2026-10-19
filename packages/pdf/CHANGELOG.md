@@ -1,4 +1,4 @@
-# snapseq-pdf
+# @snapseq/pdf
 
 ## 0.1.0
 

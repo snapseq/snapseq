@@ -16,7 +16,7 @@ export interface StabilizeOptions {
 
 declare module "snapseq" {
   interface SnapOptions {
-    /** `"keep"`: leave the pointer where the capture put it for this shot. Needs `snapseq-stabilize` in `plugins`. */
+    /** `"keep"`: leave the pointer where the capture put it for this shot. Needs `@snapseq/stabilize` in `plugins`. */
     hover?: "keep";
   }
 }

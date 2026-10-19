@@ -1,4 +1,4 @@
-# snapseq-stabilize
+# @snapseq/stabilize
 
 A [snapseq](https://github.com/snapseq/snapseq/tree/main/packages/snapseq)
 plugin that makes a page hold still for its shots. It freezes viewport-height
@@ -10,7 +10,7 @@ before each shot, and moves the pointer off the content.
 In the app that has snapseq. Peer dependency: `snapseq`.
 
 ```bash
-pnpm add -D snapseq-stabilize
+pnpm add -D @snapseq/stabilize
 ```
 
 ## Config
@@ -18,7 +18,7 @@ pnpm add -D snapseq-stabilize
 ```ts
 // snapseq.config.ts
 import { defineConfig } from "snapseq";
-import { stabilize } from "snapseq-stabilize";
+import { stabilize } from "@snapseq/stabilize";
 
 export default defineConfig({ envs: { /* … */ }, plugins: [stabilize()] });
 ```

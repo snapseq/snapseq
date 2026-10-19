@@ -18,14 +18,14 @@ motion before a shot.
 In the app that owns the pages:
 
 ```bash
-pnpm add -D @playwright/test snapseq snapseq-stabilize
+pnpm add -D @playwright/test snapseq @snapseq/stabilize
 pnpm exec playwright install chromium   # once per machine; under Node 26 run this with Node 22
 ```
 
 ```ts
 // snapseq.config.ts
 import { defineConfig } from "snapseq";
-import { stabilize } from "snapseq-stabilize";
+import { stabilize } from "@snapseq/stabilize";
 
 export default defineConfig({
   envs: { dev: { host: "http://localhost:3000" } },

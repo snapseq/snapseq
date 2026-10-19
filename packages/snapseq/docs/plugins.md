@@ -10,7 +10,7 @@ writing one takes a few lines.
 Install what you use, in the app that has snapseq:
 
 ```bash
-pnpm add -D snapseq-label snapseq-pdf snapseq-stabilize
+pnpm add -D @snapseq/label @snapseq/pdf @snapseq/stabilize
 ```
 
 All three peer-depend on `snapseq`. `label` and `pdf` work on the shot files,
@@ -21,8 +21,8 @@ Chromium. List them in the config:
 ```ts
 // snapseq.config.ts
 import { defineConfig } from "snapseq";
-import { label } from "snapseq-label";
-import { pdf } from "snapseq-pdf";
+import { label } from "@snapseq/label";
+import { pdf } from "@snapseq/pdf";
 
 export default defineConfig({
   envs: { dev: { host: "http://localhost:3000" } },
@@ -34,9 +34,9 @@ export default defineConfig({
 
 | Package                                 | Adds                                                                                       |
 | --------------------------------------- | ------------------------------------------------------------------------------------------ |
-| [`snapseq-label`](../../label/README.md) | A `label` option on `snap` and `snapPage`: a strip with that text above the shot, styled and scaled from the config. |
-| [`snapseq-pdf`](../../pdf/README.md)     | One PDF per capture and device, a page per shot.                                           |
-| [`snapseq-stabilize`](../../stabilize/README.md) | Freezes viewport-height units so `snapPage` works on `100vh` pages, stops motion before each shot, moves the pointer off the content (`hover`), and can scroll a native full page first (`scroll`). |
+| [`@snapseq/label`](../../label/README.md) | A `label` option on `snap` and `snapPage`: a strip with that text above the shot, styled and scaled from the config. |
+| [`@snapseq/pdf`](../../pdf/README.md)     | One PDF per capture and device, a page per shot.                                           |
+| [`@snapseq/stabilize`](../../stabilize/README.md) | Freezes viewport-height units so `snapPage` works on `100vh` pages, stops motion before each shot, moves the pointer off the content (`hover`), and can scroll a native full page first (`scroll`). |
 
 A capture asks a plugin for something through the shot's options:
 
@@ -193,7 +193,7 @@ declare module "snapseq" {
 The augmentation applies to a TypeScript program that includes the plugin's
 types. The config's import does that when the captures and the config share a
 `tsconfig.json`. Otherwise a capture file needs
-`/// <reference types="snapseq-label" />` or an import of its own. Playwright
+`/// <reference types="@snapseq/label" />` or an import of its own. Playwright
 does not typecheck captures, so a missing augmentation shows in your editor and
 in `tsc`, not in a run.
 

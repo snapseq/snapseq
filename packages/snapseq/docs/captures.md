@@ -66,14 +66,14 @@ stays as it is, and sticky elements come out pinned where the scroll left
 them. Use it for a page whose layout follows the viewport height (`vh` units,
 a loader at the page end). `snapPage` measures once more after the viewport is
 set and refuses such a page, with the viewport restored, because a taller
-viewport would never catch it. The `snapseq-stabilize` plugin freezes `vh`
+viewport would never catch it. The `@snapseq/stabilize` plugin freezes `vh`
 units, so `snapPage` takes a `100vh` page; see [Plugins](plugins.md).
 
 Both take Playwright's screenshot options (`mask`, `clip`, `style`,
 `omitBackground`, …) except the path, the image type and the quality, which
 the sequence takes from the config's `numbering` and `format`. `snapPage` does
 not take `fullPage` either. A plugin can add keys of its own, such as `label`
-from `snapseq-label`:
+from `@snapseq/label`:
 `seq.snap({ label: "0.0 Home" })`. See [Plugins](plugins.md). Both resolve to
 the path of the file they wrote. One shot runs at a time: a second `snap`
 before the first resolved throws, so await each.
@@ -113,10 +113,10 @@ terminal too:
   may be omitted`: `snapPage` only, for a page about one screen tall whose
   content scrolls inside an element. One in an open shadow root is named after
   its host: `<app-shell div.content>`.
-- `scroll pass stopped after N steps`: from `snapseq-stabilize` with
+- `scroll pass stopped after N steps`: from `@snapseq/stabilize` with
   `scroll: true`, for a native full page whose scroll pass hit its cap of 60
   steps or 5 s. See its [README](../../stabilize/README.md).
-- `cannot read <url>: its viewport units stay live`: from `snapseq-stabilize`,
+- `cannot read <url>: its viewport units stay live`: from `@snapseq/stabilize`,
   for a stylesheet from another origin that it could not read, so its viewport
   units were not frozen. See its [README](../../stabilize/README.md).
 
@@ -143,7 +143,7 @@ Those need their own wait before the shot: a locator
 `page.evaluate`. [Example 8](examples.md#8-a-state-that-arrives-later) shows
 both.
 
-`stabilize()` from [`snapseq-stabilize`](../../stabilize/README.md) covers Web
+`stabilize()` from [`@snapseq/stabilize`](../../stabilize/README.md) covers Web
 Animations: its `motion` option, on by default, finishes or cancels them before
 each shot and applies `disableTransitions`, so the capture need not.
 
