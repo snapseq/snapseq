@@ -1,6 +1,6 @@
 {
   "name": "@snapseq/stabilize",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "snapseq plugin: freezes viewport units so snapPage works on 100vh pages, and stops motion before each shot.",
   "license": "ISC",
   "publishConfig": { "access": "public" },
