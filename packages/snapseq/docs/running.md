@@ -35,8 +35,8 @@ current directory (or takes `-c <path>`), and hands everything else to
 | `--host <url>`        | `SNAPSEQ_HOST` | Override that env's host for this run. A host different from the env's does not start its `webServer`. |
 | `--device <name>`     |                   | Only this device; repeatable. Playwright's `--project`.                                       |
 | `--record`            | `SNAPSEQ_RECORD` | Fetch the env's `replay` requests live and write their files. The variable takes `1` or `true` to record, `0`, `false` or empty not to; anything else is an error. The flag takes `--record=0` and the like, but `--record=` is an error, and `--record 0` records and passes `0` to Playwright as a file filter. On an env without `replay` it does nothing. See [Config](config.md#replay). |
-| `-c, --config <path>` |                   | The config file. Default: `./snapseq.config.{ts,mts,cts,js,mjs,cjs}`.                      |
-| `--run <name>`        | `SNAPSEQ_RUN`  | The run directory's name. Default: the local time the run started. A name, not a path. Into a name already used, only the sequences that run again are wiped. The flag, not the variable, also drops the run's orchestration cache: see [Repairs](orchestration.md#repairs). |
+| `-c, --config <path>` |                   | The config file, or its folder. Default: `./snapseq.config.{ts,mts,cts,js,mjs,cjs}`.                      |
+| `--run <name>`        | `SNAPSEQ_RUN`  | The run directory's name. Default: the local time the run started. A name, not a path. Into a name already used, only the sequences that run again are wiped. Either also drops the run's orchestration cache: see [Repairs](orchestration.md#repairs). |
 |                       | `SNAPSEQ_OPEN` | `0` or `false` (any case) keeps the run directory's file manager window closed at the end of an interactive run. See [The terminal](#the-terminal). |
 
 The flag wins over the variable. An empty value (`--env ""`) means unset.
