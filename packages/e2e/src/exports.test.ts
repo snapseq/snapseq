@@ -14,19 +14,23 @@ const LINKS: Record<string, string> = {
   snapseq: PKG,
   "@snapseq/label": join(PACKAGES, "label"),
   "@snapseq/pdf": join(PACKAGES, "pdf"),
-  "@snapseq/stabilize": join(PACKAGES, "stabilize"),
   "@playwright/test": join(PKG, "node_modules/@playwright/test"),
 };
 
 const BODY = `
-import { defineConfig, sequence } from "snapseq";
+import { defineConfig, defineOrchestration, sequence, type Capture } from "snapseq";
 import { label } from "@snapseq/label";
 import { pdf } from "@snapseq/pdf";
-import { stabilize } from "@snapseq/stabilize";
 
 export const config = defineConfig({
   envs: { dev: { host: "http://localhost:3000" } },
-  plugins: [label(), pdf(), stabilize()],
+  stabilize: { motion: false },
+});
+
+export const orchestration = defineOrchestration(async ({ run, dir }) => {
+  const raw: readonly Capture[] = await run("home", { devices: ["desktop"], stabilize: false });
+  const labelled: Capture[] = await label(raw, { theme: "dark" });
+  await pdf(labelled, dir + "/home.pdf");
 });
 
 sequence(async ({ seq }) => {
@@ -56,7 +60,7 @@ beforeAll(() => {
     join(dir, "resolve.mjs"),
     `import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const names = ${JSON.stringify(["snapseq", "@snapseq/label", "@snapseq/pdf", "@snapseq/stabilize"])};
+const names = ${JSON.stringify(["snapseq", "@snapseq/label", "@snapseq/pdf"])};
 console.log(JSON.stringify(Object.fromEntries(names.map((n) => [n, { require: require.resolve(n), import: import.meta.resolve(n) }]))));
 `,
   );
