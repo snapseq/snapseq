@@ -173,6 +173,58 @@ describe("pdf", () => {
     expect(await readdir(join(root, "out"))).toEqual(["desktop.pdf"]);
   });
 
+  it("refuses a file that is one of the shots, and leaves the shot alone", async () => {
+    const root = setup();
+    const dir = join(root, "a", "desktop");
+    const shot = await makeShot(dir, 1, 400, 300);
+    const before = await readFile(shot.path);
+
+    await expect(pdf([capture(dir, "a", [shot])], shot.path)).rejects.toThrow("@snapseq/pdf: file is one of the shots");
+    // the same path spelled another way is the same file
+    await expect(pdf([capture(dir, "a", [shot])], join(dir, "..", "desktop", shot.name))).rejects.toThrow("@snapseq/pdf: file is one of the shots");
+
+    expect((await readFile(shot.path)).equals(before)).toBe(true);
+    expect(await readdir(dir)).toEqual([shot.name]);
+  });
+
+  it("lets two calls on one file both finish, and leaves a valid PDF and no temporary file", async () => {
+    const root = setup();
+    const dir = join(root, "a", "desktop");
+    const file = join(root, "out", "desktop.pdf");
+    const caps = [capture(dir, "a", [await makeShot(dir, 1, 400, 300), await makeShot(dir, 2, 400, 900)])];
+
+    expect(await Promise.all([pdf(caps, file), pdf(caps, file)])).toEqual([file, file]);
+
+    expect(await pageSizes(file)).toEqual([
+      [300, 225],
+      [300, 675],
+    ]);
+    expect(await readdir(join(root, "out"))).toEqual(["desktop.pdf"]);
+  });
+
+  it.each([0, -1, NaN, Infinity])("rejects a deviceScaleFactor of %s, and writes nothing", async (value) => {
+    const root = setup();
+    const dir = join(root, "a", "desktop");
+    const file = join(root, "out", "desktop.pdf");
+    const shot = await makeShot(dir, 1, 400, 300, false, value);
+
+    await expect(pdf([capture(dir, "a", [shot])], file)).rejects.toThrow(
+      `@snapseq/pdf: deviceScaleFactor must be a positive number, got ${value}`,
+    );
+    expect(existsSync(join(root, "out"))).toBe(false);
+  });
+
+  it("leaves no temporary file when the file is a directory", async () => {
+    const root = setup();
+    const dir = join(root, "a", "desktop");
+    const file = join(root, "out.pdf");
+    mkdirSync(file);
+
+    await expect(pdf([capture(dir, "a", [await makeShot(dir, 1, 400, 300)])], file)).rejects.toThrow(/EISDIR/);
+
+    expect((await readdir(root)).sort()).toEqual(["a", "out.pdf"]);
+  });
+
   // img.embed() writes each image into the document and drops its decoded copy, so
   // memory peaks at a few images, not at all of them. Decoded data lives in ArrayBuffers,
   // not on the JS heap, so this samples arrayBuffers; heapUsed does not move.

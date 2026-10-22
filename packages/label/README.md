@@ -41,7 +41,7 @@ import { defineOrchestration } from "snapseq";
 import { label } from "@snapseq/label";
 import { pdf } from "@snapseq/pdf";
 
-export default defineOrchestration(async ({ run, config, dir }) => {
+export default defineOrchestration(async ({ run, dir }) => {
   const raw = [
     ...(await run("12345-spring-launch", { devices: ["desktop"] })),
     ...(await run("12346-spring-offer", { env: "uat" })),
@@ -82,7 +82,7 @@ For each capture, `label` writes `<capture.dir>/labelled/<shot name>`, e.g.
 raw `01.png`. It creates `labelled/` and overwrites files already in it. The
 raw shots are never changed.
 
-It resolves to the same captures, with `dir` and every shot's `path` pointing
+It resolves to new captures, with `dir` and every shot's `path` pointing
 at the labelled files, so the next step takes them as they are. Nothing else on
 a capture or a shot changes. No captures in, none out, and nothing is written.
 
@@ -100,7 +100,8 @@ A shot without a label is copied byte for byte.
   so on a 2x shot it reads as 12 CSS px. `scale: true` makes it follow the
   factor: 48 px on a 2x shot, 96 px on a 4x one. A function maps the factor to
   the scale instead, e.g. `scale: (dsf) => Math.max(1, dsf / 2)`. A scale that
-  is not a finite number above 0 throws, and so does `label`.
+  is not a finite number above 0, or is under 1/48 so the strip would be
+  under 1 px, makes `label` throw.
 - Shots are labelled one at a time. A failure stops the step; files already
   written stay in `labelled/`.
 - A JPEG is decoded and encoded again at the shot's own quality.
