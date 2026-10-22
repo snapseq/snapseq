@@ -1,6 +1,7 @@
-import { writeFile } from "node:fs/promises";
+import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import sharp from "sharp";
-import type { Plugin } from "snapseq";
+import type { Capture, CaptureShot } from "snapseq";
 
 export interface LabelStyle {
   /** `"light"` is a white strip with black text, the default. `"dark"` is the opposite. */
@@ -22,7 +23,7 @@ export interface LabelOptions extends LabelStyle {
 
 declare module "snapseq" {
   interface SnapOptions {
-    /** Text for the strip above this shot, or the text with a style of its own; no strip without it. Needs `@snapseq/label` in `plugins`. */
+    /** Text for the strip above this shot, or the text with a style of its own; no strip without it. The strip is drawn by the `label` step of `@snapseq/label` in an orchestration, not at capture time. */
     label?: string | ({ text: string } & LabelStyle);
   }
 }
@@ -54,35 +55,51 @@ async function inkWidth(text: string, size: number, height: number, y: number, w
   return (await sharp(Buffer.from(svg)).trim().toBuffer({ resolveWithObject: true })).info.width;
 }
 
-/** A strip above each shot that passes `label`, with the label centered. White with black text unless styled. */
-export function label(options: LabelOptions = {}): Plugin {
-  return {
-    name: "label",
-    async afterSnap(shot) {
-      const spec = typeof shot.options.label === "string" ? { text: shot.options.label } : shot.options.label;
-      if (!spec?.text) return;
-      const { text } = spec;
-      const colors = { ...THEMES.light, ...pick(options), ...pick(spec) };
-      const { scale } = options;
-      const s = scale === true ? shot.deviceScaleFactor : typeof scale === "function" ? scale(shot.deviceScaleFactor) : 1;
-      if (!(Number.isFinite(s) && s > 0)) throw new Error(`@snapseq/label: scale must be a positive number, got ${s}`);
-      const [height, size, y, inset] = [Math.round(STRIP * s), 12 * s, 16 * s, 8 * s];
-      const img = sharp(shot.path);
-      const { width, hasAlpha } = await img.metadata();
-      // Centered if it fits with the inset on both sides; else from the inset, so the end is cut and the start is not.
-      const fits = (await inkWidth(text, size, height, y, width)) + 2 * inset <= width;
-      const place = fits ? 'x="50%" text-anchor="middle"' : `x="${inset}" text-anchor="start"`;
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="${esc(colors.background)}"/><text ${place} y="${y}" font-family="sans-serif" font-size="${size}" fill="${esc(colors.color)}">${esc(text)}</text></svg>`;
-      const out = img
-        .extend({ top: height, background: { r: 0, g: 0, b: 0, alpha: 0 } })
-        .composite([{ input: Buffer.from(svg), top: 0, left: 0 }]);
-      // The extension is RGBA; an RGB shot goes back to RGB, or the PNG comes out up to 4x bigger on flat pages.
-      if (!hasAlpha) out.removeAlpha();
-      // optimiseCoding (sharp's default) holds the whole compressed image: a 3840x60000 shot peaked at 1.6 GB,
-      // and 1920x34198 at 527 MB against 141 MB without it. The file is under 1% bigger.
-      // sharp will not write over its own input, so encode to a buffer first.
-      const encoded = shot.format.type === "jpeg" ? out.jpeg({ quality: shot.format.quality, optimiseCoding: false }) : out.png();
-      await writeFile(shot.path, await encoded.toBuffer());
-    },
-  };
+// One shot into `file`: the strip above it when `options.label` is set, a plain copy when not.
+async function labelShot(shot: CaptureShot, file: string, options: LabelOptions) {
+  const spec = typeof shot.options.label === "string" ? { text: shot.options.label } : shot.options.label;
+  if (!spec?.text) return copyFile(shot.path, file);
+  const { text } = spec;
+  const colors = { ...THEMES.light, ...pick(options), ...pick(spec) };
+  const { scale } = options;
+  const s = scale === true ? shot.deviceScaleFactor : typeof scale === "function" ? scale(shot.deviceScaleFactor) : 1;
+  if (!(Number.isFinite(s) && s > 0)) throw new Error(`@snapseq/label: scale must be a positive number, got ${s}`);
+  const [height, size, y, inset] = [Math.round(STRIP * s), 12 * s, 16 * s, 8 * s];
+  const img = sharp(shot.path);
+  const { width, hasAlpha } = await img.metadata();
+  // Centered if it fits with the inset on both sides; else from the inset, so the end is cut and the start is not.
+  const fits = (await inkWidth(text, size, height, y, width)) + 2 * inset <= width;
+  const place = fits ? 'x="50%" text-anchor="middle"' : `x="${inset}" text-anchor="start"`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="100%" height="100%" fill="${esc(colors.background)}"/><text ${place} y="${y}" font-family="sans-serif" font-size="${size}" fill="${esc(colors.color)}">${esc(text)}</text></svg>`;
+  const out = img
+    .extend({ top: height, background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .composite([{ input: Buffer.from(svg), top: 0, left: 0 }]);
+  // The extension is RGBA; an RGB shot goes back to RGB, or the PNG comes out up to 4x bigger on flat pages.
+  if (!hasAlpha) out.removeAlpha();
+  // optimiseCoding (sharp's default) holds the whole compressed image: a 3840x60000 shot peaked at 1.6 GB,
+  // and 1920x34198 at 527 MB against 141 MB without it. The file is under 1% bigger.
+  const encoded = shot.format.type === "jpeg" ? out.jpeg({ quality: shot.format.quality, optimiseCoding: false }) : out.png();
+  await writeFile(file, await encoded.toBuffer());
+}
+
+/**
+ * Every shot of every capture into `<capture.dir>/labelled/<name>`: a strip above the shots whose
+ * `options.label` is set, a plain copy for the rest, so the labelled set is complete. The raw shots are
+ * not touched. Resolves to the same captures, `dir` and every shot's `path` pointing at the labelled files.
+ */
+export async function label(captures: readonly Capture[], options: LabelOptions = {}): Promise<Capture[]> {
+  const labelled: Capture[] = [];
+  // One shot at a time: a tall shot holds hundreds of MB in sharp.
+  for (const capture of captures) {
+    const dir = join(capture.dir, "labelled");
+    await mkdir(dir, { recursive: true });
+    const shots: CaptureShot[] = [];
+    for (const shot of capture.shots) {
+      const path = join(dir, shot.name);
+      await labelShot(shot, path, options);
+      shots.push({ ...shot, path });
+    }
+    labelled.push({ ...capture, dir, shots });
+  }
+  return labelled;
 }
