@@ -6,9 +6,10 @@ pnpm snapseq pricing                      # sequences whose path matches "pricin
 pnpm snapseq pricing --device mobile
 pnpm snapseq --env staging                # or SNAPSEQ_ENV=staging
 pnpm snapseq --host http://localhost:4000 # or SNAPSEQ_HOST=…
-SNAPSEQ_RUN=review-1 pnpm snapseq      # name the run dir instead of the timestamp
+pnpm snapseq --run review-1               # name the run dir instead of the timestamp (or SNAPSEQ_RUN=review-1)
 pnpm snapseq --headed                     # also --ui, --debug, --trace on, --reporter json
 pnpm snapseq --help
+pnpm snapseq snapseq/spring.orchestration.ts --run review-1   # an orchestration file: see below
 ```
 
 From a monorepo root: `pnpm --filter <app> exec snapseq pricing --device desktop`.
@@ -35,7 +36,7 @@ current directory (or takes `-c <path>`), and hands everything else to
 | `--device <name>`     |                   | Only this device; repeatable. Playwright's `--project`.                                       |
 | `--record`            | `SNAPSEQ_RECORD` | Fetch the env's `replay` requests live and write their files. The variable takes `1` or `true` to record, `0`, `false` or empty not to; anything else is an error. The flag takes `--record=0` and the like, but `--record=` is an error, and `--record 0` records and passes `0` to Playwright as a file filter. On an env without `replay` it does nothing. See [Config](config.md#replay). |
 | `-c, --config <path>` |                   | The config file. Default: `./snapseq.config.{ts,mts,cts,js,mjs,cjs}`.                      |
-|                       | `SNAPSEQ_RUN`  | The run directory's name. Default: the local time the run started. A name, not a path.        |
+| `--run <name>`        | `SNAPSEQ_RUN`  | The run directory's name. Default: the local time the run started. A name, not a path. Into a name already used, only the sequences that run again are wiped. The flag, not the variable, also drops the run's orchestration cache: see [Repairs](orchestration.md#repairs). |
 |                       | `SNAPSEQ_OPEN` | `0` or `false` (any case) keeps the run directory's file manager window closed at the end of an interactive run. See [The terminal](#the-terminal). |
 
 The flag wins over the variable. An empty value (`--env ""`) means unset.
@@ -65,7 +66,7 @@ the first.
 A run lives in `screenshots/<run>` (`screenshotsDir`, beside the config),
 `<run>` being the time it started. The terminal summary prints the path; a
 piped or CI run does not. For scripts and CI, name the run:
-`SNAPSEQ_RUN=nightly pnpm snapseq` writes `screenshots/nightly/`. A name
+`pnpm snapseq --run nightly` (or `SNAPSEQ_RUN=nightly`) writes `screenshots/nightly/`. A name
 used twice is the same directory: only the sequences that run again are wiped.
 
 ## Rerunning
@@ -81,6 +82,51 @@ SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm snapseq --last-failed
 ```
 
 [Example 11](examples.md#11-rerun-one-sequence-into-the-same-run) walks through it.
+
+## Orchestration runs
+
+A file whose name ends in `.orchestration.ts` takes the place of the sequence
+filter: the file says which sequences run, on which devices, and what is done to
+the shots. [Orchestration](orchestration.md) covers the file.
+
+```bash
+pnpm snapseq snapseq/spring.orchestration.ts                  # named after the time it started
+pnpm snapseq snapseq/spring.orchestration.ts --run review-1   # the whole proof
+pnpm snapseq snapseq/spring.orchestration.ts --run review-1 12346 --device mobile   # shoot one part again
+pnpm snapseq snapseq/spring.orchestration.ts --env uat --headed
+```
+
+| Flag                | Effect in an orchestration run                                                                      |
+| ------------------- | --------------------------------------------------------------------------------------------------- |
+| `--run <name>`      | The run folder. With words or `--device` after it, a repair: see [Repairs](orchestration.md#repairs). |
+| `[sequence...]`     | Needs `--run`. Shoot again the parts whose sequence id contains the text. Plain text, not a regular expression. |
+| `--device <name>`   | Needs `--run`. Shoot again the parts on that device. Exact name, repeatable.                        |
+| `--env`, `--host`   | As in a plain run, and over the `env` and `host` that any `run()` gives.                            |
+| `--record`          | Sets `SNAPSEQ_RECORD` for every child, as a plain run does. Write `--record=0`; with a space, `0` is read as a sequence filter. |
+| `-c, --config`      | The config file.                                                                                    |
+| `--headed`, `--debug` | Passed to every child.                                                                            |
+| `--trace <mode>`, `--timeout <ms>`, `--max-failures <n>` | Passed to every child, with their value.                         |
+
+These are refused, with the reason in the message:
+
+| Flag                           | Why                                                                                 |
+| ------------------------------ | ----------------------------------------------------------------------------------- |
+| `--ui`                         | It opens one Playwright window on one run.                                          |
+| `--list`                       | The orchestration decides its sequences while it runs.                              |
+| `--shard`                      | An orchestration runs its sequences one after another, in its own order.            |
+| `--repeat-each`, `--retries`   | A second pass would overwrite the shots. Catch the rejection of `run()` and call it again. |
+| `--reporter`                   | snapseq reads each child's result through its own reporter.                         |
+| `--last-failed`, `--only-changed` | The orchestration picks its sequences. Shoot a part again with `--run` and a filter. |
+
+Any other flag is refused too, with the list of the ones that work. The variables
+`SNAPSEQ_ENV`, `SNAPSEQ_HOST`, `SNAPSEQ_RUN`, `SNAPSEQ_RECORD` and `SNAPSEQ_OPEN` work
+as in a plain run.
+
+Each child is a `playwright test` for one `run()`. Its output, the live rows or the
+list reporter, appears as it would on its own, between the heading and the
+footer that snapseq prints; the file manager opens once, at the end, on the run
+folder. [What the terminal shows](orchestration.md#what-the-terminal-shows) has
+a sample. The exit code is 0, 1, or 130 after Ctrl-C.
 
 ## Timeouts
 

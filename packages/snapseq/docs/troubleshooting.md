@@ -81,7 +81,7 @@ fails depends on its `goto`:
 
 The `timeout` screenshot option (`seq.snap({ timeout: 5000 })`) only makes the
 sequence fail sooner. To make it pass, answer the URL: a `page.route` in
-a `begin` hook, or in the sequence before the `goto`, that aborts it
+the sequence, before the `goto`, that aborts it
 (`page.route("**/hero.jpg", (route) => route.abort())`; the shot then notes one
 image that failed to load) or fulfills it with a small image of your own.
 
@@ -109,26 +109,25 @@ Otherwise shoot it section by section, scrolling the element between shots:
 
 ## The terminal says `scroll pass stopped after N steps`
 
-**Cause.** `@snapseq/stabilize` with `scroll: true` scrolls a native full page
+**Cause.** `stabilize` with `scroll: true` scrolls a native full page
 (`snap({ fullPage: true })`) from its top to its end, to wake lazy content, and
 stops at 60 steps or 5 s. The page is longer than that, or grows as it
 scrolls, like an infinite feed.
 **Fix.** Check the lower part of the shot. For a feed, take the part you need:
-scroll to it yourself and `snap()`. See the stabilize
-[README](../../stabilize/README.md).
+scroll to it yourself and `snap()`. See [Config](config.md#scroll).
 
 ## The terminal says `cannot read <url>: its viewport units stay live`
 
-**Cause.** `@snapseq/stabilize` could not read the rules of a stylesheet from
+**Cause.** `stabilize` could not read the rules of a stylesheet from
 another origin, so its viewport units were not frozen. The note is on every
-shot taken while the sheet is unreadable. The plugin fetches such a sheet again
+shot taken while the sheet is unreadable. It fetches such a sheet again
 as a CORS request; that fails when the server refuses, the sheet redirects, a
 script imports it with `@import`, or a `replay` entry or HAR route serves it.
 A `100vh` section from that sheet can make `snapPage` refuse the page, and the
 refusal ends with this note.
 **Fix.** Serve the stylesheet without a redirect, or from the page's own
 origin. If the page does not depend on that sheet's viewport units, ignore the
-note. See the stabilize [README](../../stabilize/README.md).
+note. See [Config](config.md#viewport-units).
 
 ## `snapPage: the document grew from … px after the viewport was set to its height`
 
@@ -137,16 +136,16 @@ footer or loader pinned to the page end. Every taller viewport makes it taller
 again, so no viewport could ever contain it. Or the device has `isMobile:
 true` and the page has no viewport meta, or a fixed-width one: the layout
 viewport scales with the grown viewport ([Config](config.md#devices)), and
-`stabilize()` does not change that. When the shot has notes before the
-refusal, a plugin's (such as `@snapseq/stabilize`'s `cannot read <url>`) or a
+`stabilize` does not change that. When the shot has notes before the
+refusal, `stabilize`'s (such as `cannot read <url>`) or a
 readiness note (such as `DOM still changing after 3 s`), the message ends with
 `Notes: …`.
-**Fix.** List `stabilize()` from `@snapseq/stabilize` in the config's `plugins`:
-it freezes viewport-height units to px before the viewport grows, so a `100vh`
-section stays one screen tall ([Plugins](plugins.md)).
-`stabilize({ motion: false, hover: false, floating: false, scrollEvent: false })`
-if you want only that. If the page is still refused, something the plugin cannot freeze follows the
-viewport (its README lists what); use
+**Fix.** `stabilize` freezes viewport-height units to px before the viewport
+grows, so a `100vh` section stays one screen tall. It is on by default: check
+that the config has neither `stabilize: false` nor `stabilize: { viewportUnits: false }`
+([Config](config.md#stabilize)). If the page is still refused, something
+`stabilize` cannot freeze follows the viewport
+([what it does not do](config.md#what-stabilize-does-not-do)); use
 `seq.snap({ fullPage: true })` for that page, Playwright's native full page.
 Sticky elements stay pinned where the scroll left them. For `isMobile` on a
 page without a viewport meta, use `snap({ fullPage: true })` or a device
@@ -162,25 +161,27 @@ flow and a tray lands in its slot.
 
 ## A shot caught an animation mid-frame
 
-**Cause.** `disableTransitions` was not called, or was called after the
-`goto` of a later document and the motion comes from the Web Animations API,
-which the readiness wait cannot see.
-**Fix.** Call `disableTransitions(page)` once at the top of the sequence, before
-the first `goto`. For Web Animations API motion, wait for the element's final
+**Cause.** `stabilize` is off (`stabilize: false` or `motion: false`), and
+`disableTransitions` was not called, or was called after the `goto` of a later
+document, and the motion comes from the Web Animations API, which the readiness
+wait cannot see.
+**Fix.** Leave `stabilize` on, as it is by default: its `motion` step finishes or
+cancels Web Animations before each shot and turns transitions off, so a sequence
+need not call `disableTransitions` ([Config](config.md#motion)). With it off, call
+`disableTransitions(page)` once at the top of the sequence, before the first
+`goto`. For Web Animations API motion, wait for the element's final
 state with a locator, or `await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))` raced against a timer.
-Or list `stabilize()` from `@snapseq/stabilize` in `plugins`: its `motion`
-option, on by default, finishes or cancels Web Animations before each shot and
-applies `disableTransitions` itself, so a sequence need not call it.
 
 ## An element that fades in is missing from the shot
 
 **Cause.** `disableTransitions` sets `animation: none`. That leaves an element
 at its base state, so a `.hero` with base `opacity: 0` and
 `animation: fadeIn 1s forwards` stays hidden.
-**Fix.** `stabilize()` from `@snapseq/stabilize` instead of
+**Fix.** `stabilize`'s `motion` step, on by default, instead of
 `disableTransitions`: it finishes the animation, so a `forwards` fade-in ends
-visible. Or `addPersistentStyle(page, ".hero { opacity: 1 !important }")`, or
-the page's own revealed class.
+visible. Take the `disableTransitions` call out of the sequence. Or
+`addPersistentStyle(page, ".hero { opacity: 1 !important }")`, or the page's own
+revealed class.
 
 ## Basic auth credentials are not sent, or are sent to the wrong host
 
@@ -240,8 +241,8 @@ Playwright as a file filter.
 ## `snapseq: a shot is already in progress; await each snap before the next`
 
 **Cause.** A `snap` or `snapPage` started before the previous one resolved: a
-missing `await`, a `Promise.all`, or a plugin hook that took a shot of its own.
-**Fix.** Await each shot; take none from a plugin hook.
+missing `await` or a `Promise.all`.
+**Fix.** Await each shot.
 
 ## `snapseq: the sequence ended before … was listed`
 
@@ -272,7 +273,7 @@ device `mobile` writes `home/mobile/`; `home/mobile.seq.ts` on `desktop`
 writes `home/mobile/desktop/`, and so does every sequence under `home/mobile/`.
 A sequence's directory is wiped when it starts, so snapseq refuses first,
 naming the sequence file that writes inside it, and nothing is deleted. A
-directory a plugin hook wrote in it is wiped with the rest.
+subfolder a step made in it, such as `labelled/`, is wiped with the rest.
 **Fix.** Rename one of the sequences so its name is not a device's, such as
 `home/mobile-menu.seq.ts`.
 
