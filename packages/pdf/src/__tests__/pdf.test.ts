@@ -96,32 +96,15 @@ describe("pdf", () => {
     const root = setup();
     const dir = join(root, "a", "desktop");
     const file = join(root, "out.pdf");
+    const jpegShot = await makeShot(dir, 1, 400, 300, true);
+    const pngShot = await makeShot(dir, 2, 200, 800);
 
-    await pdf([capture(dir, "a", [await makeShot(dir, 1, 400, 300, true), await makeShot(dir, 2, 200, 800, true)])], file);
+    await pdf([capture(dir, "a", [jpegShot, pngShot])], file);
+
     expect(await pageSizes(file)).toEqual([
       [300, 225],
       [150, 600],
     ]);
-
-    const mixedDir = join(root, "b", "desktop");
-    const mixed = join(root, "mixed.pdf");
-    const jpegShot = await makeShot(mixedDir, 1, 400, 300, true);
-    const pngShot = await makeShot(mixedDir, 2, 200, 800);
-    await pdf([capture(mixedDir, "b", [jpegShot, pngShot])], mixed);
-    expect(await pageSizes(mixed)).toEqual([
-      [300, 225],
-      [150, 600],
-    ]);
-  });
-
-  it("creates the parent directory", async () => {
-    const root = setup();
-    const dir = join(root, "a", "desktop");
-    const file = join(root, "run", "review-1", "desktop.pdf");
-
-    await pdf([capture(dir, "a", [await makeShot(dir, 1, 400, 300)])], file);
-
-    expect(await pageSizes(file)).toEqual([[300, 225]]);
   });
 
   it("replaces a file that is already there and leaves no temporary file beside it", async () => {
@@ -190,7 +173,7 @@ describe("pdf", () => {
   it("lets two calls on one file both finish, and leaves a valid PDF and no temporary file", async () => {
     const root = setup();
     const dir = join(root, "a", "desktop");
-    const file = join(root, "out", "desktop.pdf");
+    const file = join(root, "out", "run", "desktop.pdf"); // two missing levels: the parent is created recursively
     const caps = [capture(dir, "a", [await makeShot(dir, 1, 400, 300), await makeShot(dir, 2, 400, 900)])];
 
     expect(await Promise.all([pdf(caps, file), pdf(caps, file)])).toEqual([file, file]);
@@ -199,7 +182,7 @@ describe("pdf", () => {
       [300, 225],
       [300, 675],
     ]);
-    expect(await readdir(join(root, "out"))).toEqual(["desktop.pdf"]);
+    expect(await readdir(join(root, "out", "run"))).toEqual(["desktop.pdf"]);
   });
 
   it.each([0, -1, NaN, Infinity])("rejects a deviceScaleFactor of %s, and writes nothing", async (value) => {
