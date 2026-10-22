@@ -6,12 +6,11 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import sharp from "sharp";
+import { inflateSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Drives the BUILT package through the real Playwright CLI, the way a consumer would.
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const CORE = resolve(PKG, "..", "snapseq");
 const PW_CLI = join(PKG, "node_modules/@playwright/test/cli.js");
 const PNG_1x1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 
@@ -26,7 +25,7 @@ body { margin: 0 }
 main { display: flex }
 #aside { position: sticky; top: 100px; align-self: flex-start; width: 200px; height: 100px; background: #ff0 }
 .block { height: 400px; background: #eee }
-html > :not(head):not(body) { display: none !important } /* reaches whatever the plugin appends to <html> to measure with */
+html > :not(head):not(body) { display: none !important } /* reaches whatever stabilize appends to <html> to measure with */
 </style></head><body>
 <div id="header"></div><div id="banner"></div><div id="hero"></div><div id="sub"></div>
 <main><aside id="aside"></aside><div style="flex: 1">${'<div class="block"></div>'.repeat(8)}</div></main>
@@ -145,7 +144,7 @@ addEventListener("load", () => { document.styleSheets[0].disabled = true; });
 </script></body></html>`;
 
 // A page that lies about its own stylesheets: a cross-origin JSON file, reported as an unreadable sheet through an overridden
-// document.styleSheets. When the plugin adds its clone, the page fetches that JSON itself, hoping the plugin's route answers it with a CORS header.
+// document.styleSheets. When stabilize adds its clone, the page fetches that JSON itself, hoping stabilize's route answers it with a CORS header.
 const hostilePage = (cdn: string) => `<!doctype html><html><head><link id="l" rel="stylesheet" href="${cdn}/secret.json"></head><body style="margin:0"><div style="height:1000px"></div><script>
 const link = document.getElementById("l");
 Object.defineProperty(document, "styleSheets", {
@@ -232,7 +231,7 @@ const SLOWLINK_PAGE = `<!doctype html><html><body style="margin:0"><div id="slow
 const fragmentPage = (cdn: string) =>
   `<!doctype html><html><head><link rel="stylesheet" href="${cdn}/style.css#x"></head><body style="margin:0"><div id="xo"></div><div style="height:1000px"></div></body></html>`;
 
-// A resize handler starts a minute-long animation, after the plugin's pass and before the screenshot.
+// A resize handler starts a minute-long animation, after stabilize's pass and before the screenshot.
 const ANIM_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:1000px"></div><div id="anim">a</div><script>
 let started = false;
 addEventListener("resize", () => {
@@ -249,8 +248,8 @@ addEventListener("resize", () => { document.body.style.height = innerHeight * 2 
 </script></body></html>`;
 
 // A finite no-fill animation, a forwards-fill one, an infinite one, a chained one started by the first one's
-// finish handler, an SVG <animate>, a CSS spin and a reduced-motion rule. The finite ones last a minute: only the
-// plugin can bring them to their end state before the shot.
+// finish handler, an SVG <animate>, a CSS spin and a reduced-motion rule. The finite ones last a minute: only
+// stabilize can bring them to their end state before the shot.
 const MOTION_PAGE = `<!doctype html><html><head><style>
 @keyframes spin { to { transform: rotate(1turn) } }
 #css { animation: spin 1s linear infinite; width: 50px; height: 50px; background: #09f }
@@ -336,7 +335,7 @@ window.__facts = () => {
 </script></body></html>`;
 
 // The drawer again, anchored by an inline `bottom: 0 !important` of the page's own, with a page script that writes a top of
-// its own once the plugin has pinned it, as the page grows.
+// its own once stabilize has pinned it, as the page grows.
 const OWN_PAGE = `<!doctype html><html><head><style>
 body { margin: 0 }
 #drawer { position: fixed; left: 0; width: 200px; height: 100px; background: rgb(200, 0, 100) }
@@ -354,7 +353,7 @@ addEventListener("resize", () => {
 window.__facts = () => ({ inline: el.style.top + "|" + el.style.bottom + "|" + el.style.getPropertyPriority("bottom") });
 </script></body></html>`;
 
-// Fixed elements the plugin has to leave alone, or move without breaking them, on a 3000 px page at 1280x720: a header
+// Fixed elements stabilize has to leave alone, or move without breaking them, on a 3000 px page at 1280x720: a header
 // at the top, a dimmer over everything (behind the page), a panel from 10 % down to the bottom whose height is the
 // viewport's, a box centred by top: 50 % and a transform, and one parked below the first screen.
 const SHAPES_PAGE = `<!doctype html><html><head><style>
@@ -460,7 +459,7 @@ body { margin: 0 }
 window.__facts = () => ({ inline: document.getElementById("sheet").style.top + "|" + document.getElementById("sheet").style.bottom });
 </script></body></html>`;
 
-// The REGROW page, but the page clears the plugin's top in the second grow, before the plugin looks at the element again.
+// The REGROW page, but the page clears stabilize's top in the second grow, before stabilize looks at the element again.
 const TAKEN_PAGE = `<!doctype html><html><head><style>
 body { margin: 0 }
 #drawer { position: fixed; bottom: 0; left: 0; width: 200px; height: 100px; background: rgb(200, 0, 100) }
@@ -475,7 +474,7 @@ addEventListener("resize", () => {
 window.__facts = () => ({ inline: document.getElementById("drawer").style.top + "|" + document.getElementById("drawer").style.bottom });
 </script></body></html>`;
 
-// FOLLOW_PAGE with a drawer: the shot is refused after the plugin pinned it.
+// FOLLOW_PAGE with a drawer: the shot is refused after stabilize pinned it.
 const FOLLOWDRAWER_PAGE = `<!doctype html><html><head><style>
 body { margin: 0 }
 #drawer { position: fixed; bottom: 0; left: 0; width: 200px; height: 100px; background: rgb(200, 0, 100) }
@@ -562,18 +561,30 @@ scrollTo(0, 300);
 window.__facts = () => ({ y: String(scrollY) });
 </script></body></html>`;
 
-// What the config hands to Playwright. The probe writes, beside each shot and while snapPage still has the
-// viewport grown, the geometry of every element with an id, inside open shadow roots too. The plugin hands the page's own
-// insets back in afterRestore, after every afterSnap, so the probe sees the page as the screenshot did wherever it is listed. STAB is the plugin's options as JSON; NO_STAB leaves it out.
+// What the config hands to Playwright. STAB is the stabilize options as JSON; NO_STAB turns stabilize off.
 const CONFIG = (host: string) => `
-import { writeFileSync } from "node:fs";
 import { defineConfig } from "snapseq";
-import { stabilize } from "@snapseq/stabilize";
 
-const probe = () => ({
-  name: "probe",
-  async afterSnap(shot, ctx) {
-    const data = await ctx.page.evaluate(async () => {
+export default defineConfig({
+  envs: { dev: { host: "${host}" } },
+  devices: { d1: { viewport: { width: 1280, height: 720 } } },
+  screenshotsDir: "out",
+  stabilize: process.env.NO_STAB ? false : JSON.parse(process.env.STAB ?? "{}"),
+});
+`;
+
+// Appended to every sequence. As each shot's file is written, and while snapPage still has the viewport grown, the probe
+// writes beside it the geometry of every element with an id, inside open shadow roots too. stabilize hands the page's own
+// insets back in afterRestore, after the screenshot, so the probe sees the page as the screenshot did.
+const PROBE = `
+import { test as probeTest } from "@playwright/test";
+import { writeFileSync as writeProbe } from "node:fs";
+probeTest.beforeEach(async ({ page }) => {
+  const screenshot = page.screenshot.bind(page);
+  page.screenshot = async (options) => {
+    const taken = await screenshot(options);
+    if (!options?.path || options.path.endsWith("failed.png")) return taken;
+    const data = await page.evaluate(async () => {
       const inRoot = (root) => Array.from(root.querySelectorAll("*")).flatMap((e) => [e, ...(e.shadowRoot ? inRoot(e.shadowRoot) : [])]);
       return {
       innerHeight: window.innerHeight,
@@ -584,15 +595,9 @@ const probe = () => ({
       facts: window.__facts ? await window.__facts() : null,
       };
     });
-    writeFileSync(shot.path.replace(/\\.[a-z]+$/, ".json"), JSON.stringify(data));
-  },
-});
-
-export default defineConfig({
-  envs: { dev: { host: "${host}" } },
-  devices: { d1: { viewport: { width: 1280, height: 720 } } },
-  screenshotsDir: "out",
-  plugins: process.env.NO_STAB ? [probe()] : [probe(), stabilize(JSON.parse(process.env.STAB ?? "{}"))],
+    writeProbe(options.path.replace(/\\.[a-z]+$/, ".json"), JSON.stringify(data));
+    return taken;
+  };
 });
 `;
 
@@ -1018,7 +1023,7 @@ function send(res: ServerResponse, type: string, body: string | Buffer, status =
   res.end(body);
 }
 
-// The stylesheets carry no access-control-allow-origin: the plugin's route has to supply it.
+// The stylesheets carry no access-control-allow-origin: stabilize's route has to supply it.
 const secretCookies: string[] = []; // the cookie header of every request for /secret.json, "" for none
 
 function cdnServer() {
@@ -1048,7 +1053,7 @@ function cdnServer() {
       res.writeHead(302, { location: "/v1/style.css" });
       res.end();
     } else if (url.startsWith("/v1/style.css")) send(res, "text/css", "#hero { height: 100vh; background: url(img.png) }");
-    // The first request answers, the CORS refetch of the plugin gets a 500.
+    // The first request answers, the CORS refetch of stabilize gets a 500.
     else if (url.startsWith("/flaky.css")) {
       if (++flakyRequests > 1) send(res, "text/css", "boom", 500);
       else send(res, "text/css", "#flaky { height: 100vh }");
@@ -1127,15 +1132,13 @@ function appServer(cdn: string) {
 function makeProject(host: string): string {
   const dir = mkdtempSync(join(tmpdir(), "snapseq-stab-"));
   mkdirSync(join(dir, "node_modules", "@playwright"), { recursive: true });
-  mkdirSync(join(dir, "node_modules", "@snapseq"), { recursive: true });
-  symlinkSync(CORE, join(dir, "node_modules", "snapseq"));
-  symlinkSync(PKG, join(dir, "node_modules", "@snapseq", "stabilize"));
+  symlinkSync(PKG, join(dir, "node_modules", "snapseq"));
   // The consumer's own Playwright; same realpath as the core's, so one runner instance.
   symlinkSync(join(PKG, "node_modules", "@playwright", "test"), join(dir, "node_modules", "@playwright", "test"));
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   writeFileSync(join(dir, "snapseq.config.ts"), CONFIG(host));
   mkdirSync(join(dir, "snapseq"));
-  for (const [name, src] of Object.entries(SEQUENCES)) writeFileSync(join(dir, "snapseq", `${name}.seq.ts`), src);
+  for (const [name, src] of Object.entries(SEQUENCES)) writeFileSync(join(dir, "snapseq", `${name}.seq.ts`), src + PROBE);
   return dir;
 }
 
@@ -1162,9 +1165,32 @@ function pngSize(file: string): [number, number] {
   return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
 }
 
+// The pixels of a PNG as Playwright writes it (8-bit RGB or RGBA, not interlaced), with node:zlib: the IDAT chunks
+// inflated, then each row's filter undone.
 async function image(file: string) {
-  const { data, info } = await sharp(file).raw().toBuffer({ resolveWithObject: true });
-  return { at: (x: number, y: number) => [0, 1, 2].map((c) => data[(y * info.width + x) * info.channels + c]) };
+  const png = readFileSync(file);
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  const channels = png[25] === 6 ? 4 : 3;
+  const chunks: Buffer[] = [];
+  for (let at = 8; at < png.length; at += png.readUInt32BE(at) + 12) {
+    if (png.toString("latin1", at + 4, at + 8) === "IDAT") chunks.push(png.subarray(at + 8, at + 8 + png.readUInt32BE(at)));
+  }
+  const raw = inflateSync(Buffer.concat(chunks));
+  const stride = width * channels;
+  const data = Buffer.alloc(height * stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)]!;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= channels ? data[y * stride + x - channels]! : 0;
+      const b = y > 0 ? data[(y - 1) * stride + x]! : 0;
+      const c = x >= channels && y > 0 ? data[(y - 1) * stride + x - channels]! : 0;
+      const p = a + b - c;
+      const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
+      data[y * stride + x] = raw[y * (stride + 1) + 1 + x]! + [0, a, b, (a + b) >> 1, paeth][filter]!; // stored mod 256
+    }
+  }
+  return { at: (x: number, y: number) => [0, 1, 2].map((c) => data[(y * width + x) * channels + c]) };
 }
 
 interface Probe {
@@ -1206,7 +1232,7 @@ afterAll(async () => {
 });
 
 describe("snapPage on a 100vh page", () => {
-  it("passes with the plugin: hero 720 px, fixed and sticky elements in place, the shot as tall as the document", async () => {
+  it("passes with stabilize: hero 720 px, fixed and sticky elements in place, the shot as tall as the document", async () => {
     const r = await run("snappage");
     expect(r.status, r.out).toBe(0);
     const dir = r.dir;
@@ -1228,7 +1254,7 @@ describe("snapPage on a 100vh page", () => {
     expect(img.at(100, 800)).toEqual([255, 255, 0]); // the aside
   });
 
-  it("is refused without the plugin, which is what it is for", async () => {
+  it("is refused without stabilize, which is what it is for", async () => {
     const r = await run("snappage", { NO_STAB: "1" });
     expect(r.status).not.toBe(0);
     expect(r.out).toContain("snapPage: the document grew");
@@ -1242,19 +1268,19 @@ describe("snapPage on a 100vh page", () => {
 });
 
 describe("snap({ fullPage: true })", () => {
-  it("keeps the hero at 720 px and the shot the size it is without the plugin", async () => {
-    const withPlugin = await run("fullpage");
+  it("keeps the hero at 720 px and the shot the size it is without stabilize", async () => {
+    const withStabilize = await run("fullpage");
     const without = await run("fullpage", { NO_STAB: "1" });
-    expect(withPlugin.status, withPlugin.out).toBe(0);
+    expect(withStabilize.status, withStabilize.out).toBe(0);
     expect(without.status, without.out).toBe(0);
-    expect(probe(withPlugin.dir).rects.hero?.height).toBe(720);
-    expect(pngSize(join(withPlugin.dir, "01.png"))).toEqual([1280, 3960]);
-    expect(pngSize(join(withPlugin.dir, "01.png"))).toEqual(pngSize(join(without.dir, "01.png")));
+    expect(probe(withStabilize.dir).rects.hero?.height).toBe(720);
+    expect(pngSize(join(withStabilize.dir, "01.png"))).toEqual([1280, 3960]);
+    expect(pngSize(join(withStabilize.dir, "01.png"))).toEqual(pngSize(join(without.dir, "01.png")));
   });
 });
 
 describe("a viewport that changes between shots", () => {
-  // The second shot is snapPage: with live vh a plain snap gives 720 then 900 without the plugin, too.
+  // The second shot is snapPage: with live vh a plain snap gives 720 then 900 without stabilize, too.
   it("freezes the hero at 720 px, then again at 900 px, so snapPage takes the page at the new size", async () => {
     const r = await run("resized");
     expect(r.status, r.out).toBe(0);
@@ -1415,7 +1441,7 @@ describe("a sheet that stays unreadable", () => {
     const note = `cannot read ${cdn.url}/flaky.css: its viewport units stay live`;
     expect(noted(r.out)).toEqual([`snapseq: 01.png taken with ${note}  ${app.url}/flaky`, `snapseq: 02.png taken with ${note}  ${app.url}/flaky`]);
     expect(probe(r.dir, "01").rects.flaky?.height).toBe(720); // the original sheet still applies, live
-    // The page's, the plugin's one refetch (500, passed on), the browser's own request after it and the one check of its
+    // The page's, stabilize's one refetch (500, passed on), the browser's own request after it and the one check of its
     // text (500 again), all with the full URL.
     expect(cdn.hits.slice(before).filter((u) => u.startsWith("/flaky.css"))).toEqual(Array(4).fill("/flaky.css?sig=abc"));
     expect(noted(r.out).join("\n")).not.toContain("sig=abc"); // the note shows the URL without its query string
@@ -1426,7 +1452,7 @@ describe("a sheet that stays unreadable", () => {
   });
 });
 
-describe("sheets the plugin cannot or should not fetch again", () => {
+describe("sheets stabilize cannot or should not fetch again", () => {
   it("notes a cross-origin @import on its shot, and leaves a sheet the page disabled alone", async () => {
     const before = cdn.hits.length;
     const r = await run("sheets");
@@ -1509,7 +1535,7 @@ describe("the text check when the ten sheets of a shot run out", () => {
 describe("a stylesheet that redirects", () => {
   // The browser's request after a redirect we fulfilled does not come back through the route, so no CORS header
   // can reach it: the sheet cannot be made readable. It stays as the page had it, with its url() resolved
-  // against where the redirect ends, and the plugin says so.
+  // against where the redirect ends, and stabilize says so.
   it("stays as the page had it, and is noted on the shot", async () => {
     const before = cdn.hits.length;
     const r = await run("redirect");
@@ -1524,14 +1550,14 @@ describe("a stylesheet that redirects", () => {
 });
 
 describe("a page that reports a URL of its own as an unreadable stylesheet", () => {
-  // The plugin trusts the page's list only to pick the URLs it routes. The route answers a text/css response and nothing
+  // Stabilize trusts the page's list only to pick the URLs it routes. The route answers a text/css response and nothing
   // else, so the page's own fetch of a JSON file in that window gets no CORS header, and no cookie of the context goes with it.
-  it("cannot read it through the plugin's route, and the shot still passes", async () => {
+  it("cannot read it through stabilize's route, and the shot still passes", async () => {
     const before = secretCookies.length;
     const r = await run("hostile");
     expect(r.status, r.out).toBe(0);
     expect(probe(r.dir).facts?.leaked).toBe("false");
-    expect(secretCookies.length).toBeGreaterThan(before); // the page's link, the plugin's fetch and the browser's own requests reached the server
+    expect(secretCookies.length).toBeGreaterThan(before); // the page's link, stabilize's fetch and the browser's own requests reached the server
     expect(secretCookies.slice(before).filter(Boolean)).toEqual([]); // the session cookie it set is never sent back
     expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/secret.json: its viewport units stay live  ${app.url}/hostile`]);
   });
@@ -1548,15 +1574,15 @@ describe("a stylesheet requested by a frame built by script", () => {
 
 describe("a layout that follows the viewport through script", () => {
   it("is still refused with the same text, the viewport is restored, and the next snap works", async () => {
-    const withPlugin = await run("follow");
+    const withStabilize = await run("follow");
     const without = await run("follow", { NO_STAB: "1" });
-    expect(withPlugin.status, withPlugin.out).toBe(0);
-    const refused = readFileSync(join(withPlugin.dir, "refused.txt"), "utf8");
+    expect(withStabilize.status, withStabilize.out).toBe(0);
+    const refused = readFileSync(join(withStabilize.dir, "refused.txt"), "utf8");
     expect(refused).toContain("snapPage: the document grew from 2000 to 4000 px");
     expect(refused).toContain("snap({ fullPage: true })");
     expect(refused).toContain("viewport height 720");
     expect(refused).toBe(readFileSync(join(without.dir, "refused.txt"), "utf8"));
-    expect(readdirSync(withPlugin.dir).filter((f) => f.endsWith(".png"))).toEqual(["01.png"]);
+    expect(readdirSync(withStabilize.dir).filter((f) => f.endsWith(".png"))).toEqual(["01.png"]);
   });
 });
 
@@ -1664,7 +1690,7 @@ describe("floating", () => {
       expect(pngSize(join(r.dir, "01.png"))).toEqual([1920, 4583]);
       const p = probe(r.dir, "01");
       expect(p.rects.drawer).toMatchObject({ top: 497, width: 300, height: 258 });
-      expect(p.facts?.inline).toBe("497px|auto"); // what the plugin wrote while the shot was taken
+      expect(p.facts?.inline).toBe("497px|auto"); // what stabilize wrote while the shot was taken
       expect(p.facts?.transform).toBe("matrix(1, 0, 0, 1, 0, 0)");
       const img = await image(join(r.dir, "01.png"));
       expect(img.at(150, 496)).toEqual([240, 240, 240]);
@@ -1889,12 +1915,12 @@ describe("scroll pass for snap({ fullPage: true })", () => {
 });
 
 describe("entry points", () => {
-  it("loads as ESM and as CommonJS", async () => {
+  it("loads the core, stabilize inside it, as ESM and as CommonJS", async () => {
     const esm = await import(join(PKG, "dist", "index.js"));
     const cjs = createRequire(import.meta.url)(join(PKG, "dist", "index.cjs"));
     for (const mod of [esm, cjs]) {
-      expect(typeof mod.stabilize).toBe("function");
-      expect(mod.stabilize().name).toBe("stabilize");
+      expect(typeof mod.defineConfig).toBe("function");
+      expect(mod.stabilize).toBeUndefined(); // a config key, not an export
     }
     expect(existsSync(join(PKG, "dist", "index.d.ts"))).toBe(true);
   });

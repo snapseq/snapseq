@@ -17,6 +17,7 @@ import type {
 } from "@playwright/test/reporter";
 import type { SnapseqMetadata } from "./define.js";
 import { openInFileManager } from "./open.js";
+import { rowLabel } from "./row-label.js";
 
 type State = TestResult["status"] | "queued" | "running" | "not run";
 
@@ -122,8 +123,8 @@ const real = (p: string): string => {
   }
 };
 
-/** `nested/pricing / desktop`, the same identity the screenshots directory uses. */
-function labelOf(test: TestCase): string {
+/** `nested/pricing / desktop`, the same identity the screenshots directory uses; ` (uat)` after it when `env` is given. */
+function labelOf(test: TestCase, env?: string): string {
   const project = test.parent.project();
   const file = project
     ? relative(real(project.testDir), real(test.location.file))
@@ -131,7 +132,7 @@ function labelOf(test: TestCase): string {
   const base = file.replace(/\.seq\.[cm]?[jt]s$/, "");
   const titles = test.titlePath().slice(3); // root, project, file
   const path = titles.length === 1 && titles[0] === "sequence" ? base : [base, ...titles].join("/");
-  return `${path} / ${project?.name ?? ""}`.normalize("NFC"); // macOS hands file names over decomposed
+  return rowLabel(path, project?.name ?? "", env);
 }
 
 export default class SnapseqReporter implements Reporter {
@@ -212,7 +213,7 @@ export default class SnapseqReporter implements Reporter {
     for (const test of suite.allTests()) this.row(test);
     this.begun = true;
     if (this.live) this.render();
-    else this.out.write(`${this.header()}\n`);
+    else if (!this.meta?.orchestration) this.out.write(`${this.header()}\n`);
   }
 
   onTestBegin(test: TestCase): void {
@@ -282,22 +283,25 @@ export default class SnapseqReporter implements Reporter {
     this.clearFrame();
     this.live = false;
 
-    const lines: string[] = [""];
+    // In an orchestration run the parent prints the heading, the footer and opens the folder; the rows stack under it.
+    const orchestration = !!this.meta?.orchestration;
+    const lines: string[] = orchestration ? [] : [""];
     // The frame is gone; print every row that ran once. Event mode already printed them.
     // Rows that never ran are the footer's count: after a stop at the first
     // failure they would bury the failure under pages of "not run".
     if (hadFrame) {
       const rows = [...this.rows.values()].filter((r) => r.state !== "not run");
-      const width = Math.max(...rows.map((r) => r.label.length), 1);
+      const width = Math.max(...rows.map((r) => r.label.length), 1, this.minWidth());
       for (const row of rows) lines.push(this.line(row, width), ...this.errorLines(row));
     }
     if (this.globalErrors.length > 0) lines.push("", ...this.globalErrors);
-    lines.push("", this.footer(), "");
-    this.out.write(`${lines.join("\n")}\n`);
+    if (!orchestration) lines.push("", this.footer(), "");
+    if (lines.length > 0) this.out.write(`${lines.join("\n")}\n`);
     // Someone is watching: show them the shots. Pipes and CI never get a window, SNAPSEQ_OPEN=0 (or false) keeps it
     // closed, and Ctrl-C leaves a directory nobody wants to look at.
     // CI is checked here too, not only where the reporter is chosen: a config or --reporter can name this one anywhere.
     if (
+      !orchestration &&
       (this.drawn || this.terminal) &&
       result.status !== "interrupted" &&
       !/^(0|false)$/i.test(process.env.SNAPSEQ_OPEN ?? "") &&
@@ -312,7 +316,8 @@ export default class SnapseqReporter implements Reporter {
   private row(test: TestCase): Row {
     let row = this.rows.get(test.id);
     if (!row) {
-      row = { label: labelOf(test), state: "queued", shots: 0, duration: 0 };
+      const orchestration = this.meta?.orchestration;
+      row = { label: labelOf(test, orchestration?.showEnv ? this.meta?.env : undefined), state: "queued", shots: 0, duration: 0 };
       this.rows.set(test.id, row);
     }
     return row;
@@ -323,7 +328,7 @@ export default class SnapseqReporter implements Reporter {
       this.render();
       return;
     }
-    const lines = [this.line(row, row.label.length)];
+    const lines = [this.line(row, Math.max(row.label.length, this.minWidth()))];
     if (row.state !== "running") {
       lines.push(...this.errorLines(row));
       row.reported = true;
@@ -337,9 +342,14 @@ export default class SnapseqReporter implements Reporter {
     for (const row of this.rows.values()) {
       if (row.reported || row.state === "queued" || row.state === "running") continue;
       row.reported = true;
-      lines.push(this.line(row, row.label.length), ...this.errorLines(row));
+      lines.push(this.line(row, Math.max(row.label.length, this.minWidth())), ...this.errorLines(row));
     }
     if (lines.length > 0) this.out.write(`${lines.join("\n")}\n`);
+  }
+
+  /** The label column's least width: the orchestration parent's, so its children's rows line up. */
+  private minWidth(): number {
+    return this.meta?.orchestration?.labelWidth ?? 0;
   }
 
   private errorLines(row: Row): string[] {
@@ -457,15 +467,14 @@ export default class SnapseqReporter implements Reporter {
     const plain = (l: string): string => ascii(l).slice(0, columns);
     const room = Math.max(0, columns - (this.fancy ? 4 : 7)); // indent, mark, space
     // A label keeps to 40 columns, fewer when the row needs the rest for its count, clock and the end of its path.
-    const width = Math.min(Math.max(...shown.map((r) => r.label.length), 1), 40, Math.max(room - 25, 8));
+    const width = Math.min(Math.max(...shown.map((r) => r.label.length), 1, this.minWidth()), 40, Math.max(room - 25, 8));
+    const orchestration = !!this.meta?.orchestration;
     const lines = [
-      plain(`${this.header()}  ${clock(Date.now() - this.start)}`),
-      "",
+      ...(orchestration ? [] : [plain(`${this.header()}  ${clock(Date.now() - this.start)}`), ""]),
       ...(above ? [plain(`  +${start} above`)] : []),
       ...shown.map((r) => this.compose(r, ascii(this.text(r, width, room)).slice(0, room))),
       ...(more ? [plain(`  +${rows.length - end} more`)] : []),
-      "",
-      plain(this.footer()),
+      ...(orchestration ? [] : ["", plain(this.footer())]),
     ];
     this.clearFrame();
     this.out.write(`${lines.join("\n")}\n`);

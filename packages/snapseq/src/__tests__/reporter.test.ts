@@ -501,4 +501,27 @@ describe("SnapseqReporter", () => {
     expect(at("über-uns")).toBe(at("abcdefgh"));
     r.onEnd({ status: "passed" } as FullResult);
   });
+
+  it("in an orchestration child, prints no heading, footer or window, lines its labels up to the parent's width, and names the env", () => {
+    const dir = mkdtempSync(join(tmpdir(), "snapseq-rep-"));
+    mkdirSync(join(dir, "out", "run1"), { recursive: true });
+    const snapseq = { ...(config.metadata as { snapseq: object }).snapseq, orchestration: { sequence: "c0", labelWidth: 20, showEnv: true } };
+    const cfg = { ...config, metadata: { snapseq }, configFile: join(dir, "snapseq.config.ts"), rootDir: dir } as FullConfig;
+    const opened: string[] = [];
+    // A live frame (24 rows), then one line per event (5 rows).
+    for (const tty of [fakeTty(24), fakeTty(5)]) {
+      const r = new SnapseqReporter({ stream: tty.stream, open: (d) => opened.push(d) });
+      const t = fakeTest("t0", "c0.seq.ts");
+      r.onBegin(cfg, { allTests: () => [t] } as unknown as Suite);
+      r.onTestBegin(t);
+      r.onTestEnd(t, result("passed"));
+      r.onEnd({ status: "passed" } as FullResult);
+      const out = plain(tty.text());
+      expect(out).not.toContain("snapseq  dev");
+      expect(out).not.toContain("1 passed");
+      expect(out).toMatch(/✔ c0 \/ d1 \(dev\) {9}0 shots  1\.2s\n$/); // 13 columns padded to 20, then the gap; the last line
+    }
+    expect(opened).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

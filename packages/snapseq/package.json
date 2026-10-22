@@ -63,5 +63,8 @@
     "tsup": "^8.5.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
+  },
+  "dependencies": {
+    "jiti": "2.7.0"
   }
 }

@@ -13,7 +13,7 @@ export default defineConfig([
     },
   },
   {
-    entry: ["src/cli.ts", "src/reporter.ts"],
+    entry: ["src/cli.ts", "src/reporter.ts", "src/orchestration/result-reporter.ts"],
     format: ["esm"],
     target: "node20",
   },

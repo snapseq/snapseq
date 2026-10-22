@@ -1,8 +1,10 @@
 import { defineConfig as definePlaywrightConfig, type PlaywrightTestConfig } from "@playwright/test";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Plugin } from "./plugin.js";
+import { applyRequest, readRequest } from "./orchestration/request.js";
+import type { ResolvedSnapseqConfig } from "./orchestration/types.js";
 import type { ShotFormat } from "./sequence.js";
+import type { StabilizeOptions } from "./stabilize.js";
 
 export interface EnvConfig {
   host: string;
@@ -54,8 +56,11 @@ export interface SnapseqConfig {
   numbering?: string;
   /** Playwright's screenshot `type` (`"png"`, the default, or `"jpeg"`) and `quality` (JPEG only, 0 to 100). */
   format?: ShotFormat;
-  /** Addons such as `label()` from `@snapseq/label`. Their hooks run in this order. */
-  plugins?: Plugin[];
+  /**
+   * Holds the page still for each shot and lets `snapPage` grow pages with viewport-height units: on by default,
+   * each step with its own switch; `false` turns it off.
+   */
+  stabilize?: StabilizeOptions | false;
 }
 
 const DEFAULT_DEVICES: Record<string, DeviceConfig> = {
@@ -78,6 +83,10 @@ export interface SnapseqMetadata {
   replay?: Record<string, string>;
   /** `--record`: fetch the replay requests live and write their files. */
   record: boolean;
+  /** The config's `stabilize`: its options, `{}` by default, or false. */
+  stabilize: StabilizeOptions | false;
+  /** Set in a child of an orchestration run: the sequence it runs, and how its terminal rows line up with the others. */
+  orchestration?: { sequence: string; labelWidth: number; showEnv?: boolean };
 }
 
 /** One directory name, since the directory it names is wiped: no separators, not `.` or `..`. */
@@ -121,6 +130,22 @@ function defaultReporter(
   return interactive ? [[REPORTER_PATH, { server }]] : [["list", { printSteps: true }]];
 }
 
+/** The config with every default filled, before any env is resolved: what an orchestration is handed. */
+function resolved(config: SnapseqConfig): ResolvedSnapseqConfig {
+  const first = Object.keys(config.envs)[0];
+  if (first === undefined) throw new Error("snapseq: envs is empty; name at least one env and its host");
+  return {
+    ...config,
+    defaultEnv: config.defaultEnv || (config.envs.dev ? "dev" : first),
+    devices: config.devices ?? DEFAULT_DEVICES,
+    sequencesDir: config.sequencesDir ?? "snapseq",
+    screenshotsDir: config.screenshotsDir ?? "screenshots",
+    numbering: config.numbering ?? "00",
+    format: config.format ?? {},
+    stabilize: config.stabilize ?? {},
+  };
+}
+
 /**
  * Build a Playwright Test config for screenshot sequences. Extra arguments are
  * overrides, merged the way Playwright's own `defineConfig` merges them.
@@ -128,11 +153,21 @@ function defaultReporter(
  * `SNAPSEQ_RUN` names the run directory (default: the time the run started),
  * `SNAPSEQ_RECORD` records the env's `replay` responses, `SNAPSEQ_OPEN=0` keeps
  * the run directory from opening in a file manager at the end of an interactive run.
+ * `SNAPSEQ_OVERRIDES_FILE` is the orchestration parent's request for one child (orchestration/request.ts).
  */
 export function defineConfig(
   config: SnapseqConfig,
   ...overrides: PlaywrightTestConfig[]
 ): PlaywrightTestConfig {
+  // Kept for the orchestration parent, which reads the config file without a request.
+  const defaults = resolved(config);
+  const request = readRequest();
+  // Before anything is derived, each key the run gives replaces the config's; its devices become the projects last.
+  if (request) {
+    const { devices: _devices, ...rest } = request.snapseq;
+    config = { ...config, ...rest };
+  }
+  const c = request ? resolved(config) : defaults;
   const envNames = Object.keys(config.envs);
   // Empty means unset, as for SNAPSEQ_RUN: `--env ""` picks the default.
   const envName =
@@ -154,17 +189,15 @@ export function defineConfig(
   if (!url || !/^https?:$/.test(url.protocol) || !url.hostname) {
     throw new Error(`snapseq: host must be an http(s) URL, got "${host}"`);
   }
-  const screenshotsDir = config.screenshotsDir ?? "screenshots";
+  const { screenshotsDir, numbering, devices } = c;
   // Stamped once per run: this file is evaluated again in every worker process,
   // but workers inherit the env of the main process, which set it first.
   const run = (process.env.SNAPSEQ_RUN ||= runStamp());
   assertName("SNAPSEQ_RUN", run);
-  const numbering = config.numbering ?? "00";
   if (!/^0+$/.test(numbering)) {
     throw new Error(`snapseq: numbering must be zeros, like "00", not "${numbering}"`);
   }
-  const devices = config.devices ?? DEFAULT_DEVICES;
-  for (const name of Object.keys(devices)) assertName("a device name", name);
+  for (const name of [...Object.keys(devices), ...(request?.deviceOrder ?? [])]) assertName("a device name", name);
   // Not "any non-empty value": SNAPSEQ_RECORD=0 or =false reading as on would write files over a replay.
   const recordValue = process.env.SNAPSEQ_RECORD ?? "";
   if (!["", "0", "false", "1", "true"].includes(recordValue)) {
@@ -176,24 +209,25 @@ export function defineConfig(
     screenshotsDir,
     run,
     numbering,
-    format: config.format ?? {},
+    format: c.format,
     record: recordValue === "1" || recordValue === "true",
+    stabilize: c.stabilize,
     ...(env.replay ? { replay: env.replay } : {}),
+    ...(request ? { orchestration: { sequence: request.sequence, ...request.terminal } } : {}),
   };
   // An overridden host points at a server the user runs; the configured command
   // would come up elsewhere and the readiness wait would hang until timeout.
   const server =
     env.webServer && host === env.host ? { host, command: env.webServer } : undefined;
 
-  // In `use`, not `metadata`: a use value reaches the workers live, functions
-  // intact; metadata arrives as a JSON copy.
-  const result = definePlaywrightConfig<{ snapseq: { plugins: Plugin[] } }>(
+  const merged = definePlaywrightConfig(
     {
-    testDir: config.sequencesDir ?? "snapseq",
+    testDir: c.sequencesDir,
     testMatch: /\.seq\.[cm]?[jt]s$/,
     // Playwright's own artifacts (.last-run.json, traces, error context) stay out
-    // of the screenshots dir. Playwright wipes this dir whole before a run.
-    outputDir: "node_modules/.cache/snapseq",
+    // of the screenshots dir. Playwright wipes this dir whole before a run, so it
+    // is a folder of its own: the orchestration's run cache lives beside it.
+    outputDir: "node_modules/.cache/snapseq/playwright",
     timeout: 10 * 60_000,
     workers: 1,
     fullyParallel: false,
@@ -226,8 +260,6 @@ export function defineConfig(
         ? { httpCredentials: { origin: url.origin, ...env.httpCredentials } }
         : {}),
       ...env.use,
-      // After the env's own options, so an env cannot replace it.
-      snapseq: { plugins: config.plugins ?? [] },
     },
     projects: Object.entries(devices).map(([name, use]) => ({
       name,
@@ -236,8 +268,11 @@ export function defineConfig(
     },
     ...overrides,
   );
+  // Last, so nothing the consumer or the run overrides can undo the isolation.
+  const result = request ? applyRequest(merged, request, c.sequencesDir) : merged;
   // After the merge: an override's own `metadata` replaces the whole object, and
   // the fixtures and the reporter read snapseq's from it.
   result.metadata = { ...result.metadata, snapseq: metadata };
+  (result as Record<symbol, unknown>)[Symbol.for("snapseq.inputs")] = { config: defaults, overrides };
   return result;
 }

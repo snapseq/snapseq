@@ -49,9 +49,9 @@ export type RunOptions = Partial<Omit<SnapseqConfig, "devices">> & {
 
 /** The defaults from `snapseq.config`, resolved, as handed to an orchestration. */
 export type ResolvedSnapseqConfig = Required<
-  Pick<SnapseqConfig, "envs" | "defaultEnv" | "devices" | "sequencesDir" | "screenshotsDir" | "numbering" | "format">
+  Pick<SnapseqConfig, "envs" | "defaultEnv" | "devices" | "sequencesDir" | "screenshotsDir" | "numbering" | "format" | "stabilize">
 > &
-  Omit<SnapseqConfig, "envs" | "defaultEnv" | "devices" | "sequencesDir" | "screenshotsDir" | "numbering" | "format">;
+  Omit<SnapseqConfig, "envs" | "defaultEnv" | "devices" | "sequencesDir" | "screenshotsDir" | "numbering" | "format" | "stabilize">;
 
 export interface OrchestrationContext {
   /**

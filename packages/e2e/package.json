@@ -13,7 +13,6 @@
     "@playwright/test": "1.59.1",
     "@snapseq/label": "workspace:*",
     "@snapseq/pdf": "workspace:*",
-    "@snapseq/stabilize": "workspace:*",
     "@types/node": "^25.6.0",
     "snapseq": "workspace:*",
     "typescript": "^6.0.3",

@@ -16,7 +16,6 @@ const use = (config: ReturnType<typeof defineConfig>) =>
     actionTimeout?: number;
     extraHTTPHeaders?: Record<string, string>;
     storageState?: string;
-    snapseq?: { plugins: unknown[] };
   };
 
 beforeEach(() => {
@@ -186,11 +185,15 @@ describe("defineConfig", () => {
     });
   });
 
-  it("puts the plugins, functions intact, in use.snapseq, where an env's own use cannot replace them", () => {
-    const plugin = { name: "p", afterSnap: async () => {} };
-    expect(use(defineConfig({ envs })).snapseq).toEqual({ plugins: [] });
-    const u = use(defineConfig({ envs: { dev: { ...envs.dev, use: { snapseq: { plugins: [] } } as object } }, plugins: [plugin] }));
-    expect(u.snapseq?.plugins).toEqual([plugin]);
-    expect(u.snapseq?.plugins[0]).toBe(plugin);
+  it("carries stabilize to the fixtures: on with its defaults unless set, its options, or false", () => {
+    const stabilize = (c: ReturnType<typeof defineConfig>) =>
+      (c.metadata as { snapseq: { stabilize: unknown } }).snapseq.stabilize;
+    expect(stabilize(defineConfig({ envs }))).toEqual({});
+    expect(stabilize(defineConfig({ envs, stabilize: { motion: false } }))).toEqual({ motion: false });
+    expect(stabilize(defineConfig({ envs, stabilize: false }))).toBe(false);
+  });
+
+  it("refuses a config without envs", () => {
+    expect(() => defineConfig({ envs: {} })).toThrow("snapseq: envs is empty");
   });
 });
