@@ -1,24 +1,27 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { PDFDocument } from "@cantoo/pdf-lib";
-import type { Plugin, Shot } from "snapseq";
-
-// The PDF sits next to the device folder and takes its name: <run>/home/desktop.pdf.
-// After a failed sequence it is <run>/home/desktop.partial.pdf.
-const file = (dir: string, partial = false) => join(dirname(dir), `${basename(dir)}${partial ? ".partial" : ""}.pdf`);
+import type { Capture } from "snapseq";
 
 // Many readers (Acrobat) refuse a page longer than 14400 pt on a side.
 const MAX_PT = 14400;
 
-async function build(shots: readonly Shot[], dir: string, partial: boolean) {
-  if (shots.length === 0) return;
+/**
+ * Binds the shots of `captures` into one PDF at `file` and resolves to `file`. One page per
+ * shot: captures in the order given, shots in index order within each. A page is the shot's
+ * CSS size at 0.75 pt per CSS px, so a 2x phone shot gives a phone-sized page with the full 2x
+ * image drawn over it. A page whose longer side would pass 14400 pt is scaled down to fit; the
+ * image keeps every pixel. The file is written beside `file` and renamed into place, and the
+ * parent directory is created. Throws when there is no shot to bind.
+ */
+export async function pdf(captures: readonly Capture[], file: string): Promise<string> {
+  const shots = captures.flatMap((c) => [...c.shots].sort((a, b) => a.index - b.index));
+  if (shots.length === 0) throw new Error("@snapseq/pdf: nothing to bind");
+
   const doc = await PDFDocument.create();
   for (const shot of shots) {
     const bytes = await readFile(shot.path);
     const img = shot.format.type === "jpeg" ? await doc.embedJpg(bytes) : await doc.embedPng(bytes);
-    // The page is the shot's CSS size at 0.75 pt per CSS px, so a 2x phone shot
-    // gives a phone-sized page with the full 2x image drawn over it. A page whose
-    // longer side would pass MAX_PT is scaled down to fit; the image keeps every pixel.
     const pt = Math.min(0.75 / shot.deviceScaleFactor, MAX_PT / Math.max(img.width, img.height));
     const page = doc.addPage([img.width * pt, img.height * pt]);
     page.drawImage(img, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
@@ -27,19 +30,15 @@ async function build(shots: readonly Shot[], dir: string, partial: boolean) {
     // document until save, so memory still grows with the PDF, far less than before.
     await img.embed();
   }
-  await writeFile(file(dir, partial), await doc.save());
-}
 
-/** One PDF per sequence and device, one page per shot at its CSS size, next to the device folder. */
-export function pdf(): Plugin {
-  return {
-    name: "pdf",
-    // A rerun wipes the device folder, not the PDFs beside it.
-    begin: async (ctx) => {
-      await rm(file(ctx.seq.dir), { force: true });
-      await rm(file(ctx.seq.dir, true), { force: true });
-    },
-    done: (shots, ctx) => build(shots, ctx.seq.dir, false),
-    failed: (shots, ctx) => build(shots, ctx.seq.dir, true),
-  };
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    await writeFile(tmp, await doc.save());
+    await rename(tmp, file);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err;
+  }
+  return file;
 }
