@@ -347,8 +347,8 @@ Things to know:
   fails with `no part matched "zzz"`.
 - A shot again wipes the sequence's folder on that device first, `labelled/` inside it
   too. The steps write it again.
-- A plain `pnpm snapseq --run review-1` (not `SNAPSEQ_RUN`) into the same run drops the
-  run's cache. The next repair shoots every part it finds no capture for.
+- A plain `pnpm snapseq --run review-1` (or `SNAPSEQ_RUN=review-1`) into the same run drops
+  the run's cache. The next repair shoots every part it finds no capture for.
 - Two snapseq processes cannot write one run: the second stops with
   `snapseq: another snapseq (pid N) is writing this run`.
 - The reshoot hint prints after a full run that passed. It does not print after a repair.
