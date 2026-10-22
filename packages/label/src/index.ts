@@ -6,9 +6,9 @@ import type { Capture, CaptureShot } from "snapseq";
 export interface LabelStyle {
   /** `"light"` is a white strip with black text, the default. `"dark"` is the opposite. */
   theme?: "light" | "dark";
-  /** Any CSS color. Overrides the theme's. */
+  /** A color librsvg reads: a named color, hex or `rgb()`. Overrides the theme's. */
   background?: string;
-  /** Any CSS color. Overrides the theme's. */
+  /** A color librsvg reads: a named color, hex or `rgb()`. Overrides the theme's. */
   color?: string;
 }
 

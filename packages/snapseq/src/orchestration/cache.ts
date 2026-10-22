@@ -1,8 +1,8 @@
 // The run cache (node_modules/.cache/snapseq/runs/<run>.json) and its lock: what lets a filtered run reuse
 // the parts it does not reshoot. Outside Playwright's outputDir, which Playwright empties before each run.
 import { randomUUID } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Capture } from "./types.js";
 
 export type CachedCapture = Omit<Capture, "reused">;
@@ -15,7 +15,7 @@ export interface Origin {
   screenshotsDir: string;
 }
 
-export interface CacheEntry extends Origin {
+interface CacheEntry extends Origin {
   capture: CachedCapture;
 }
 
@@ -25,19 +25,12 @@ export interface RunCache {
   entries: Record<string, CacheEntry>;
 }
 
-/** snapseq's folder in node_modules/.cache beside the config; Playwright's outputDir is a folder inside it. */
-export const cacheDir = (configDir: string): string => join(configDir, "node_modules", ".cache", "snapseq");
+/** snapseq's folder in node_modules/.cache, relative to the config's folder; Playwright's outputDir is a folder inside it. */
+export const CACHE_DIR = join("node_modules", ".cache", "snapseq");
+
+export const cacheDir = (configDir: string): string => join(configDir, CACHE_DIR);
 
 export const runCacheFile = (configDir: string, run: string): string => join(cacheDir(configDir), "runs", `${run}.json`);
-
-/** The path with symlinks resolved, or as given when it does not exist. */
-export function canonical(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
-}
 
 export const isFile = (path: string): boolean => statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
 

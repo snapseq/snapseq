@@ -5,10 +5,9 @@ It is a Playwright test with a few fixtures added.
 
 ```ts
 // snapseq/pricing.seq.ts
-import { disableTransitions, sequence } from "snapseq";
+import { sequence } from "snapseq";
 
 sequence(async ({ page, seq, device }) => {
-  await disableTransitions(page);                  // once per sequence; survives navigation
   await page.goto("/pricing");                     // baseURL-relative
   await seq.snap();                                // 01.png  viewport
   await seq.snapPage();                            // 02.png  full page
@@ -39,7 +38,7 @@ Beyond Playwright's own (`page`, `context`, `browser`, …):
 
 | Fixture  | Value                                                                                   |
 | -------- | --------------------------------------------------------------------------------------- |
-| `seq`    | The handle for this sequence: `snap`, `snapPage`, `dir`, `shots`.                       |
+| `seq`    | The handle for this sequence: `snap`, `snapPage`, `dir`.                                |
 | `device` | The `devices` key this run is on, e.g. `"mobile"`.                                      |
 | `env`    | The active env name, e.g. `"dev"`.                                                      |
 | `host`   | The resolved base URL.                                                                  |
@@ -98,19 +97,10 @@ Every shot waits for the page to be ready first, in this order:
 4. **Images loaded.** For `snap`, the visible `<img>` elements in the viewport, or in the `clip`, and above it: images below the fold, hidden ones (`display: none`, `visibility: hidden`), and ones an ancestor's overflow cuts out of view (below a scrolling panel's visible area) do not hold the shot. One at `opacity: 0` does, as it may fade in once loaded. For `snapPage` and `snap({ fullPage: true })`, every `<img>`, lazy ones made eager so a full page gets them too. 5 s at most for the lot.
 5. **DOM quiet again**, because image loads run handlers of their own.
 
-`snapPage` runs the wait once the viewport has grown, and again after its second
-grow when landing in flow changed the height, so an image that a newly shown
-section starts (an observer that sets its `src`) holds the shot or gets a note.
-Each run has its own 5 s image cap, so a slow page can spend two, or three when the
-second grow turns out too short and goes back (below). That second
-grow also follows a page that got shorter: the scroll height never reads below
-the viewport, so content that shrank once the viewport grew (a tray and the spacer
-under the footer, hidden by a scroll handler) is measured by its boxes, fixed
-elements left out, and the viewport is set to that, never below the device's. This
-reads the boxes of the body, so it applies where they end above the viewport: a
-page whose `body` or wrapper is `height: 100%` keeps the white rows. If the boxes
-read shorter than the page (text overflowing a fixed-height box), the viewport goes
-back to the height that measured stable and the shot is taken there.
+`snapPage` runs this wait at the grown viewport, after each grow, and again each time it
+grows to a new height; each wait has its own 5 s image cap. An image that a newly shown section
+starts (an observer that sets its `src`) holds the shot or gets a note. White rows
+under content that got shorter mean the page's `body` or wrapper is `height: 100%`.
 
 A wait that ran out its cap, a shot that may lack something, or `stabilize` with
 something to say, prints a note with the shot's line in the terminal:
@@ -138,15 +128,8 @@ snapseq: 07.png taken with 2 images still loading after 5 s (first: http://…/h
   stylesheet from another origin that it could not read, so its viewport units were
   not frozen. See [Config](config.md#viewport-units).
 
-An image's URL loses its user and password, query and hash, and is cut to 80
-characters; a data URL reads `a data: URL`; an image with no URL yet gets no
-`(first: …)`. One query parameter stays, the first named `url`, `src` or `image`
-that holds an http(s) URL, so an image served through a loader reads
-`…/_next/image?url=/img/hero.jpg` instead of every note reading
-`…/_next/image`. It is decoded (up to three times in all), and its own query,
-hash and credentials are dropped; it is cut to 60 characters. A value that is not
-an http(s) URL, such as a `data:` URL, is left out. A shot that was ready says
-nothing.
+A note's image URL loses its query and credentials and is cut to 80 characters; an
+image loader keeps its `url=` parameter. A shot that was ready says nothing.
 
 The wait sees DOM mutations in the page's own document and runs on the page's
 timers. It does not see:
@@ -171,7 +154,7 @@ navigation bound before the sequence fails.
 
 ## Helpers
 
-- `disableTransitions(page)`: no transitions, animations or smooth scrolling, on this document and every one the page navigates to afterwards. Once per sequence. `stabilize`'s `motion` step, on by default, already turns transitions off and finishes animations instead of removing them; calling `disableTransitions` on top brings `animation: none` back, and with it the problem described next. `animation: none` resets each element to its un-animated base state rather than freezing it mid-keyframe. An element whose base state is hidden and that a `forwards` keyframe animation reveals (a `.hero` with base `opacity: 0` and `animation: fadeIn 1s forwards`) stays hidden in the shot; reveal it with `addPersistentStyle(page, ".hero { opacity: 1 !important }")` or the page's own revealed class.
+- `disableTransitions(page)`: no transitions, animations or smooth scrolling, on this document and every one the page navigates to afterwards. Once per sequence. For a run with `stabilize: false`; with it on, it brings `animation: none` back ([Troubleshooting](troubleshooting.md#an-element-that-fades-in-is-missing-from-the-shot)).
 - `addPersistentStyle(page, css)`: the same persistence for your own CSS, e.g. `addPersistentStyle(page, "#chat-widget { display: none !important }")`.
 
 Both inject a `<style>` element, which a strict `style-src` blocks. See
@@ -198,21 +181,8 @@ filter by file: `pnpm snapseq pricing`.
 ## Page states that flip
 
 A menu that closes on navigation, a panel that opens on click: put the
-precondition in the helper that takes the shot, so every call gets it.
-
-```ts
-// snapseq/helpers/snap-menu.ts
-import type { SequenceContext } from "snapseq";
-
-export async function snapMenuOpen({ page, seq }: SequenceContext): Promise<string> {
-  await page.getByRole("button", { name: "Menu" }).click();
-  await page.getByRole("navigation").waitFor();
-  return seq.snap();
-}
-```
-
-Call it with the `ctx` fixture: `await snapMenuOpen(ctx)`.
-[Example 5](examples.md#5-a-helper-that-takes-the-shot) uses it across pages.
+precondition in the helper that takes the shot and call it with `ctx`:
+[Example 5](examples.md#5-a-helper-that-takes-the-shot).
 
 ## An API without CORS on a dev server
 

@@ -1,19 +1,19 @@
 // Stands in for `playwright test` in the orchestration tests. Reads the request the parent wrote, logs what it
 // was given to calls.jsonl beside the config, does what scenario.json there says for this sequence, writes the
-// result document to the fd SNAPSEQ_RESULT_FD names, as the result reporter does, and exits.
+// result document to fd 3, as the result reporter does, and exits.
 //
 // scenario.json: { "<sequence>": { exit, report: "none" | "garbage", status, errors, tests,
-//   devices: { "<device>": { status, retry, retries, usedSeq, skipReason, error, capture: false | "wrong-dir" | "missing-file" } },
+//   devices: { "<device>": { status, skipReason, error, capture: false | "wrong-dir" | "missing-file" } },
 //   hang: true (wait for a signal), ignoreInt: true } }
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const root = dirname(process.argv[process.argv.indexOf("-c") + 1]);
-const requestFile = process.env.SNAPSEQ_OVERRIDES_FILE;
+const requestFile = process.env.SNAPSEQ_REQUEST_FILE;
 const request = JSON.parse(readFileSync(requestFile, "utf8"));
 const cacheFile = join(root, "node_modules/.cache/snapseq/runs", `${process.env.SNAPSEQ_RUN}.json`);
 const env = Object.fromEntries(
-  ["SNAPSEQ_ENV", "SNAPSEQ_HOST", "SNAPSEQ_RUN", "SNAPSEQ_OPEN", "SNAPSEQ_RECORD", "SNAPSEQ_RESULT_FD"].map((k) => [k, process.env[k] ?? null]),
+  ["SNAPSEQ_ENV", "SNAPSEQ_HOST", "SNAPSEQ_RUN", "SNAPSEQ_OPEN", "SNAPSEQ_RECORD"].map((k) => [k, process.env[k] ?? null]),
 );
 appendFileSync(
   join(root, "calls.jsonl"),
@@ -37,8 +37,8 @@ if (s.hang) {
   const shotEnv = process.env.SNAPSEQ_ENV || "dev";
   const host = process.env.SNAPSEQ_HOST || `https://${shotEnv}.example`;
   const tests = [];
-  for (const device of request.deviceOrder) {
-    const { capture: kind, ...d } = { status: "passed", retry: 0, retries: 0, usedSeq: true, skipReason: null, error: null, ...s.devices?.[device] };
+  for (const [device] of request.devices) {
+    const { capture: kind, ...d } = { status: "passed", skipReason: null, error: null, ...s.devices?.[device] };
     for (let n = 0; n < (s.tests ?? 1); n++) {
       let capture = null;
       if (d.status === "passed" && kind !== false) {
@@ -56,11 +56,8 @@ if (s.hang) {
     }
   }
   const bad = tests.some((t) => t.status !== "passed") || (s.errors ?? []).length > 0;
-  const doc = JSON.stringify({ version: 1, status: s.status ?? (bad ? "failed" : "passed"), errors: s.errors ?? [], tests });
-  const fd = Number(process.env.SNAPSEQ_RESULT_FD);
-  if (!Number.isInteger(fd)) {
-    // No pipe named: report nothing, as the result reporter does.
-  } else if (s.report === "garbage") writeSync(fd, "{not json");
-  else if (s.report !== "none") writeSync(fd, doc);
+  const doc = JSON.stringify({ status: s.status ?? (bad ? "failed" : "passed"), errors: s.errors ?? [], tests });
+  if (s.report === "garbage") writeSync(3, "{not json");
+  else if (s.report !== "none") writeSync(3, doc);
   process.exit(s.exit ?? (bad ? 1 : 0));
 }

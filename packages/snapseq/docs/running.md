@@ -31,7 +31,7 @@ current directory (or takes `-c <path>`), and hands everything else to
 | Flag                  | Variable          | Effect                                                                                        |
 | --------------------- | ----------------- | --------------------------------------------------------------------------------------------- |
 | `[filter...]`         |                   | Playwright's file filter: sequences whose path matches.                                        |
-| `--env <name>`        | `SNAPSEQ_ENV`  | The env from the config. Default: `defaultEnv`, else `dev`, else the first.                   |
+| `--env <name>`        | `SNAPSEQ_ENV`  | The env from the config. Default: `defaultEnv`, else `dev`, else the first. Without `--host`, an inherited `SNAPSEQ_HOST` is dropped.                   |
 | `--host <url>`        | `SNAPSEQ_HOST` | Override that env's host for this run. A host different from the env's does not start its `webServer`. |
 | `--device <name>`     |                   | Only this device; repeatable. Playwright's `--project`.                                       |
 | `--record`            | `SNAPSEQ_RECORD` | Fetch the env's `replay` requests live and write their files. The variable takes `1` or `true` to record, `0`, `false` or empty not to; anything else is an error. The flag takes `--record=0` and the like, but `--record=` is an error, and `--record 0` records and passes `0` to Playwright as a file filter. On an env without `replay` it does nothing. See [Config](config.md#replay). |
@@ -39,7 +39,8 @@ current directory (or takes `-c <path>`), and hands everything else to
 | `--run <name>`        | `SNAPSEQ_RUN`  | The run directory's name. Default: the local time the run started. A name, not a path. Into a name already used, only the sequences that run again are wiped. Either also drops the run's orchestration cache: see [Repairs](orchestration.md#repairs). |
 |                       | `SNAPSEQ_OPEN` | `0` or `false` (any case) keeps the run directory's file manager window closed at the end of an interactive run. See [The terminal](#the-terminal). |
 
-The flag wins over the variable. An empty value (`--env ""`) means unset.
+The flag wins over the variable. An empty `--env` or `--host` means unset; an empty `--run` is refused.
+Everything after `--` goes to Playwright as given.
 
 ## Run directories
 
@@ -60,14 +61,6 @@ sequence starts. So the run name and the device names must be directory names,
 not paths, and a directory outside the screenshots dir is never wiped. A
 sequence whose directory another sequence file writes into is refused instead;
 see [Troubleshooting](troubleshooting.md).
-Retries and `--repeat-each` are rejected because a second run would overwrite
-the first.
-
-A run lives in `screenshots/<run>` (`screenshotsDir`, beside the config),
-`<run>` being the time it started. The terminal summary prints the path; a
-piped or CI run does not. For scripts and CI, name the run:
-`pnpm snapseq --run nightly` (or `SNAPSEQ_RUN=nightly`) writes `screenshots/nightly/`. A name
-used twice is the same directory: only the sequences that run again are wiped.
 
 ## Rerunning
 
@@ -87,14 +80,8 @@ SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm snapseq --last-failed
 
 A file whose name ends in `.orchestration.ts` takes the place of the sequence
 filter: the file says which sequences run, on which devices, and what is done to
-the shots. [Orchestration](orchestration.md) covers the file.
-
-```bash
-pnpm snapseq snapseq/spring.orchestration.ts                  # named after the time it started
-pnpm snapseq snapseq/spring.orchestration.ts --run review-1   # the whole proof
-pnpm snapseq snapseq/spring.orchestration.ts --run review-1 12346 --device mobile   # shoot one part again
-pnpm snapseq snapseq/spring.orchestration.ts --env uat --headed
-```
+the shots. [Orchestration](orchestration.md) covers the file, the terminal and
+the exit codes.
 
 | Flag                | Effect in an orchestration run                                                                      |
 | ------------------- | --------------------------------------------------------------------------------------------------- |
@@ -103,7 +90,7 @@ pnpm snapseq snapseq/spring.orchestration.ts --env uat --headed
 | `--device <name>`   | Needs `--run`. Shoot again the parts on that device. Exact name, repeatable.                        |
 | `--env`, `--host`   | As in a plain run, and over the `env` and `host` that any `run()` gives.                            |
 | `--record`          | Sets `SNAPSEQ_RECORD` for every child, as a plain run does. Write `--record=0`; with a space, `0` is read as a sequence filter. |
-| `-c, --config`      | The config file.                                                                                    |
+| `-c, --config`      | The config file, or its folder.                                                                     |
 | `--headed`, `--debug` | Passed to every child.                                                                            |
 | `--trace <mode>`, `--timeout <ms>`, `--max-failures <n>` | Passed to every child, with their value.                         |
 
@@ -122,12 +109,6 @@ Any other flag is refused too, with the list of the ones that work. The variable
 `SNAPSEQ_ENV`, `SNAPSEQ_HOST`, `SNAPSEQ_RUN`, `SNAPSEQ_RECORD` and `SNAPSEQ_OPEN` work
 as in a plain run.
 
-Each child is a `playwright test` for one `run()`. Its output, the live rows or the
-list reporter, appears as it would on its own, between the heading and the
-footer that snapseq prints; the file manager opens once, at the end, on the run
-folder. [What the terminal shows](orchestration.md#what-the-terminal-shows) has
-a sample. The exit code is 0, 1, or 130 after Ctrl-C.
-
 ## Timeouts
 
 The timeout (10 min, Playwright's `timeout`) is the time allowed between
@@ -145,9 +126,7 @@ click, fill and wait at 30 s (`actionTimeout`).
 
 A sequence that fails or times out leaves `failed.png` beside the shots it did
 take: the page as the teardown found it, when it can still be shot (5 s at
-most). The terminal names that page as where it died. Images still loading, including `<picture>`
-sources and those in frames, are abandoned (their `src` and `srcset` removed)
-before that shot, so one that never answers cannot hold it back. The run stops
+most). The terminal names that page as where it died. The run stops
 there (`maxFailures: 1`); `--max-failures 0` runs the rest.
 
 ## The terminal

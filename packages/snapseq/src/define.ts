@@ -1,10 +1,11 @@
 import { defineConfig as definePlaywrightConfig, type PlaywrightTestConfig } from "@playwright/test";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { applyRequest, readRequest } from "./orchestration/request.js";
+import { CACHE_DIR } from "./orchestration/cache.js";
+import { applyRequest, distFile, readRequest } from "./orchestration/request.js";
 import type { ResolvedSnapseqConfig } from "./orchestration/types.js";
-import { isDirName, isHttpUrl, runStamp } from "./orchestration/validate.js";
+import { assertDirName, isHttpUrl, runStamp } from "./orchestration/validate.js";
 import type { ShotFormat } from "./sequence.js";
+import { SEQUENCE_FILE } from "./sequence-id.js";
 import type { StabilizeOptions } from "./stabilize.js";
 
 export interface EnvConfig {
@@ -90,20 +91,8 @@ export interface SnapseqMetadata {
   orchestration?: { sequence: string; labelWidth: number; showEnv?: boolean };
 }
 
-/** One directory name, since the directory it names is wiped: no separators, not `.` or `..`. */
-function assertName(what: string, name: string): void {
-  if (!isDirName(name)) {
-    throw new Error(`snapseq: ${what} must be a directory name, not a path: "${name}"`);
-  }
-}
-
-// Built as ESM (dist/reporter.js). The CJS build of this file sees __dirname;
-// the ESM build sees import.meta.url. Not tsup's import.meta shim: it breaks on
-// a "#" in the path.
-const REPORTER_PATH =
-  typeof __dirname === "string"
-    ? join(__dirname, "reporter.js")
-    : fileURLToPath(new URL("./reporter.js", import.meta.url));
+// Built as ESM (dist/reporter.js).
+const REPORTER_PATH = distFile("reporter.js");
 
 /** The live terminal view for an interactive run; otherwise Playwright's list reporter with the shots as step lines. */
 function defaultReporter(
@@ -146,7 +135,7 @@ function resolved(config: SnapseqConfig): ResolvedSnapseqConfig {
  * `SNAPSEQ_RUN` names the run directory (default: the time the run started),
  * `SNAPSEQ_RECORD` records the env's `replay` responses, `SNAPSEQ_OPEN=0` keeps
  * the run directory from opening in a file manager at the end of an interactive run.
- * `SNAPSEQ_OVERRIDES_FILE` is the orchestration parent's request for one child (orchestration/request.ts).
+ * `SNAPSEQ_REQUEST_FILE` is the orchestration parent's request for one child (orchestration/request.ts).
  */
 export function defineConfig(
   config: SnapseqConfig,
@@ -155,41 +144,31 @@ export function defineConfig(
   if (Object.hasOwn(config, "plugins")) {
     throw new Error('snapseq: plugins were removed in 0.7; stabilize is the "stabilize" key, label() and pdf() are steps in an orchestration file');
   }
-  // Kept for the orchestration parent, which reads the config file without a request.
-  const defaults = resolved(config);
-  const written = config.defaultEnv;
   const request = readRequest();
-  // Before anything is derived, each key the run gives replaces the config's; its devices become the projects last.
-  if (request) {
-    const { devices: _devices, ...rest } = request.snapseq;
-    config = { ...config, ...rest };
-  }
-  const c = request ? resolved(config) : defaults;
+  // Before anything is derived, each key the run gives replaces the config's; its devices are the projects.
+  if (request) config = { ...config, ...request.snapseq };
+  const c = resolved(config);
   const envNames = Object.keys(config.envs);
   // Empty means unset, as for SNAPSEQ_RUN: `--env ""` picks the default.
-  const envName =
-    process.env.SNAPSEQ_ENV || config.defaultEnv || (config.envs.dev ? "dev" : envNames[0]);
-  const env = envName === undefined ? undefined : config.envs[envName];
-  if (envName === undefined || env === undefined) {
-    throw new Error(
-      `snapseq: unknown env "${envName}". Available: ${envNames.join(", ") || "(none)"}`,
-    );
-  }
+  const envName = process.env.SNAPSEQ_ENV || c.defaultEnv;
+  const env = config.envs[envName];
+  if (env === undefined) throw new Error(`snapseq: unknown env "${envName}". Available: ${envNames.join(", ")}`);
 
   const host = process.env.SNAPSEQ_HOST || env.host;
   // A bare "localhost:3000" parses, as the scheme "localhost:"; a baseURL like that
   // fails on the first goto, far from the config.
   if (!isHttpUrl(host)) throw new Error(`snapseq: host must be an http(s) URL, got "${host}"`);
   const url = new URL(host);
-  const { screenshotsDir, numbering, devices } = c;
+  const { screenshotsDir, numbering } = c;
   // Stamped once per run: this file is evaluated again in every worker process,
   // but workers inherit the env of the main process, which set it first.
   const run = (process.env.SNAPSEQ_RUN ||= runStamp());
-  assertName("SNAPSEQ_RUN", run);
+  assertDirName("SNAPSEQ_RUN", run);
   if (!/^0+$/.test(numbering)) {
     throw new Error(`snapseq: numbering must be zeros, like "00", not "${numbering}"`);
   }
-  for (const name of [...Object.keys(devices), ...(request?.deviceOrder ?? [])]) assertName("a device name", name);
+  const devices = request?.devices ?? Object.entries(c.devices);
+  for (const [name] of devices) assertDirName("a device name", name);
   // Not "any non-empty value": SNAPSEQ_RECORD=0 or =false reading as on would write files over a replay.
   const recordValue = process.env.SNAPSEQ_RECORD ?? "";
   if (!["", "0", "false", "1", "true"].includes(recordValue)) {
@@ -205,21 +184,22 @@ export function defineConfig(
     record: recordValue === "1" || recordValue === "true",
     stabilize: c.stabilize,
     ...(env.replay ? { replay: env.replay } : {}),
-    ...(request ? { orchestration: { sequence: request.sequence, ...request.terminal } } : {}),
+    ...(request ? { orchestration: { sequence: request.sequence, ...request.rows } } : {}),
   };
   // An overridden host points at a server the user runs; the configured command
   // would come up elsewhere and the readiness wait would hang until timeout.
   const server =
     env.webServer && host === env.host ? { host, command: env.webServer } : undefined;
 
+  const projects = devices.map(([name, use]) => ({ name, use }));
   const merged = definePlaywrightConfig(
     {
     testDir: c.sequencesDir,
-    testMatch: /\.seq\.[cm]?[jt]s$/,
+    testMatch: SEQUENCE_FILE,
     // Playwright's own artifacts (.last-run.json, traces, error context) stay out
     // of the screenshots dir. Playwright wipes this dir whole before a run, so it
     // is a folder of its own: the orchestration's run cache lives beside it.
-    outputDir: "node_modules/.cache/snapseq/playwright",
+    outputDir: join(CACHE_DIR, "playwright"),
     timeout: 10 * 60_000,
     workers: 1,
     fullyParallel: false,
@@ -253,21 +233,21 @@ export function defineConfig(
         : {}),
       ...env.use,
     },
-    // A request's devices go on last, over what the consumer's overrides set on a project of the same name.
-    projects: request
-      ? request.deviceOrder.map((name) => ({ name }))
-      : Object.entries(devices).map(([name, use]) => ({
-          name,
-          use,
-        })),
+    projects,
     },
     ...overrides,
+    // A request's devices again over a consumer override's project of the same name (Playwright lays use over use: the
+    // device's viewport wins, the project's locale stays), then the run's own overrides. Only when there is something
+    // to merge: a merge turns a single webServer into a list, which Playwright exposes as no webServer at all.
+    ...(request && overrides.length > 0 ? [{ projects }] : []),
+    ...(request?.playwright ?? []),
   );
   // Last, so nothing the consumer or the run overrides can undo the isolation.
   const result = request ? applyRequest(merged, request, c.sequencesDir, c.screenshotsDir) : merged;
   // After the merge: an override's own `metadata` replaces the whole object, and
   // the fixtures and the reporter read snapseq's from it.
   result.metadata = { ...result.metadata, snapseq: metadata };
-  (result as Record<symbol, unknown>)[Symbol.for("snapseq.inputs")] = { config: defaults, overrides, defaultEnv: written };
+  // `protocol`: the request and the report the parent and the children trade; the parent checks it before any child starts.
+  (result as Record<symbol, unknown>)[Symbol.for("snapseq.inputs")] = { protocol: 1, config: c };
   return result;
 }

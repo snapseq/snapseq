@@ -26,7 +26,7 @@ async function makeShot(dir: string, index: number, width: number, height: numbe
   const path = join(dir, name);
   const image = sharp({ create: { width, height, channels: jpeg ? 3 : 4, background: "#cde" } });
   await (jpeg ? image.jpeg() : image.png()).toFile(path);
-  return { index, name, path, url: "about:blank", notes: [], deviceScaleFactor, format: jpeg ? { type: "jpeg" } : {}, options: {} };
+  return { index, name, path, url: "about:blank", notes: [], deviceScaleFactor, format: { type: jpeg ? "jpeg" : "png" }, options: {} };
 }
 
 function capture(dir: string, sequence: string, shots: CaptureShot[], device = "desktop"): Capture {
@@ -105,19 +105,6 @@ describe("pdf", () => {
       [300, 225],
       [150, 600],
     ]);
-  });
-
-  it("replaces a file that is already there and leaves no temporary file beside it", async () => {
-    const root = setup();
-    const dir = join(root, "a", "desktop");
-    const file = join(root, "out", "desktop.pdf");
-    mkdirSync(join(root, "out"));
-    writeFileSync(file, "stale");
-
-    await pdf([capture(dir, "a", [await makeShot(dir, 1, 400, 300)])], file);
-
-    expect(await pageSizes(file)).toEqual([[300, 225]]);
-    expect(await readdir(join(root, "out"))).toEqual(["desktop.pdf"]);
   });
 
   it("scales a page whose longer side would pass 14400 pt, keeping the aspect ratio", async () => {

@@ -30,7 +30,8 @@ afterAll(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
-// What defineConfig keeps for the parent, faked: the real one is being reworked alongside.
+// What defineConfig keeps for the parent, written out so each test's config loads without Playwright; one test
+// below reads what the real defineConfig keeps.
 const CONFIG = `const config = {
   envs: { dev: { host: "https://dev.example" }, uat: { host: "https://uat.example" } },
   defaultEnv: "dev",
@@ -42,7 +43,7 @@ const CONFIG = `const config = {
   stabilize: {},
 };
 (globalThis as any).importEnv = [process.env.SNAPSEQ_ENV, process.env.SNAPSEQ_HOST, process.env.SNAPSEQ_RUN];
-export default { [Symbol.for("snapseq.inputs")]: { config, overrides: [] } };
+export default { [Symbol.for("snapseq.inputs")]: { protocol: 1, config } };
 `;
 
 function project(scenario: object = {}): string {
@@ -65,10 +66,13 @@ function project(scenario: object = {}): string {
 interface Call {
   argv: string[];
   requestFile: string;
-  request: Record<string, unknown> & { deviceOrder: string[]; sequence: string };
+  request: Record<string, unknown> & { devices: [string, unknown][]; sequence: string };
   env: Record<string, string | null>;
   cacheAtStart: { entries: Record<string, unknown> } | null;
 }
+
+/** The devices a child was asked for, in order. */
+const devicesOf = (call: Call): string[] => call.request.devices.map(([device]) => device);
 
 /** Writes `body` as the orchestration's function body (its first line is line 2 of `name`) and runs it. */
 async function orchestrate(dir: string, body: string, args: string[] = [], name = "spring") {
@@ -127,18 +131,21 @@ describe("a full run", () => {
     const [call] = r.calls;
     expect(call!.argv).toEqual(["test", "-c", join(dir, "snapseq.config.ts")]);
     expect(call!.request).toEqual({
-      version: 1,
       sequence: LAUNCH,
       file: join(dir, `snapseq/${LAUNCH}.seq.ts`),
-      snapseq: { devices: { desktop: { viewport: { width: 1920, height: 1080 } }, mobile: { viewport: { width: 390, height: 844 } } } },
-      deviceOrder: ["desktop", "mobile"],
+      configDir: dir,
+      snapseq: {},
+      devices: [
+        ["desktop", { viewport: { width: 1920, height: 1080 } }],
+        ["mobile", { viewport: { width: 390, height: 844 } }],
+      ],
       playwright: [],
       // The widest id in snapseq/ (19), " / ", the widest device (7), the widest env a call could show, " (uat)".
-      terminal: { labelWidth: 35, showEnv: false },
+      rows: { labelWidth: 35, showEnv: false },
     });
     expect(dirname(call!.requestFile)).toBe(join(dir, "node_modules/.cache/snapseq/requests"));
     expect(existsSync(call!.requestFile)).toBe(false);
-    expect(call!.env).toEqual({ SNAPSEQ_ENV: null, SNAPSEQ_HOST: null, SNAPSEQ_RUN: "r1", SNAPSEQ_OPEN: "0", SNAPSEQ_RECORD: null, SNAPSEQ_RESULT_FD: "3" });
+    expect(call!.env).toEqual({ SNAPSEQ_ENV: null, SNAPSEQ_HOST: null, SNAPSEQ_RUN: "r1", SNAPSEQ_OPEN: null, SNAPSEQ_RECORD: null });
 
     const cache = cacheOf(dir, "r1");
     expect(Object.keys(cache.entries)).toEqual([`${LAUNCH}/desktop`, `${LAUNCH}/mobile`]);
@@ -165,10 +172,10 @@ describe("a full run", () => {
     );
     expect(r.code, r.out).toBe(0);
     const [call] = r.calls;
-    expect(call!.request.snapseq).toEqual({ numbering: "000", stabilize: { motion: false }, devices: { mobile: { viewport: { width: 390, height: 844 } } } });
-    expect(call!.request.deviceOrder).toEqual(["mobile"]);
+    expect(call!.request.snapseq).toEqual({ numbering: "000", stabilize: { motion: false } });
+    expect(call!.request.devices).toEqual([["mobile", { viewport: { width: 390, height: 844 } }]]);
     expect(call!.request.playwright).toEqual([{ timeout: 60000 }]);
-    expect(call!.request.terminal).toEqual({ labelWidth: 35, showEnv: true }); // " (uat)" on every row
+    expect(call!.request.rows).toEqual({ labelWidth: 35, showEnv: true }); // " (uat)" on every row
     expect(call!.env).toMatchObject({ SNAPSEQ_ENV: "uat", SNAPSEQ_HOST: "https://h.example" });
   });
 
@@ -176,7 +183,7 @@ describe("a full run", () => {
     const dir = project();
     const r = await orchestrate(dir, `await run("${LAUNCH}"); await run("${OFFER}", { env: "uat" });`, ["--run", "r1"]);
     expect(r.code, r.out).toBe(0);
-    expect(r.calls.map((c) => c.request.terminal)).toEqual([{ labelWidth: 35, showEnv: false }, { labelWidth: 35, showEnv: true }]);
+    expect(r.calls.map((c) => c.request.rows)).toEqual([{ labelWidth: 35, showEnv: false }, { labelWidth: 35, showEnv: true }]);
   });
 
   it("reads the inputs the real defineConfig keeps, defaults filled", async () => {
@@ -242,7 +249,7 @@ describe("a call that does not resolve", () => {
       `${LAUNCH} failed on desktop, not run on mobile after desktop failed ${site}`,
     ],
     ["a skip, with its reason", { devices: { mobile: { status: "skipped", skipReason: "desktop only" } } }, `${LAUNCH} was skipped on mobile: "desktop only" ${site}`],
-    ["a test that never used seq", { devices: { mobile: { usedSeq: false } } }, `${LAUNCH} never used seq on mobile ${site}`],
+    ["a test that never used seq", { devices: { mobile: { capture: false } } }, `${LAUNCH} never used seq on mobile ${site}`],
     ["two tests in the file", { tests: 2 }, `${LAUNCH} ran 2 tests; one sequence per file ${site}`],
     ["a child that died before reporting", { report: "none", exit: 1 }, `${LAUNCH}: child exited before reporting; see the output above ${site}`],
     ["a zero exit without a report", { report: "none", exit: 0 }, `${LAUNCH}: child exited before reporting; see the output above ${site}`],
@@ -252,8 +259,6 @@ describe("a call that does not resolve", () => {
       { devices: { desktop: { status: "not run" }, mobile: { status: "not run" } }, errors: ["Error: Timed out waiting 120000ms from config.webServer.\n  at x"] },
       `${LAUNCH}: Timed out waiting 120000ms from config.webServer. ${site}`,
     ],
-    ["a retried test", { devices: { mobile: { retry: 1 } } }, `${LAUNCH} was retried on mobile; retries must be 0 ${site}`],
-    ["a test given retries that passed at once", { devices: { mobile: { retries: 1 } } }, `${LAUNCH} is configured with retries on mobile; retries must be 0 ${site}`],
     ["a capture outside its device folder", { devices: { mobile: { capture: "wrong-dir" } } }, `${LAUNCH} reported no usable capture on mobile: shots in `],
     ["a shot file that is not there", { devices: { mobile: { capture: "missing-file" } } }, "02.png is not a file"],
     ["a passed test without a capture", { devices: { mobile: { capture: false, error: "Error: no snapseq-capture attachment" } } }, `${LAUNCH} reported no usable capture on mobile: no snapseq-capture attachment ${site}`],
@@ -278,7 +283,7 @@ writeFileSync(${JSON.stringify(join(dir, "scenario.json"))}, "{}");
     );
     expect(r.code, r.out).toBe(0);
     expect(g.err).toBe(`${LAUNCH} failed on mobile (spring.orchestration.ts:2)`);
-    expect(r.calls.map((c) => c.request.deviceOrder)).toEqual([["desktop", "mobile"], ["mobile"]]);
+    expect(r.calls.map(devicesOf)).toEqual([["desktop", "mobile"], ["mobile"]]);
     expect(r.calls[1]!.cacheAtStart!.entries).toHaveProperty([`${LAUNCH}/desktop`]);
     expect(summary(g.result)).toEqual([`${LAUNCH}/desktop reused`, `${LAUNCH}/mobile`]);
   });
@@ -295,7 +300,7 @@ writeFileSync(${JSON.stringify(join(dir, "scenario.json"))}, "{}");
       ["--run", "r1"],
     );
     expect(r.code, r.out).toBe(0);
-    expect(r.calls.map((c) => c.request.deviceOrder)).toEqual([["desktop", "mobile"], ["desktop", "mobile"]]);
+    expect(r.calls.map(devicesOf)).toEqual([["desktop", "mobile"], ["desktop", "mobile"]]);
     expect(summary(g.result)).toEqual([`${LAUNCH}/desktop`, `${LAUNCH}/mobile`]);
   });
 });
@@ -351,7 +356,7 @@ describe("filters", () => {
     await full(dir);
     const r = await repair(dir, ["12346", "--device", "mobile"]);
     expect(r.code, r.out).toBe(0);
-    expect(r.calls.map((c) => [c.request.sequence, c.request.deviceOrder])).toEqual([[OFFER, ["mobile"]]]);
+    expect(r.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[OFFER, ["mobile"]]]);
     const atStart = Object.keys(r.calls[0]!.cacheAtStart!.entries);
     expect(atStart).toContain(`${OFFER}/desktop`);
     expect(atStart).not.toContain(`${OFFER}/mobile`);
@@ -370,7 +375,7 @@ describe("filters", () => {
     const r = await repair(dir, ["zzz"]);
     expect(r.code).toBe(1);
     expect(r.out).toContain(`  +    ${`${LAUNCH} / desktop`.padEnd(35)}  building, no capture yet\n`);
-    expect(r.calls.map((c) => [c.request.sequence, c.request.deviceOrder])).toEqual([[LAUNCH, ["desktop"]]]);
+    expect(r.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[LAUNCH, ["desktop"]]]);
     expect(r.out).toContain('failed  no part matched "zzz"');
   });
 
@@ -515,6 +520,14 @@ describe("arguments", () => {
     writeFileSync(join(dir, "node_modules/.cache/snapseq/runs/r1.lock"), String(process.pid));
     await expect(orchestrate(dir, `await run("${LAUNCH}");`, ["--run", "r1"])).rejects.toThrow(
       `another snapseq (pid ${process.pid}) is writing this run`,
+    );
+  });
+
+  it("refuses a config whose snapseq speaks another protocol, before any child starts", async () => {
+    const dir = project();
+    writeFileSync(join(dir, "snapseq.config.ts"), CONFIG.replace("protocol: 1", "protocol: 2"));
+    await expect(orchestrate(dir, `await run("${LAUNCH}");`, ["--run", "r1"])).rejects.toThrow(
+      "loads a snapseq other than the one running this orchestration",
     );
   });
 });

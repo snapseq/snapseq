@@ -64,10 +64,7 @@ returns instead of the raw captures.
 
 ## What it writes
 
-The file goes to a temporary name beside `file`, one per call, and is renamed into
-place, so an earlier file at that path is replaced whole or left alone, never half
-written, and two calls on the same `file` do not clash. The parent directory is
-created if it is missing.
+An earlier file at `file` is replaced whole, never half written; its folder is created.
 
 ## Limits
 

@@ -27,7 +27,7 @@ export default defineConfig({
 
 | Field            | Default                                | Notes                                                                   |
 | ---------------- | -------------------------------------- | ----------------------------------------------------------------------- |
-| `envs`           | required                               | One entry per environment. See "Envs".                                  |
+| `envs`           | required                               | One entry per environment. See "Envs". An empty `envs` stops with `envs is empty; name at least one env and its host`.                                  |
 | `defaultEnv`     | `"dev"` if present, else the first env | Used when neither `--env` nor `SNAPSEQ_ENV` is given.                |
 | `devices`        | desktop and mobile as above            | One Playwright project per key. See "Devices".                          |
 | `sequencesDir`   | `"snapseq"`                            | Relative to the config file. Matches `*.seq.ts` (and `.js`, `.mts`, `.cts`, `.mjs`, `.cjs`). |
@@ -35,6 +35,8 @@ export default defineConfig({
 | `numbering`      | `"00"`                                 | The shape of a shot number: `"00"` gives `01.png`, `"000"` gives `001.png`. Zeros only. Wide enough for the longest sequence: `100.png` sorts before `99.png`. |
 | `format`         | `{}` (PNG)                             | Playwright's screenshot `type` and `quality`: `{ type: "jpeg", quality: 60 }` writes `01.jpg`, … Quality is 0 to 100 and JPEG only, as in Playwright. |
 | `stabilize`      | on                                     | Holds the page still for each shot, and lets `snapPage` grow pages with `vh` units. `false` turns it off; an object switches single steps. See "Stabilize". |
+
+`SnapseqConfig`, `EnvConfig`, `DeviceConfig` and `StabilizeOptions` are exported for config helpers; `SequenceContext` and `Sequence` type a helper that takes `ctx` or `seq`.
 
 ## Envs
 
@@ -102,32 +104,14 @@ prod: {
 ```
 
 Each key is a Playwright `page.route` URL pattern and each value a file
-relative to the config file. A glob like `**/api/search` matches that path on
-any host, a third-party request included; `--record` then stops the sequence
-on the second, different request and names both. Pinning the host
-(`https://api.example.com/search`) avoids that, but only when the API has a
-host of its own. When the API is same-origin and you record with `--host`
-against another host, a pinned pattern never matches, so keep the glob.
-Before every sequence, snapseq routes the pattern
+relative to the config file. Before every sequence, snapseq routes the pattern
 and answers it with the file's contents as JSON. The request never reaches the
 backend; the rest of the page stays live. A run whose file is missing, or is
 not valid JSON (a hand edit left a comma behind), fails before its first shot and
 names the file.
 
 `pnpm snapseq --record` (or `SNAPSEQ_RECORD=1`) fetches each request live
-instead, writes its file, and answers with it. The variable takes `1` or
-`true` to record, and `0`, `false` or empty not to; any other value is an
-error. The flag takes the same values as `--record=0`, except that an empty
-`--record=` is an error too. `--record 0`, with a space, records and hands `0`
-to Playwright as a file filter. One replay file holds one response, so a
-different method, URL or request body is a second request: it would write the
-same file in one device's run, and stops the sequence instead of overwriting
-it. Two searches that differ only in their POST body, "lamps" and "chairs",
-cannot be told apart by a pattern: Playwright routes by URL, and when two
-patterns match one URL only the later one answers, for both requests. Record
-one of them, serve the other with a `page.route` in the sequence that checks
-`route.request().postData()` (and calls `route.fallback()` for the rest), or
-use a HAR. Record against a host where the
+instead, writes its file, and answers with it. Record against a host where the
 request succeeds, check the shot, and commit the file; every later run replays
 it. `--host` points the env at such a host for the recording run:
 
@@ -136,12 +120,9 @@ pnpm snapseq --env prod --record --host https://staging.example.com
 pnpm snapseq --env prod
 ```
 
-Only an env with `replay` is affected. The recorder saves a JSON success body
-and later serves it as a 200; a status outside 200–299 or a body that is not
-JSON fails the sequence at that request (shots already taken stay), and the
-file is left as it was for that response. A
-response the page renders by status (a 4xx) or anything that is not JSON goes
-through `page.route` or Playwright's `page.routeFromHAR` in the sequence.
+One file holds one response: a second, different request on the pattern, a non-2xx
+or a non-JSON body stops the sequence ([Troubleshooting](troubleshooting.md));
+[Running](running.md#flags-and-variables) lists the values `--record` takes.
 
 ## Devices
 
@@ -208,7 +189,8 @@ export default defineConfig({
 A call of an orchestration can give its own `stabilize`
 ([Orchestration](orchestration.md#options)). It works through the sequence's
 `seq`: a sequence that uses neither `seq` nor `ctx` gets none of it. A step that
-throws fails the sequence and names itself and the shot:
+throws fails the sequence. The error names where it threw, and the shot when there
+is one: `snapseq: stabilize threw in begin: <message>` (before the sequence's body),
 `snapseq: stabilize threw in beforeSnap on 01.png: <message>`. It is developed and
 tested on Chromium.
 
@@ -241,44 +223,16 @@ alone: the width never changes.
   cut to 80 characters). See
   [Troubleshooting](troubleshooting.md#the-terminal-says-cannot-read-url-its-viewport-units-stay-live).
 
-The refetch is tried once per page load. A stylesheet that stays unreadable is then
-fetched once per page load as text, with CORS: at most 10 sheets a shot, 512 K
-characters each, 3 s in all. The note is dropped only when the answer is `text/css`
-and, with comments and quoted strings taken out, has no viewport unit outside
-`url(...)` and no backslash escape, and every `@import` in it is a stylesheet that
-passes the same check. That is one level: an `@import` inside an imported sheet keeps
-the note. Each imported sheet counts toward the 10; a sheet with more than 9 imports
-can never fit and keeps the note, and one whose imports are more than what is left
-waits, all or nothing, for the next shot. Anything else keeps the note too: a fetch
-that fails or runs out of time, another content type, a stylesheet not checked yet.
-It is a best-effort look: the anonymous fetch may not get the stylesheet the page
-applied (a CDN that varies by cookie, say).
-
-The URLs to fetch again come from the page, which may name any URL. While a
-cross-origin stylesheet is fetched again, a route answers that URL with a CORS header
-for one `text/css` response; anything else (another content type, a redirect, an
-error, a second request for the URL, a request that carries a cookie) goes on to the
-browser, whose own request gets no header. A page that tampers with its own
-stylesheet list can obtain a stylesheet this way, not another resource. The window
-closes when every refetch has settled (the page stops waiting after 5 s) or after 6 s,
-and the route is removed either way. The route's fetch sends an empty `cookie`
-header, which Playwright 1.59 takes as set, so the context's cookies are not added to
-it.
+A sheet that stays unreadable keeps the note unless a plain fetch of its text
+shows no viewport unit.
 
 ### Floating
 
 `snapPage` grows the viewport to the page height, and a `position: fixed` element
 follows its insets with it: a promo drawer at `bottom: 325px`, a chat bubble or a
 cookie banner ends up at the page end, over the footer, where the reader saw it on the
-first screen. Before each shot, at the device's viewport, stabilize records every fixed
-element that is on the screen: rendered (not `display: none`, `visibility: hidden` or
-`opacity: 0`, on itself or an ancestor) and inside the viewport. After each grow, once
-the page has settled, it sets `top: <px> !important; bottom: auto !important` inline
-on each, so it sits at the top it had. Height, width, `left`, `right` and `transform`
-are not touched. Once the viewport is restored, the page's own inline `top` and
-`bottom` come back, whether the shot was taken or failed. A property is restored only
-while it still holds what stabilize wrote, so a value the page wrote in the meantime
-stays.
+first screen. A fixed element on the first screen keeps the top it had there; its
+own inline `top`/`bottom` come back after the shot.
 
 It leaves alone:
 
@@ -348,8 +302,7 @@ The screenshot itself runs with Playwright's `animations: "disabled"` unless the
 sequence sets its own, so an animation that starts after the pass (from a resize
 handler, say) is finished or cancelled too. Playwright plays an infinite animation it
 cancelled again once the shot is taken, so between shots the page holds less still than
-under `animation: none`. A sequence that calls `disableTransitions` itself brings
-`animation: none` back, and with it reveals held at their base state.
+under `animation: none`.
 
 ### Hover
 
@@ -419,11 +372,6 @@ page that has a quieter variant. Off, the page's own preference is left alone.
 - A page that still grows after this is still refused by `snapPage`. Use
   `snap({ fullPage: true })` for it, Playwright's native full page.
 
-## Labels and PDFs
-
-A label strip above a shot and a PDF of the shots are steps over the captures
-of an orchestration file, not config: see [Orchestration](orchestration.md).
-
 ## Playwright defaults
 
 `defineConfig` applies these to the Playwright config:
@@ -468,9 +416,8 @@ Nested objects such as `launchOptions` are replaced whole. To drop a
 generated `webServer`, spread the result instead:
 `{ ...defineConfig({ /* … */ }), webServer: undefined }`.
 
-Playwright's own artifacts go to `node_modules/.cache/snapseq/playwright`, so
-`--trace on` leaves traces there, not among the screenshots. Playwright empties
-`outputDir` before a run, and the orchestration's run cache lives beside it in
-`node_modules/.cache/snapseq`: an `outputDir` override that holds or sits inside
-`node_modules/.cache/snapseq/runs` or `…/requests` is refused in an
-orchestration run.
+Playwright empties `outputDir` before each run, and the orchestration's run cache
+lives beside it in `node_modules/.cache/snapseq`. An orchestration run refuses an
+`outputDir` override that holds or sits inside `node_modules/.cache/snapseq/runs` or
+`…/requests`, or overlaps the screenshots folder. A plain run checks nothing, so never
+point `outputDir` at the screenshots folder.

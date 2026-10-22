@@ -36,24 +36,21 @@ Run the step in the orchestration:
 
 ```ts
 // snapseq/spring.orchestration.ts
-import { join } from "node:path";
 import { defineOrchestration } from "snapseq";
 import { label } from "@snapseq/label";
-import { pdf } from "@snapseq/pdf";
 
-export default defineOrchestration(async ({ run, dir }) => {
+export default defineOrchestration(async ({ run }) => {
   const raw = [
     ...(await run("12345-spring-launch", { devices: ["desktop"] })),
     ...(await run("12346-spring-offer", { env: "uat" })),
   ];
 
   const labelled = await label(raw, { theme: "dark", scale: (dsf) => dsf / 2 });   // <capture.dir>/labelled/01.png …
-
-  for (const device of new Set(labelled.map((c) => c.device))) {
-    await pdf(labelled.filter((c) => c.device === device), join(dir, `${device}.pdf`));
-  }
 });
 ```
+
+A PDF per device over the labelled shots is in the
+[Orchestration example](https://github.com/snapseq/snapseq/blob/main/packages/snapseq/docs/orchestration.md#an-example).
 
 `label` in `seq.snap` is the text, or an object with the text and a style of
 its own (`theme`, `background`, `color`). A shot's style wins over the step's.
