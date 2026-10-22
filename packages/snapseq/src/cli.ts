@@ -2,30 +2,48 @@
 // Thin front for `playwright test`: translates snapseq's own flags, finds the
 // config, then runs the consumer's Playwright CLI in-process so exit codes and
 // Ctrl-C stay Playwright's. Everything else passes through untouched.
-import { existsSync, statSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { lockRun, runCacheFile } from "./orchestration/cache.js";
+import { ORCHESTRATION_FILE, checkRunName, main } from "./orchestration/main.js";
 
 const CONFIG_FILES = ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
   (ext) => `snapseq.config.${ext}`,
 );
 
 const USAGE = `snapseq [filter...] [options]
+snapseq <file>.orchestration.ts [--run <name> [sequence...] [--device <name>]] [options]
 
   --env <name>       env from snapseq.config (same as SNAPSEQ_ENV)
   --host <url>       override that env's host (same as SNAPSEQ_HOST)
   --device <name>    only this device; repeatable (Playwright's --project)
+  --run <name>       the run's folder in the screenshots dir (same as SNAPSEQ_RUN; default: the time it started)
   --record           fetch the env's replay responses live and save them (same as SNAPSEQ_RECORD=1)
   -c, --config <p>   config file (default: ./snapseq.config.{ts,js,...})
 
 Every other flag goes to \`playwright test\`: --headed, --ui, --debug,
 --trace on, --reporter json, --max-failures 0, ...
+
+With an orchestration file, each run() in it shoots one sequence, then its own
+steps run. Given --run naming an earlier run, sequence filters and --device
+reshoot the matching parts and reuse the rest. Every child takes --headed,
+--debug, --trace, --timeout, --max-failures and --record.
 `;
 
-function translateArgs(argv: string[]): { config: string; args: string[] } {
+function findConfig(given: string | undefined): string {
+  const config = given ?? CONFIG_FILES.find((file) => existsSync(resolve(file)));
+  if (!config) {
+    throw new Error(`snapseq: no ${CONFIG_FILES[0]} in ${process.cwd()}; pass -c <path>`);
+  }
+  return config;
+}
+
+function translateArgs(argv: string[]): { config: string; args: string[]; run?: string } {
   const out: string[] = [];
   let config: string | undefined;
+  let run: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -43,6 +61,9 @@ function translateArgs(argv: string[]): { config: string; args: string[] } {
         break;
       case "--host":
         process.env.SNAPSEQ_HOST = value();
+        break;
+      case "--run":
+        run = process.env.SNAPSEQ_RUN = checkRunName(value());
         break;
       case "--device":
         out.push("--project", value());
@@ -64,11 +85,14 @@ function translateArgs(argv: string[]): { config: string; args: string[] } {
     }
   }
 
-  config ??= CONFIG_FILES.find((file) => existsSync(resolve(file)));
-  if (!config) {
-    throw new Error(`snapseq: no ${CONFIG_FILES[0]} in ${process.cwd()}; pass -c <path>`);
-  }
-  return { config, args: ["test", "-c", config, ...out] };
+  config = findConfig(config);
+  return { config, args: ["test", "-c", config, ...out], run };
+}
+
+/** The folder a config is relative to: a directory (Playwright takes `-c <dir>`) is the base itself. */
+function configBase(config: string): string {
+  const path = resolve(config);
+  return statSync(path, { throwIfNoEntry: false })?.isDirectory() ? path : dirname(path);
 }
 
 /**
@@ -77,9 +101,7 @@ function translateArgs(argv: string[]): { config: string; args: string[] } {
  * else the one from the working directory.
  */
 function playwrightCli(config: string): string {
-  const path = resolve(config);
-  // A directory (Playwright takes `-c <dir>`) is the base itself; a file's base is its folder.
-  const base = statSync(path, { throwIfNoEntry: false })?.isDirectory() ? path : dirname(path);
+  const base = configBase(config);
   try {
     return createRequire(join(base, "package.json")).resolve("@playwright/test/cli");
   } catch {
@@ -90,10 +112,26 @@ function playwrightCli(config: string): string {
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
   process.stdout.write(USAGE);
+} else if (argv.some((arg) => !arg.startsWith("-") && ORCHESTRATION_FILE.test(arg))) {
+  try {
+    const code = await main(argv, { findConfig, playwrightCli });
+    process.stdout.write("", () => process.exit(code));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 } else {
   try {
-    const { config, args } = translateArgs(argv);
+    const { config, args, run } = translateArgs(argv);
     const cli = playwrightCli(config);
+    if (run !== undefined) {
+      // A hand reshoot into a named run: keep an orchestration off it while Playwright runs, and drop the run's
+      // cache first so no entry can outlive the shots it describes.
+      // ponytail: drops every entry, not only the parts this run writes; a later repair reshoots more than it must.
+      const cache = runCacheFile(configBase(config), run);
+      lockRun(cache);
+      rmSync(cache, { force: true });
+    }
     process.argv = [process.argv[0]!, cli, ...args];
     await import(pathToFileURL(cli).href);
   } catch (err) {
