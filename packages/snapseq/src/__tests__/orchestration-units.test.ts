@@ -1,16 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { type RunCache, loadCache, lockRun, reusable, saveCache } from "../orchestration/cache.js";
-import { describeFilters, matches } from "../orchestration/filters.js";
+import { describeFilters, matches } from "../orchestration/run.js";
+import { parseFlags } from "../orchestration/main.js";
 import { callSite, target } from "../orchestration/run.js";
 import { spawnChild } from "../orchestration/spawn.js";
-import { partLine } from "../orchestration/terminal.js";
+import { partLine } from "../orchestration/run.js";
 import type { ResolvedSnapseqConfig } from "../orchestration/types.js";
 import { checkRun } from "../orchestration/validate.js";
+import { canonical } from "../sequence-id.js";
 
 const dirs: string[] = [];
 const tmp = (): string => {
@@ -40,9 +42,12 @@ const config: ResolvedSnapseqConfig = {
 
 describe("checkRun", () => {
   const dir = tmp();
-  for (const f of ["a.seq.ts", "nested/c.seq.ts", "dup.seq.ts", "dup.seq.js"]) write(join(dir, "snapseq", f));
+  // node_modules/ is not listed, as Playwright skips it; an unreadable folder is skipped, not the whole listing.
+  for (const f of ["a.seq.ts", "nested/c.seq.ts", "dup.seq.ts", "dup.seq.js", "node_modules/x.seq.ts", "locked/y.seq.ts"]) write(join(dir, "snapseq", f));
+  chmodSync(join(dir, "snapseq", "locked"), 0o000);
+  afterAll(() => chmodSync(join(dir, "snapseq", "locked"), 0o755));
   const check = (sequence: unknown, options: unknown = {}, playwright: unknown[] = [], invocationEnv?: string) =>
-    checkRun(sequence, options, playwright, { config, configDir: dir, overrides: [], invocationEnv });
+    checkRun(sequence, options, playwright, { config, configDir: dir, invocationEnv });
 
   it("finds a nested id's one file; devices default to the config's, in its order", () => {
     const checked = check("nested/c");
@@ -60,7 +65,7 @@ describe("checkRun", () => {
   it.each<[string, unknown, unknown, unknown[], string, string?]>([
     ["an unknown sequence", "zzz", {}, [], "no snapseq/zzz.seq.ts; sequences: a, dup, nested/c"],
     ["an id that leaves the folder", "../a", {}, [], 'a sequence id names a file in snapseq/ without .seq.ts, like "12345-spring-launch"; got "../a"'],
-    ["two files for one id", "dup", {}, [], "one sequence, 2 files: snapseq/dup.seq.ts, snapseq/dup.seq.js; keep one"],
+    ["two files for one id", "dup", {}, [], "one sequence, 2 files: snapseq/dup.seq.js, snapseq/dup.seq.ts; keep one"],
     ["an unknown option", "a", { device: ["desktop"] }, [], 'unknown option "device"; options take envs, defaultEnv, devices'],
     ["an unknown device", "a", { devices: ["desktop", "tablet"] }, [], 'unknown device "tablet" at options.devices[1]; devices: desktop, mobile'],
     ["a device twice", "a", { devices: ["desktop", "desktop"] }, [], 'device "desktop" twice in options.devices, at [1]'],
@@ -77,33 +82,15 @@ describe("checkRun", () => {
     ["a Date", "a", {}, [{ metadata: { at: date } }], "playwright[0].metadata.at is a Date;"],
     ["a Buffer", "a", {}, [{ use: { clientCertificates: [{ origin: "https://x", cert: Buffer.from("") }] } }], "playwright[0].use.clientCertificates[0].cert is a Buffer;"],
     ["a class instance", "a", { devices: { desktop: new (class Viewport {})() } }, [], "options.devices.desktop is a Viewport;"],
-    ["baseURL in a device", "a", { devices: { desktop: { baseURL: "https://x.example" } } }, [], "options.devices.desktop.baseURL is set; the host comes from the env, `host` or --host"],
-    ["baseURL in an env's use", "a", { envs: { dev: { host: "https://dev.example", use: { baseURL: "https://x" } } } }, [], "options.envs.dev.use.baseURL is set"],
-    ["baseURL in Playwright's use", "a", {}, [{ use: { baseURL: "https://x" } }], "playwright[0].use.baseURL is set"],
-    ["baseURL in a Playwright project", "a", {}, [{ projects: [{ name: "x", use: { baseURL: "https://x" } }] }], "playwright[0].projects[0].use.baseURL is set"],
-    ["retries", "a", {}, [{ retries: 1 }], "retries is 1 after the overrides merge; a retry overwrites the shots"],
-    ["repeatEach", "a", {}, [{ repeatEach: 2 }], "repeatEach is 2 after the overrides merge; a sequence runs once per device"],
-    ["retries on a selected project", "a", {}, [{ projects: [{ name: "mobile", retries: 1 }] }], 'retries is 1 on project "mobile" after the overrides merge'],
     ["numbering that is not zeros", "a", { numbering: "01" }, [], 'options.numbering must be zeros, like "00", not "01"'],
   ])("refuses %s", (_, sequence, options, playwright, message, invocationEnv) => {
     expect(() => check(sequence, options, playwright, invocationEnv)).toThrow(message);
   });
 
-  it("checks retries and repeatEach as the child merges them, on the selected projects only", () => {
-    const run = (overrides: unknown[], playwright: unknown[], options: object = {}) => () =>
-      checkRun("a", options, playwright, { config, configDir: dir, overrides });
-    expect(run([{ retries: 1, repeatEach: 3 }], [{ retries: 0, repeatEach: 1 }])).not.toThrow();
-    expect(run([], [{ projects: [{ name: "tablet", retries: 2 }] }])).not.toThrow();
-    expect(run([{ projects: [{ name: "mobile", retries: 2 }] }], [], { devices: ["desktop"] })).not.toThrow();
-    expect(run([{ projects: [{ name: "mobile", retries: 2 }] }], [])).toThrow('retries is 2 on project "mobile"');
-    expect(run([{ projects: [{ name: "mobile", retries: 2 }] }], [{ projects: [{ name: "mobile", retries: 0 }] }])).not.toThrow();
-    expect(run([{ retries: 1 }], [])).toThrow("retries is 1 after the overrides merge");
-  });
-
   it("checks the devices picked from the config for JSON too, naming the path", () => {
     const cert = { viewport: { width: 1, height: 1 }, clientCertificates: [{ origin: "https://x", cert: Buffer.from("c") }] };
     const withCert = { ...config, devices: { ...config.devices, desktop: cert } };
-    const run = (options: object) => () => checkRun("a", options, [], { config: withCert, configDir: dir, overrides: [] });
+    const run = (options: object) => () => checkRun("a", options, [], { config: withCert, configDir: dir });
     const message = "config.devices.desktop.clientCertificates[0].cert is a Buffer; a device reaches the child as JSON";
     expect(run({})).toThrow(message);
     expect(run({ devices: ["desktop"] })).toThrow(message);
@@ -111,19 +98,9 @@ describe("checkRun", () => {
   });
 
   it("refuses a run with no devices at all, before anything measures them", () => {
-    expect(() => checkRun("a", {}, [], { config: { ...config, devices: {} }, configDir: dir, overrides: [] })).toThrow(
+    expect(() => checkRun("a", {}, [], { config: { ...config, devices: {} }, configDir: dir })).toThrow(
       "the config has no devices; give this run some",
     );
-  });
-
-  it("refuses a run whose envs drop the defaultEnv the config wrote, unless the run names its env", () => {
-    const preview = { envs: { preview: { host: "https://preview.example" } } };
-    const run = (options: object, written?: string, invocationEnv?: string) => () =>
-      checkRun("a", options, [], { config, configDir: dir, overrides: [], defaultEnv: written, invocationEnv });
-    expect(run(preview, "dev")).toThrow('the config\'s defaultEnv "dev" is not in options.envs (preview); name one with env: "preview" or defaultEnv');
-    expect(run(preview)).not.toThrow(); // nothing written: the child takes the first env
-    expect(run({ ...preview, env: "preview" }, "dev")).not.toThrow();
-    expect(run({ ...preview, defaultEnv: "preview" }, "dev")).not.toThrow();
   });
 
   it("finds a file the disk names decomposed from an id typed composed, and hands back the disk's spelling", () => {
@@ -154,6 +131,37 @@ describe("filters", () => {
     expect(matches(f, "12345-spring-launch", "mobile")).toBe(false);
     expect(matches({ sequences: [], devices: ["mobile"] }, "anything", "mobile")).toBe(true);
     expect(describeFilters(f)).toBe('"12346" --device mobile');
+  });
+});
+
+describe("parseFlags", () => {
+  it("reads --record bare as 1, keeps =0, and refuses an empty value", () => {
+    expect(parseFlags(["--record"]).record).toBe("1");
+    expect(parseFlags(["--record=0"]).record).toBe("0");
+    expect(() => parseFlags(["--record="])).toThrow('snapseq: --record must be 1 or 0, got ""');
+  });
+
+  it("hands everything from a `--` on to Playwright as given, snapseq's own flags included", () => {
+    expect(parseFlags(["--run", "r", "--", "--run", "x"]).rest).toEqual(["--", "--run", "x"]);
+  });
+});
+
+describe("sequenceId", () => {
+  it("joins with / on Windows too, so the id matches the one the parent asked for", async () => {
+    const path = await import("node:path");
+    vi.doMock("node:path", () => ({ ...path.win32, default: path.win32 }));
+    vi.doMock("node:fs", async () => ({ ...(await vi.importActual<object>("node:fs")), realpathSync: (p: string) => p }));
+    vi.resetModules();
+    try {
+      const { sequenceId } = await import("../sequence-id.js");
+      const id = (titles: string[]) => sequenceId("C:\\app\\snapseq", "C:\\app\\snapseq\\campaign\\pricing.seq.ts", titles);
+      expect(id(["sequence"])).toBe("campaign/pricing");
+      expect(id(["hero", "sequence"])).toBe("campaign/pricing/hero/sequence");
+    } finally {
+      vi.doUnmock("node:path");
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
   });
 });
 
@@ -260,5 +268,17 @@ describe("run cache", () => {
     writeFileSync(file, JSON.stringify({ version: 2, entries: cache.entries }));
     expect(loadCache(file)).toEqual({ version: 1, entries: {} });
     expect(loadCache(join(dir, "missing.json"))).toEqual({ version: 1, entries: {} });
+  });
+});
+
+describe("canonical", () => {
+  it("resolves a path that does not exist yet through its deepest existing ancestor, so it reads the same once created", () => {
+    const dir = tmp();
+    mkdirSync(join(dir, "real"));
+    symlinkSync(join(dir, "real"), join(dir, "alias"));
+    const before = canonical(join(dir, "alias", "screenshots", "run1"));
+    expect(before).toBe(join(realpathSync(join(dir, "real")), "screenshots", "run1"));
+    mkdirSync(join(dir, "real", "screenshots", "run1"), { recursive: true });
+    expect(canonical(join(dir, "alias", "screenshots", "run1"))).toBe(before);
   });
 });

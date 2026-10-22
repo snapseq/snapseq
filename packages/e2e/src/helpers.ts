@@ -1,15 +1,12 @@
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { PDFDocument } from "@cantoo/pdf-lib";
+import { PKG, PNG_1x1, PW_CLI, listen, makeApp, node, pngSize } from "../../snapseq/src/__tests__/harness.js";
 
 // Drives the BUILT package through the real Playwright CLI, the way a consumer would.
-export const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../../snapseq");
-const PW_CLI = join(PKG, "node_modules/@playwright/test/cli.js");
+export { PKG, pngSize };
 export const AUTH = `Basic ${Buffer.from("u:p").toString("base64")}`;
 // Smooth scrolling, a running animation and a transition on a <details> fold's pseudo-element,
 // so a motion-freezing helper has something to defeat.
@@ -69,9 +66,8 @@ const EDGE_PAGE = (kind: string) => `<!doctype html><html><body style="margin:0"
 const LAZY_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:2000px"></div><img id="lazy" loading="lazy" src="/slow.png" style="display:block;width:100px"></body></html>`;
 // Renders one field of a JSON response, so a replayed body shows in the page.
 const WIDGET_PAGE = `<!doctype html><html><body><h1 id="v"></h1><script>fetch("/api").then((r) => r.json()).then((j) => { document.getElementById("v").textContent = j.v; });</script></body></html>`;
-const PNG_1x1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 
-export interface Hit {
+interface Hit {
   url: string;
   ua: string;
   auth?: string;
@@ -276,16 +272,7 @@ addEventListener("load", () => {
                 : `<!doctype html><html><body style="margin:0"><h1>${url}</h1><div style="height:900px;background:#eee"></div></body></html>`,
     );
   });
-  return new Promise<{ url: string; hits: Hit[]; close: () => Promise<void> }>((ok) => {
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      ok({
-        url: `http://127.0.0.1:${port}`,
-        hits,
-        close: () => new Promise((done) => (server.closeAllConnections(), server.close(() => done()))),
-      });
-    });
-  });
+  return listen(server, hits);
 }
 
 export function makeProject(opts: {
@@ -293,76 +280,25 @@ export function makeProject(opts: {
   config: string;
   sequences: Record<string, string>;
 }): string {
-  const dir = mkdtempSync(join(tmpdir(), "snapseq-it-"));
-  mkdirSync(join(dir, "node_modules", "@playwright"), { recursive: true });
-  mkdirSync(join(dir, "node_modules", "@snapseq"), { recursive: true });
-  symlinkSync(PKG, join(dir, "node_modules", "snapseq"));
-  // The consumer's own Playwright; same realpath as the package's, so one runner instance.
-  symlinkSync(
-    join(PKG, "node_modules", "@playwright", "test"),
-    join(dir, "node_modules", "@playwright", "test"),
-  );
+  const dir = makeApp(mkdtempSync(join(tmpdir(), "snapseq-it-")), {
+    ...(opts.esm ? {} : { "package.json": "{}" }),
+    "snapseq.config.ts": opts.config,
+    ...Object.fromEntries(Object.entries(opts.sequences).map(([rel, src]) => [`snapseq/${rel}`, src])),
+  });
   // The workspace's label and pdf steps, built by their own prepare/test scripts.
+  mkdirSync(join(dir, "node_modules", "@snapseq"), { recursive: true });
   for (const name of ["label", "pdf"]) {
     symlinkSync(resolve(PKG, "..", name), join(dir, "node_modules", "@snapseq", name));
-  }
-  if (opts.esm) writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
-  writeFileSync(join(dir, "snapseq.config.ts"), opts.config);
-  for (const [rel, src] of Object.entries(opts.sequences)) {
-    const file = join(dir, "snapseq", rel);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, src);
   }
   return dir;
 }
 
-// Async on purpose: the fixture HTTP server runs in this process, so a sync
-// spawn would block the event loop and every page.goto would hang.
-export function playwright(dir: string, args: string[], env: Record<string, string> = {}) {
-  const spawnEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith("SNAPSEQ_")) spawnEnv[k] = v;
-  }
-  return new Promise<{ status: number | null; out: string }>((ok) => {
-    const child = spawn(
-      process.execPath,
-      [PW_CLI, "test", "-c", join(dir, "snapseq.config.ts"), ...args],
-      { cwd: dir, env: { ...spawnEnv, SNAPSEQ_RUN: "run1", ...env } },
-    );
-    let out = "";
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (out += d.toString()));
-    child.on("close", (status) => ok({ status, out }));
-  });
-}
+export const playwright = (dir: string, args: string[], env?: Record<string, string>) =>
+  node([PW_CLI, "test", "-c", join(dir, "snapseq.config.ts"), ...args], dir, { SNAPSEQ_RUN: "run1", ...env });
 
 // The snapseq bin, run from `cwd` (defaults to the project dir).
-export function snapseq(
-  dir: string,
-  args: string[],
-  env: Record<string, string> = {},
-  cwd: string = dir,
-) {
-  const spawnEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith("SNAPSEQ_")) spawnEnv[k] = v;
-  }
-  return new Promise<{ status: number | null; out: string }>((ok) => {
-    const child = spawn(process.execPath, [join(PKG, "dist", "cli.js"), ...args], {
-      cwd,
-      env: { ...spawnEnv, SNAPSEQ_RUN: "run1", ...env },
-    });
-    let out = "";
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (out += d.toString()));
-    child.on("close", (status) => ok({ status, out }));
-  });
-}
-
-export function pngSize(file: string): [number, number] {
-  const buf = readFileSync(file);
-  return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
-}
+export const snapseq = (dir: string, args: string[], env?: Record<string, string>, cwd: string = dir) =>
+  node([join(PKG, "dist", "cli.js"), ...args], cwd, { SNAPSEQ_RUN: "run1", ...env });
 
 // Page sizes in pt. pdf-lib writes compressed object streams, so a grep for MediaBox sees nothing.
 export const pdfPages = async (file: string) =>

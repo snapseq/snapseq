@@ -1,6 +1,6 @@
 import type { PlaywrightTestConfig } from "@playwright/test";
 import type { DeviceConfig, SnapseqConfig } from "../define.js";
-import type { ShotFormat, SnapOptions } from "../sequence.js";
+import type { SnapOptions } from "../sequence.js";
 
 /** One shot as the orchestration sees it: the file plus what the worker knew when it took it. */
 export interface CaptureShot {
@@ -14,7 +14,7 @@ export interface CaptureShot {
   /** Readiness notes, e.g. an image still loading. */
   readonly notes: readonly string[];
   readonly deviceScaleFactor: number;
-  readonly format: Readonly<ShotFormat>;
+  readonly format: { readonly type: "png" | "jpeg"; readonly quality?: number };
   /** What `snap()` or `snapPage()` was called with, JSON parts only; a `label` lives here. */
   readonly options: Readonly<SnapOptions>;
 }
@@ -28,7 +28,7 @@ export interface Capture {
   readonly host: string;
   /** Absolute directory the shots are in. */
   readonly dir: string;
-  /** A filter left this part out and it came from the run's cache. */
+  /** Not shot by this call: it came from the run's cache, as a part the filters leave out or a device that passed in a failed call being retried. */
   readonly reused: boolean;
   readonly shots: readonly CaptureShot[];
 }
@@ -48,10 +48,7 @@ export type RunOptions = Partial<Omit<SnapseqConfig, "devices">> & {
 };
 
 /** The defaults from `snapseq.config`, resolved, as handed to an orchestration. */
-export type ResolvedSnapseqConfig = Required<
-  Pick<SnapseqConfig, "envs" | "defaultEnv" | "devices" | "sequencesDir" | "screenshotsDir" | "numbering" | "format" | "stabilize">
-> &
-  Omit<SnapseqConfig, "envs" | "defaultEnv" | "devices" | "sequencesDir" | "screenshotsDir" | "numbering" | "format" | "stabilize">;
+export type ResolvedSnapseqConfig = Required<SnapseqConfig>;
 
 export interface OrchestrationContext {
   /**

@@ -86,22 +86,7 @@ afterEach(() => {
 });
 
 describe("SnapseqReporter", () => {
-  it("counts a shot whatever the width of its number or its format, and says where a .jpg is", () => {
-    const tty = fakeTty(10);
-    const r = new SnapseqReporter({ stream: tty.stream });
-    const a = fakeTest("t0", "c0.seq.ts", ["sequence"], []);
-    r.onBegin(config, { allTests: () => [a] } as unknown as Suite);
-    r.onTestBegin(a);
-    r.onStepEnd(a, result("passed"), shotStep("01.png  http://h/a"));
-    r.onStepEnd(a, result("passed"), shotStep("0002.png  http://h/b"));
-    r.onStepBegin(a, result("passed"), shotStep("03.jpg  http://h/c"));
-    expect(plain(tty.text())).toContain("2 shots");
-    expect(plain(tty.text())).toContain("/c");
-    r.onStepEnd(a, result("passed"), shotStep("03.jpg  http://h/c"));
-    expect(plain(tty.text())).toContain("3 shots");
-  });
-
-  it("clips the live frame, counts completed shots, and prints a complete static summary", () => {
+  it("clips the live frame, counts completed shots whatever the width of their number or their format, and prints a complete static summary", () => {
     const tty = fakeTty(10);
     const r = new SnapseqReporter({ stream: tty.stream });
     const tests = Array.from({ length: 10 }, (_, i) =>
@@ -114,10 +99,10 @@ describe("SnapseqReporter", () => {
 
     const [a, b, c] = tests as [TestCase, TestCase, TestCase];
     r.onTestBegin(a);
-    r.onStepEnd(a, result("passed"), shotStep("001.png"));
-    r.onStepBegin(a, result("passed"), shotStep("002.png  http://h/pricing?x=1#top"));
+    r.onStepEnd(a, result("passed"), shotStep("01.png"));
+    r.onStepBegin(a, result("passed"), shotStep("0002.jpg  http://h/pricing?x=1#top"));
     expect(plain(tty.text())).toMatch(/c0 \/ d1\s+1 shot  00:00  \/pricing\?x=1\n/); // how long, and where
-    r.onStepEnd(a, result("passed"), shotStep("002.png  http://h/pricing?x=1#top"));
+    r.onStepEnd(a, result("passed"), shotStep("0002.jpg  http://h/pricing?x=1#top"));
     expect(tty.text()).toContain("2 shots");
     r.onStepEnd(a, result("passed"), shotStep("003.png", { message: "boom" })); // failed shot: not counted
     r.onStepEnd(a, result("passed"), { category: "pw:api", title: "004.png" } as unknown as TestStep);
@@ -177,41 +162,33 @@ describe("SnapseqReporter", () => {
     expect(summary).toContain("1 passed, 1 interrupted, 2 not run  0 shots");
   });
 
-  it("opens the run directory after an interactive run, and only then", () => {
+  it("opens the run directory after an interactive run that passed or failed, and not for a pipe, Ctrl-C, SNAPSEQ_OPEN=0 or false (any case) or CI, which still print where it is", () => {
     const dir = mkdtempSync(join(tmpdir(), "snapseq-rep-"));
     mkdirSync(join(dir, "out", "run1"), { recursive: true });
     const cfg = { ...config, configFile: join(dir, "snapseq.config.ts"), rootDir: dir } as FullConfig;
     const t = fakeTest("t0", "home.seq.ts");
     const opened: string[] = [];
-
-    const live = new SnapseqReporter({ stream: fakeTty(24).stream, open: (d) => opened.push(d) });
-    live.onBegin(cfg, { allTests: () => [t] } as unknown as Suite);
-    live.onEnd({ status: "passed" } as FullResult);
-    expect(opened).toEqual([realpathSync(join(dir, "out", "run1"))]);
-
-    const piped = new SnapseqReporter({ stream: { write: () => {} }, open: (d) => opened.push(d) });
-    piped.onBegin(cfg, { allTests: () => [t] } as unknown as Suite);
-    piped.onEnd({ status: "passed" } as FullResult);
-    expect(opened).toHaveLength(1);
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("does not open the run directory under SNAPSEQ_OPEN=0 or false (any case) or CI, and still prints where it is", () => {
-    const dir = mkdtempSync(join(tmpdir(), "snapseq-rep-"));
-    mkdirSync(join(dir, "out", "run1"), { recursive: true });
-    const cfg = { ...config, configFile: join(dir, "snapseq.config.ts"), rootDir: dir } as FullConfig;
-    const t = fakeTest("t0", "home.seq.ts");
-    const opened: string[] = [];
-    for (const [name, value] of [["SNAPSEQ_OPEN", "0"], ["SNAPSEQ_OPEN", "False"], ["CI", "true"]] as const) {
-      vi.stubEnv(name, value);
-      const tty = fakeTty(24);
-      const r = new SnapseqReporter({ stream: tty.stream, open: (d) => opened.push(d) });
+    // One run to `status` on `stream`, under `env` when given; how many windows it opened.
+    const opens = (stream: OutStream, status: FullResult["status"], env?: readonly [string, string]) => {
+      opened.length = 0;
+      if (env) vi.stubEnv(env[0], env[1]);
+      const r = new SnapseqReporter({ stream, open: (d) => opened.push(d) });
       r.onBegin(cfg, { allTests: () => [t] } as unknown as Suite);
-      r.onEnd({ status: "passed" } as FullResult);
+      r.onEnd({ status } as FullResult);
+      if (env) vi.stubEnv(env[0], "");
+      return opened.length;
+    };
+
+    expect(opens(fakeTty(24).stream, "passed")).toBe(1);
+    expect(opened).toEqual([realpathSync(join(dir, "out", "run1"))]);
+    expect(opens(fakeTty(24).stream, "failed")).toBe(1);
+    expect(opens({ write: () => {} }, "passed")).toBe(0);
+    expect(opens(fakeTty(24).stream, "interrupted")).toBe(0);
+    for (const env of [["SNAPSEQ_OPEN", "0"], ["SNAPSEQ_OPEN", "False"], ["CI", "true"]] as const) {
+      const tty = fakeTty(24);
+      expect(opens(tty.stream, "passed", env)).toBe(0);
       expect(plain(tty.text())).toContain("out/run1");
-      vi.stubEnv(name, "");
     }
-    expect(opened).toEqual([]);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -346,12 +323,12 @@ describe("SnapseqReporter", () => {
     for (const line of frame.split("\n")) expect(line.length).toBeLessThanOrEqual(4); // indent, mark, space
   });
 
-  it("keeps a failure's full details, and the page it died on, when the terminal is resized before the end", () => {
+  it("keeps a failure's full details, and the page it died on, when the terminal is resized before the end, and prints one line per event and each global error once from then on", () => {
     const tty = fakeTty(24);
     const opened: string[] = [];
     const r = new SnapseqReporter({ stream: tty.stream, open: (d) => opened.push(d) });
     const a = fakeTest("t0", "a.seq.ts");
-    const b = fakeTest("t1", "b.seq.ts");
+    const b = fakeTest("t1", "b.seq.ts", ["menu"]);
     r.onBegin(config, { allTests: () => [a, b] } as unknown as Suite);
     r.onTestBegin(a);
     r.onStepBegin(a, result("passed"), shotStep("001.png  http://h/legal"));
@@ -361,16 +338,25 @@ describe("SnapseqReporter", () => {
     r.onStepEnd(a, result("passed"), shotStep("failed.png  http://h/contact-us"));
     r.onTestEnd(a, result("failed", [{ message: "boom\n  at x\n  Call log:\n    - waiting for button\n" }]));
     expect(plain(tty.text())).not.toContain("Call log"); // the frame shows one line
+    r.onError({ message: "hidden by the frame" });
     const before = tty.text().length;
     tty.resize();
+    const resized = tty.text().length;
     r.onTestBegin(b);
     r.onTestEnd(b, result("passed"));
+    r.onError({ message: "printed as it came" });
+    const events = tty.text().slice(resized);
+    expect(events).not.toMatch(/\x1b\[\d*[A-HJK]/); // no cursor moves, no clears
+    expect(events.trim().split("\n")).toHaveLength(3); // started, finished, the error
     r.onEnd({ status: "failed" } as FullResult);
     const after = plain(tty.text().slice(before));
     expect(after).toMatch(/✖ a \/ d1\s+1 shot\s+1\.2s\s+\/contact-us\s+boom\n         boom\n           at x\n           Call log:\n             - waiting for button\n/);
     expect(after.split("Call log")).toHaveLength(2); // once, in full
     expect(after.split("✖ a / d1")).toHaveLength(2);
-    expect(after.split("✔ b / d1")).toHaveLength(2);
+    expect(after.split("✔ b/menu / d1")).toHaveLength(2);
+    // Each global error once: the one a frame hid comes in the summary, the other came as an event.
+    expect(after.split("hidden by the frame")).toHaveLength(2);
+    expect(after.split("printed as it came")).toHaveLength(2);
     expect(after).toContain("1 passed, 1 failed  1 shot");
     expect(opened).toHaveLength(0); // the run dir does not exist here
     const raw = tty.text().length;
@@ -391,28 +377,6 @@ describe("SnapseqReporter", () => {
     expect(text).toContain("          second line"); // the indent, then the tab as a space
     expect(text).toContain("global ]0;yerror");
     expect(text).not.toMatch(/\x07|\u202e|\x1b\]/);
-  });
-
-  it("prints one line per event after a resize", () => {
-    const tty = fakeTty(24);
-    const r = new SnapseqReporter({ stream: tty.stream });
-    const t = fakeTest("t0", "home.seq.ts", ["menu"]);
-    r.onBegin(config, { allTests: () => [t] } as unknown as Suite);
-    r.onError({ message: "hidden by the frame" });
-    tty.resize();
-    const before = tty.text().length;
-    r.onTestBegin(t);
-    r.onTestEnd(t, result("passed"));
-    r.onError({ message: "printed as it came" });
-    const after = tty.text().slice(before);
-    expect(after).not.toMatch(/\x1b\[\d*[A-HJK]/); // no cursor moves, no clears
-    expect(after.trim().split("\n")).toHaveLength(3);
-    expect(plain(after)).toMatch(/✔ home\/menu \/ d1\s+0 shots/);
-    r.onEnd({ status: "failed" } as FullResult);
-    const summary = tty.text().slice(before);
-    // Each global error once: the one a frame hid comes in the summary, the other came as an event.
-    expect(summary.split("hidden by the frame")).toHaveLength(2);
-    expect(summary.split("printed as it came")).toHaveLength(2);
   });
 
   it("keeps the last real page when the teardown's page is a failed navigation", () => {
@@ -460,21 +424,6 @@ describe("SnapseqReporter", () => {
     r.onBegin(config, { allTests: () => [fakeTest("t0", "home.seq.ts")] } as unknown as Suite);
     expect(tty.text().slice(before)).toBe("\r\x1b[2K  snapseq  dev  http://h  run1\n"); // the header on a line of its own
     r.onEnd({ status: "passed" } as FullResult);
-  });
-
-  it("opens no window after Ctrl-C, and still does after a failure", () => {
-    const dir = mkdtempSync(join(tmpdir(), "snapseq-rep-"));
-    mkdirSync(join(dir, "out", "run1"), { recursive: true });
-    const cfg = { ...config, configFile: join(dir, "snapseq.config.ts"), rootDir: dir } as FullConfig;
-    const t = fakeTest("t0", "home.seq.ts");
-    const opened: string[] = [];
-    for (const status of ["interrupted", "failed"] as const) {
-      const r = new SnapseqReporter({ stream: fakeTty(24).stream, open: (d) => opened.push(d) });
-      r.onBegin(cfg, { allTests: () => [t] } as unknown as Suite);
-      r.onEnd({ status } as FullResult);
-      expect(opened).toHaveLength(status === "interrupted" ? 0 : 1);
-    }
-    rmSync(dir, { recursive: true, force: true });
   });
 
   it("shows Latin letters with diacritics, decomposed or not, and keeps ? for wider scripts", () => {

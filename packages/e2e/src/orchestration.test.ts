@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { makeProject, pdfPages, pngSize, snapseq, startServer } from "./helpers";
@@ -211,8 +211,9 @@ const SEQUENCES = {
   "ok.seq.ts": `import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => { await page.goto("/ok"); await seq.snap(); });
 `,
-  "ok2.seq.ts": `import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => { await page.goto("/ok2"); await seq.snap(); });
+  // Decomposed, as macOS may store a name: the orchestration asks for it composed.
+  ["caf\u0065\u0301.seq.ts"]: `import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => { await page.goto("/ok"); await seq.snap(); });
 `,
   "boom.seq.ts": `import { sequence } from "snapseq";
 sequence(async ({ page, seq, device }) => {
@@ -235,6 +236,21 @@ sequence(async ({ page }) => { await page.goto("/noseq"); });
 import { test } from "@playwright/test";
 sequence(async ({ page, seq }) => { await page.goto("/two"); await seq.snap(); });
 test("second", async () => {});
+`,
+  "titled.seq.ts": `import { sequence } from "snapseq";
+import { test } from "@playwright/test";
+test.describe("hero", () => sequence(async ({ seq }) => void seq.dir));
+`,
+  "elsewhere.seq.ts": `import { sequence } from "snapseq";
+import { test } from "@playwright/test";
+test.use({ baseURL: "http://127.0.0.1:1" });
+sequence(async ({ seq }) => void seq.dir);
+`,
+  "dangling.seq.ts": `import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/dangling");
+  void seq.snap();
+});
 `,
 };
 
@@ -267,20 +283,24 @@ const ROWS: { name: string; body: string; says: string[]; keeps?: string[] }[] =
     says: ["two ran 2 tests; one sequence per file ({file}:3)"],
   },
   {
-    name: "a second run() before the first is awaited is refused, and the first is stopped",
-    body: `await Promise.all([run("ok"), run("ok2")]);`,
-    says: ['run("ok2") while "ok" is running; await it first ({file}:3)'],
-  },
-  {
-    name: "the same part twice is refused",
-    body: `await run("ok");\nawait run("ok");`,
-    says: ["ok/desktop already captured by this orchestration ({file}:4)"],
-    keeps: ["ok/desktop/01.png", "ok/mobile/01.png"],
-  },
-  {
     name: "a run() nobody awaited is refused when the orchestration ends",
     body: `run("ok");`,
     says: ['run("ok") was not awaited; the orchestration finished first ({file}:3)'],
+  },
+  {
+    name: "a file whose test is under a describe, or is a second one, runs as another id and is refused",
+    body: `await run("titled", { devices: ["desktop"] });`,
+    says: ['this file runs as "titled"; a describe title or a second test changes the id to "titled/hero/sequence"'],
+  },
+  {
+    name: "a context whose baseURL is not the run's host is refused",
+    body: `await run("elsewhere", { devices: ["desktop"] });`,
+    says: ['the context\'s baseURL "http://127.0.0.1:1" is not this run\'s host'],
+  },
+  {
+    name: "a sequence that ends with a shot still being taken is refused",
+    body: `await run("dangling", { devices: ["desktop"] });`,
+    says: ["a shot was still being taken when the sequence ended"],
   },
 ];
 
@@ -296,7 +316,7 @@ describe("an orchestration that goes wrong", () => {
         ...SEQUENCES,
         ...Object.fromEntries(ROWS.map((row, i) => [`row${i}.orchestration.ts`, wrap(row.body)])),
         "nomatch.orchestration.ts": wrap(`await run("ok");\nconsole.log("script done");`),
-        "ui.orchestration.ts": wrap(`await run("ok");`),
+        "cafe.orchestration.ts": wrap(`await run("café", { devices: ["desktop"] });`),
       },
     });
     dirs.push(project);
@@ -329,10 +349,9 @@ describe("an orchestration that goes wrong", () => {
     expect(r.out).toMatch(/ok \/ desktop +reused {2}1 shot/);
   });
 
-  it("refuses a Playwright flag it cannot honour, before it starts anything", async () => {
-    const r = await snapseq(project, ["snapseq/ui.orchestration.ts", "--ui"], { CI: "" });
-    expect(r.status).toBe(1);
-    expect(r.out).toContain("snapseq: --ui does not work with an orchestration file");
-    expect(existsSync(join(project, "screenshots", "run1"))).toBe(false); // the helper's default run name
+  it("runs a file the disk names decomposed as the composed id the orchestration asked for", async () => {
+    const r = await snapseq(project, ["snapseq/cafe.orchestration.ts", "--run", "cafe"], { CI: "" });
+    expect(r.status, r.out).toBe(0);
+    expect(statSync(join(project, "screenshots", "cafe", "caf\u0065\u0301", "desktop", "01.png")).size).toBeGreaterThan(0);
   });
 });

@@ -2,9 +2,7 @@
 // then one line per sequence and device with a spinner and the shot count, then
 // a frozen summary with errors and the run directory. Zero dependencies.
 // Playwright owns exit codes and Ctrl-C; this only draws.
-import { existsSync, realpathSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
-import { clearScreenDown, moveCursor } from "node:readline";
+import { relative, resolve } from "node:path";
 import type {
   FullConfig,
   FullResult,
@@ -16,8 +14,8 @@ import type {
   TestStep,
 } from "@playwright/test/reporter";
 import type { SnapseqMetadata } from "./define.js";
-import { openInFileManager } from "./open.js";
-import { rowLabel } from "./row-label.js";
+import { openInFileManager, openRun } from "./open.js";
+import { canonical, configDirOf, rowLabel, sequenceId } from "./sequence-id.js";
 
 type State = TestResult["status"] | "queued" | "running" | "not run";
 
@@ -31,8 +29,6 @@ interface Row {
   note?: string;
   /** Path of the sequence's last shot, or of the page it died on. */
   at?: string;
-  /** Its final line went out as an event, errors and all. */
-  reported?: boolean;
   /** When the sequence began, for the running row's clock. */
   started?: number;
 }
@@ -53,7 +49,7 @@ const AT = /^(?:\d+\.(?:png|jpg)|failed\.png)  (.+)$/;
 const SPINNER = ["|", "/", "-", "\\"];
 const GLYPH: Record<State, string> = {
   queued: ".",
-  running: "",
+  running: "..",
   passed: "ok",
   failed: "FAIL",
   timedOut: "TIME",
@@ -66,7 +62,7 @@ const GLYPH: Record<State, string> = {
 const FANCY_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const FANCY_GLYPH: Record<State, string> = {
   queued: ".",
-  running: "",
+  running: "..",
   passed: "✔",
   failed: "✖",
   timedOut: "✖",
@@ -82,6 +78,8 @@ const COLOR: Partial<Record<State, number>> = {
   timedOut: 31,
   interrupted: 31,
 };
+/** The footer's statuses in order, the orchestration's `reused` among them; one with no count is left out. */
+export const ORDER = ["passed", "reused", "failed", "timedOut", "interrupted", "skipped", "not run"];
 // Fewest rows a frame fits: header, blank, one sequence, blank, footer, the prompt, and a line to spare.
 const MIN_ROWS = 7;
 const DIM: ReadonlySet<State> = new Set<State>(["queued", "not run", "skipped"]);
@@ -96,7 +94,11 @@ const ascii = (s: string): string =>
 // The end of a label or a path tells it apart: a text too long for its columns loses its left.
 const left = (s: string, n: number): string =>
   s.length <= n ? s : `\u2026${s.slice(s.length - Math.max(n - 1, 0))}`;
-const errorText = (e: TestError): string => e.message ?? e.value ?? "unknown error";
+/** A Playwright error as text: its message, else its value. The orchestration's result reporter reads errors with it too. */
+export const errorText = (e: TestError): string => e.message ?? e.value ?? "unknown error";
+/** Why a test was skipped: the description of its first skip or fixme annotation, the result's before the test's. */
+export const skipReason = (test: TestCase, result: TestResult): string | undefined =>
+  [...result.annotations, ...test.annotations].find((a) => a.type === "skip" || a.type === "fixme")?.description;
 // Error text carries what a page or a sequence put in a message: keep the lines and the colors, drop what moves the
 // cursor, retitles the terminal or reorders the text (other control and format characters). A tab is a space.
 const printable = (s: string): string =>
@@ -106,37 +108,28 @@ const clock = (ms: number): string => {
   const s = Math.floor(ms / 1000);
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 };
-const plural = (n: number): string => `${n} shot${n === 1 ? "" : "s"}`;
+export const shotCount = (n: number): string => `${n} shot${n === 1 ? "" : "s"}`;
 const span = (ms: number): string => (ms % 60_000 === 0 ? `${ms / 60_000} min` : seconds(ms));
-// Every shot pushes the deadline out, so Playwright's number is not what the
-// author configured; say what they did set. Appears once as the error and once
-// more in whatever call the deadline interrupted; may be wrapped in red.
+// Appears once as the error and once more in whatever call the deadline interrupted; may be wrapped in red.
 const TIMEOUT_MSG = /(?:\x1b\[[0-9;]*m)*Test timeout of [\d.]+ms exceeded\./g;
-
-// Playwright reports files through resolved symlinks (macOS /var → /private/var)
-// while configured dirs keep their spelling; compare like with like.
-const real = (p: string): string => {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-};
 
 /** Braille and one-column marks where the terminal can draw them; words in a four-column slot elsewhere. */
 export const marks = (out: { isTTY?: boolean }): boolean =>
   !!out.isTTY && process.env.TERM !== "linux" && (process.platform !== "win32" || !!process.env.WT_SESSION);
 
+/**
+ * A row without colour: the indent, the mark in its slot (one column where marks are drawn, four for words), the label
+ * padded to `width`, two spaces, the detail; after the mark, at most `room` characters. The orchestration parent writes
+ * its own rows with it, so they line up with a child's.
+ */
+export const formatRow = (fancy: boolean, mark: string, label: string, width: number, detail: string, room = Infinity): string =>
+  `  ${mark.padEnd(fancy ? 1 : 4)} ${`${label.padEnd(width)}  ${detail}`.slice(0, room)}`;
+
 /** `nested/pricing / desktop`, the same identity the screenshots directory uses; ` (uat)` after it when `env` is given. */
 function labelOf(test: TestCase, env?: string): string {
   const project = test.parent.project();
-  const file = project
-    ? relative(real(project.testDir), real(test.location.file))
-    : test.location.file;
-  const base = file.replace(/\.seq\.[cm]?[jt]s$/, "");
-  const titles = test.titlePath().slice(3); // root, project, file
-  const path = titles.length === 1 && titles[0] === "sequence" ? base : [base, ...titles].join("/");
-  return rowLabel(path, project?.name ?? "", env);
+  // titlePath: root, project, file, then the titles.
+  return rowLabel(project ? sequenceId(project.testDir, test.location.file, test.titlePath().slice(3)) : test.location.file, project?.name ?? "", env);
 }
 
 export default class SnapseqReporter implements Reporter {
@@ -162,8 +155,6 @@ export default class SnapseqReporter implements Reporter {
   private server: { host: string; command: string } | undefined;
   private begun = false;
   private waiting = false;
-  /** A frame was drawn at some point: someone is watching. A terminal too short for a frame counts too. */
-  private drawn = false;
   private readonly terminal: boolean;
 
   constructor(
@@ -186,10 +177,9 @@ export default class SnapseqReporter implements Reporter {
     this.out.on?.("resize", () => {
       if (!this.live) return;
       this.live = false;
-      this.frameLines = 0;
-      if (this.waiting) this.out.write("\r\x1b[2K"); // the header must not land on the waiting line
-      this.waiting = false;
-      this.flush();
+      this.frameLines = 0; // the frame stays; only the waiting line is cleared, so the header does not land on it
+      this.clearFrame();
+      for (const row of this.rows.values()) if (row.state !== "queued" && row.state !== "running") this.event(row);
     });
     // Playwright builds reporters before it starts the dev server and calls
     // onBegin only once that is up, so the timer starts here: the wait is drawn.
@@ -207,9 +197,9 @@ export default class SnapseqReporter implements Reporter {
     this.meta = (config.metadata as { snapseq?: SnapseqMetadata }).snapseq;
     this.quiet = config.quiet;
     if (this.meta) {
-      const configDir = config.configFile ? dirname(config.configFile) : config.rootDir;
-      this.runDirAbsolute = resolve(real(configDir), this.meta.screenshotsDir, this.meta.run);
-      this.runDir = relative(real(process.cwd()), this.runDirAbsolute);
+      // Playwright reports files through resolved symlinks (macOS /var → /private/var); compare like with like.
+      this.runDirAbsolute = resolve(canonical(configDirOf(config)), this.meta.screenshotsDir, this.meta.run);
+      this.runDir = relative(canonical(process.cwd()), this.runDirAbsolute);
     }
     for (const test of suite.allTests()) this.row(test);
     this.begun = true;
@@ -235,14 +225,14 @@ export default class SnapseqReporter implements Reporter {
     } catch {
       this.row(test).at = url;
     }
-    if (this.live) this.render();
+    this.render();
   }
 
   // Each shot is a step named after its file; count the ones that completed.
   onStepEnd(test: TestCase, _result: TestResult, step: TestStep): void {
     if (step.category !== "test.step" || !SHOT.test(step.title) || step.error) return;
     this.row(test).shots += 1;
-    if (this.live) this.render();
+    this.render();
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -255,11 +245,7 @@ export default class SnapseqReporter implements Reporter {
       const configured = test.parent.project()?.timeout ?? test.timeout;
       row.error = row.error.replace(TIMEOUT_MSG, `No shot for ${span(configured)}.`);
     }
-    if (result.status === "skipped") {
-      row.note = [...result.annotations, ...test.annotations].find(
-        (a) => a.type === "skip" || a.type === "fixme",
-      )?.description;
-    }
+    if (result.status === "skipped") row.note = skipReason(test, result);
     this.event(row);
   }
 
@@ -270,15 +256,20 @@ export default class SnapseqReporter implements Reporter {
   }
 
   onStdOut(chunk: string | Buffer): void {
-    this.forward(chunk);
+    if (this.quiet) return;
+    const text = String(chunk);
+    this.clearFrame();
+    this.out.write(text);
+    this.partialLine = !text.endsWith("\n");
+    this.render();
   }
 
   onStdErr(chunk: string | Buffer): void {
-    this.forward(chunk);
+    this.onStdOut(chunk);
   }
 
   onEnd(result: FullResult): void {
-    if (this.timer) clearInterval(this.timer);
+    clearInterval(this.timer);
     for (const row of this.rows.values()) if (row.state === "queued") row.state = "not run";
     const hadFrame = this.live;
     this.clearFrame();
@@ -292,26 +283,15 @@ export default class SnapseqReporter implements Reporter {
     // failure they would bury the failure under pages of "not run".
     if (hadFrame) {
       const rows = [...this.rows.values()].filter((r) => r.state !== "not run");
-      const width = Math.max(...rows.map((r) => r.label.length), 1, this.minWidth());
-      for (const row of rows) lines.push(this.line(row, width), ...this.errorLines(row));
+      const width = Math.max(...rows.map((r) => r.label.length), this.minWidth());
+      lines.push(...rows.map((r) => this.line(r, width)));
     }
     if (this.globalErrors.length > 0) lines.push("", ...this.globalErrors);
     if (!orchestration) lines.push("", this.footer(), "");
     if (lines.length > 0) this.out.write(`${lines.join("\n")}\n`);
-    // Someone is watching: show them the shots. Pipes and CI never get a window, SNAPSEQ_OPEN=0 (or false) keeps it
-    // closed, and Ctrl-C leaves a directory nobody wants to look at.
-    // CI is checked here too, not only where the reporter is chosen: a config or --reporter can name this one anywhere.
-    if (
-      !orchestration &&
-      (this.drawn || this.terminal) &&
-      result.status !== "interrupted" &&
-      !/^(0|false)$/i.test(process.env.SNAPSEQ_OPEN ?? "") &&
-      !process.env.CI &&
-      this.runDirAbsolute &&
-      existsSync(this.runDirAbsolute)
-    ) {
-      this.open(this.runDirAbsolute);
-    }
+    // Not after Ctrl-C: that leaves a directory nobody wants to look at. openRun checks CI here too, not only where the
+    // reporter is chosen: a config or --reporter can name this one anywhere.
+    if (!orchestration && result.status !== "interrupted" && this.runDirAbsolute) openRun({ isTTY: this.terminal }, this.runDirAbsolute, this.open);
   }
 
   private row(test: TestCase): Row {
@@ -325,46 +305,13 @@ export default class SnapseqReporter implements Reporter {
   }
 
   private event(row: Row): void {
-    if (this.live) {
-      this.render();
-      return;
-    }
-    const lines = [this.line(row, Math.max(row.label.length, this.minWidth()))];
-    if (row.state !== "running") {
-      lines.push(...this.errorLines(row));
-      row.reported = true;
-    }
-    this.out.write(`${lines.join("\n")}\n`);
-  }
-
-  /** Every finished row the frame was showing, once, in full. */
-  private flush(): void {
-    const lines: string[] = [];
-    for (const row of this.rows.values()) {
-      if (row.reported || row.state === "queued" || row.state === "running") continue;
-      row.reported = true;
-      lines.push(this.line(row, Math.max(row.label.length, this.minWidth())), ...this.errorLines(row));
-    }
-    if (lines.length > 0) this.out.write(`${lines.join("\n")}\n`);
+    if (this.live) this.render();
+    else this.out.write(`${this.line(row, Math.max(row.label.length, this.minWidth()))}\n`);
   }
 
   /** The label column's least width: the orchestration parent's, so its children's rows line up. */
   private minWidth(): number {
     return this.meta?.orchestration?.labelWidth ?? 0;
-  }
-
-  private errorLines(row: Row): string[] {
-    if (!row.error) return [];
-    return printable(row.error).trimEnd().split("\n").map((l) => `         ${l}`);
-  }
-
-  private forward(chunk: string | Buffer): void {
-    if (this.quiet) return;
-    const text = String(chunk);
-    if (this.live) this.clearFrame();
-    this.out.write(text);
-    this.partialLine = !text.endsWith("\n");
-    if (this.live && !this.partialLine) this.render();
   }
 
   private header(): string {
@@ -375,15 +322,14 @@ export default class SnapseqReporter implements Reporter {
 
   private footer(): string {
     const rows = [...this.rows.values()];
-    const counts = (["passed", "failed", "timedOut", "interrupted", "skipped", "not run"] as State[])
-      .map((s) => [rows.filter((r) => r.state === s).length, s] as const)
+    const counts = ORDER.map((s) => [rows.filter((r) => r.state === s).length, s] as const)
       .filter(([n]) => n > 0)
       .map(([n, s]) => `${n} ${s}`);
     const done = rows.filter((r) => r.state !== "queued" && r.state !== "running").length;
     const shots = rows.reduce((n, r) => n + r.shots, 0);
     const head = counts.length > 0 ? counts.join(", ") : `${done}/${rows.length} done`;
     const tail = this.runDir || clock(Date.now() - this.start);
-    return `  ${head}  ${plural(shots)}  ${tail}`;
+    return `  ${head}  ${shotCount(shots)}  ${tail}`;
   }
 
   private spinner(): string {
@@ -391,42 +337,42 @@ export default class SnapseqReporter implements Reporter {
     return frames[this.tick % frames.length]!;
   }
 
-  /** A row's mark, then its text: colored or dimmed where the terminal takes it. */
-  private compose(row: Row, text: string): string {
-    const glyph =
-      row.state !== "running"
-        ? (this.fancy ? FANCY_GLYPH : GLYPH)[row.state]
-        : this.live
-          ? this.spinner()
-          : "..";
-    const mark = glyph.padEnd(this.fancy ? 1 : 4);
-    if (!this.color) return `  ${mark} ${text}`;
-    if (DIM.has(row.state)) return `\x1b[2m  ${mark} ${text}\x1b[22m`;
-    const code = COLOR[row.state];
-    return code ? `  \x1b[${code}m${mark}\x1b[39m ${text}` : `  ${mark} ${text}`;
+  /** A row: its mark colored, or the whole row dimmed, where the terminal takes it. With `room`, a frame's: one terminal line. */
+  private compose(row: Row, width: number, room?: number): string {
+    const glyph = row.state === "running" && this.live ? this.spinner() : (this.fancy ? FANCY_GLYPH : GLYPH)[row.state];
+    const code = this.color && !DIM.has(row.state) ? COLOR[row.state] : undefined;
+    // Colored once padded, so the codes take no column of the slot.
+    const mark = code ? `\x1b[${code}m${glyph.padEnd(this.fancy ? 1 : 4)}\x1b[39m` : glyph;
+    const label = room === undefined ? row.label : ascii(left(row.label, width));
+    const line = formatRow(this.fancy, mark, label, width, this.detail(row, width, room), room);
+    return this.color && DIM.has(row.state) ? `\x1b[2m${line}\x1b[22m` : line;
   }
 
+  /** A row as events and the summary print it: the line, then the error in full. */
   private line(row: Row, width: number): string {
-    return this.compose(row, this.text(row, width));
+    // A running row has no error of its own; after a refused retry it would be the last attempt's.
+    const error = row.error && row.state !== "running" ? printable(row.error).trimEnd().split("\n").map((l) => `\n         ${l}`).join("") : "";
+    return this.compose(row, width) + error;
   }
 
-  private text(row: Row, width: number, room = Infinity): string {
+  /** What follows a row's label: its count and time, where it is or died, and why. */
+  private detail(row: Row, width: number, room = Infinity): string {
     let detail: string;
     const where = (): string => `  ${left(ascii(row.at ?? ""), room - width - detail.length - 4)}`;
     if (row.state === "running") {
-      detail = plural(row.shots);
+      detail = shotCount(row.shots);
       // A slow page shows before it finishes. Events print once, so no clock there.
       if (this.live && row.started !== undefined) detail += `  ${clock(Date.now() - row.started)}`;
       if (row.at) detail += where();
-    } else if (row.state === "queued" || row.state === "not run" || row.state === "skipped") {
+    } else if (DIM.has(row.state)) {
       detail = row.note ? `${row.state}  ${ascii(row.note)}` : row.state;
     } else {
-      detail = `${plural(row.shots)}  ${seconds(row.duration)}`;
+      detail = `${shotCount(row.shots)}  ${seconds(row.duration)}`;
       // Where it died, then why.
       if (row.error && row.at) detail += where();
       if (row.error) detail += `  ${ascii(row.error.split("\n")[0] ?? "")}`;
     }
-    return `${left(row.label, width).padEnd(width)}  ${detail}`;
+    return detail;
   }
 
   private render(): void {
@@ -438,17 +384,18 @@ export default class SnapseqReporter implements Reporter {
       // Not in the first second: a server that is already up never shows it.
       if (!this.server || Date.now() - this.start < 1000) return;
       const text = `waiting for ${this.server.host}  ${this.server.command}  ${clock(Date.now() - this.start)}`;
-      const mark = this.color ? `\x1b[36m${this.spinner()}\x1b[39m` : this.spinner();
+      const mark = this.color ? `\x1b[${COLOR.running}m${this.spinner()}\x1b[39m` : this.spinner();
       this.out.write(`\r\x1b[2K  ${mark} ${ascii(text).slice(0, Math.max(0, columns - 4))}`);
       this.waiting = true;
       this.tick += 1;
       return;
     }
-    const maxRows = Math.max(1, (this.out.rows ?? 24) - 6); // header, blank, blank, footer, prompt
+    const maxRows = Math.max(1, (this.out.rows ?? 24) - (MIN_ROWS - 1)); // all but the rows: header, two blanks, footer, prompt, a spare line
     // A todo list: rows stay in the order the run takes them and change in
     // place. When it does not fit it scrolls: the row to run is always in view,
     // the last finished row above it and queued rows below as far as there is
-    // room, and a line each for what is hidden gives way before any row does.
+    // room. A `+N above` and a `+N more` line take a row each; only the running
+    // row beats them, `above` giving way first.
     const rows = [...this.rows.values()];
     let start = 0;
     let end = rows.length;
@@ -468,31 +415,26 @@ export default class SnapseqReporter implements Reporter {
     const plain = (l: string): string => ascii(l).slice(0, columns);
     const room = Math.max(0, columns - (this.fancy ? 4 : 7)); // indent, mark, space
     // A label keeps to 40 columns, fewer when the row needs the rest for its count, clock and the end of its path.
-    const width = Math.min(Math.max(...shown.map((r) => r.label.length), 1, this.minWidth()), 40, Math.max(room - 25, 8));
+    const width = Math.min(Math.max(...shown.map((r) => r.label.length), this.minWidth()), 40, Math.max(room - 25, 8));
     const orchestration = !!this.meta?.orchestration;
     const lines = [
       ...(orchestration ? [] : [plain(`${this.header()}  ${clock(Date.now() - this.start)}`), ""]),
       ...(above ? [plain(`  +${start} above`)] : []),
-      ...shown.map((r) => this.compose(r, ascii(this.text(r, width, room)).slice(0, room))),
+      // The detail is plain already: what it quotes went through ascii().
+      ...shown.map((r) => this.compose(r, width, room)),
       ...(more ? [plain(`  +${rows.length - end} more`)] : []),
       ...(orchestration ? [] : ["", plain(this.footer())]),
     ];
     this.clearFrame();
     this.out.write(`${lines.join("\n")}\n`);
     this.frameLines = lines.length;
-    this.drawn = true;
     this.tick += 1;
   }
 
   private clearFrame(): void {
-    if (this.waiting) {
-      this.out.write("\r\x1b[2K");
-      this.waiting = false;
-    }
-    if (this.frameLines === 0) return;
-    const stream = this.out as unknown as NodeJS.WritableStream;
-    moveCursor(stream, 0, -this.frameLines);
-    clearScreenDown(stream);
+    if (this.waiting) this.out.write("\r\x1b[2K");
+    if (this.frameLines > 0) this.out.write(`\x1b[${this.frameLines}A\x1b[0J`);
+    this.waiting = false;
     this.frameLines = 0;
   }
 }

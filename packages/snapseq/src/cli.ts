@@ -2,13 +2,14 @@
 // Thin front for `playwright test`: translates snapseq's own flags, finds the
 // config, then runs the consumer's Playwright CLI in-process so exit codes and
 // Ctrl-C stay Playwright's. Everything else passes through untouched.
+// An *.orchestration.ts argument hands the whole command to orchestration/main.ts instead.
 import { existsSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { lockRun, runCacheFile } from "./orchestration/cache.js";
-import { ORCHESTRATION_FILE, checkRunName, main } from "./orchestration/main.js";
-import { isDirName } from "./orchestration/validate.js";
+import { ORCHESTRATION_FILE, main, messageOf, parseFlags } from "./orchestration/main.js";
+import { assertDirName } from "./orchestration/validate.js";
 
 const CONFIG_FILES = ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
   (ext) => `snapseq.config.${ext}`,
@@ -17,15 +18,16 @@ const CONFIG_FILES = ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
 const USAGE = `snapseq [filter...] [options]
 snapseq <file>.orchestration.ts [--run <name> [sequence...] [--device <name>]] [options]
 
-  --env <name>       env from snapseq.config (same as SNAPSEQ_ENV)
+  --env <name>       env from snapseq.config (same as SNAPSEQ_ENV); without --host, drops an inherited SNAPSEQ_HOST
   --host <url>       override that env's host (same as SNAPSEQ_HOST)
   --device <name>    only this device; repeatable (Playwright's --project)
   --run <name>       the run's folder in the screenshots dir (same as SNAPSEQ_RUN; default: the time it started)
   --record           fetch the env's replay responses live and save them (same as SNAPSEQ_RECORD=1)
-  -c, --config <p>   config file (default: ./snapseq.config.{ts,js,...})
+  -c, --config <p>   config file or its folder (default: ./snapseq.config.{ts,js,...})
 
 Every other flag goes to \`playwright test\`: --headed, --ui, --debug,
 --trace on, --reporter json, --max-failures 0, ...
+Everything after -- goes to Playwright as given.
 
 With an orchestration file, each run() in it shoots one sequence, then its own
 steps run. Given --run naming an earlier run, sequence filters and --device
@@ -43,53 +45,20 @@ function findConfig(given: string | undefined): string {
   return config ?? given!;
 }
 
-function translateArgs(argv: string[]): { config: string; args: string[]; run?: string } {
-  const out: string[] = [];
-  let config: string | undefined;
-  let run: string | undefined;
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    const eq = arg.startsWith("--") ? arg.indexOf("=") : -1;
-    const flag = eq === -1 ? arg : arg.slice(0, eq);
-    const value = (): string => {
-      if (eq !== -1) return arg.slice(eq + 1);
-      const next = argv[++i];
-      if (next === undefined) throw new Error(`snapseq: ${flag} requires a value`);
-      return next;
-    };
-    switch (flag) {
-      case "--env":
-        process.env.SNAPSEQ_ENV = value();
-        break;
-      case "--host":
-        process.env.SNAPSEQ_HOST = value();
-        break;
-      case "--run":
-        run = process.env.SNAPSEQ_RUN = checkRunName(value());
-        break;
-      case "--device":
-        out.push("--project", value());
-        break;
-      case "--record": {
-        // Bare, it records; a value is SNAPSEQ_RECORD's (1, true, 0, false), which defineConfig checks. Empty
-        // would read as unset there.
-        const record = eq === -1 ? "1" : arg.slice(eq + 1);
-        if (record === "") throw new Error('snapseq: --record must be 1 or 0, got ""');
-        process.env.SNAPSEQ_RECORD = record;
-        break;
-      }
-      case "-c":
-      case "--config":
-        config = value();
-        break;
-      default:
-        out.push(arg);
-    }
-  }
-
-  config = findConfig(config);
-  return { config, args: ["test", "-c", config, ...out], run };
+function translateArgs(argv: string[]): { config: string; args: string[] } {
+  const flags = parseFlags(argv);
+  if (flags.env !== undefined) process.env.SNAPSEQ_ENV = flags.env;
+  if (flags.host !== undefined) process.env.SNAPSEQ_HOST = flags.host;
+  if (flags.run !== undefined) process.env.SNAPSEQ_RUN = flags.run;
+  if (flags.record !== undefined) process.env.SNAPSEQ_RECORD = flags.record;
+  // --env without --host means that env's own host, not one inherited from SNAPSEQ_HOST, as for an orchestration.
+  if (flags.env !== undefined && flags.host === undefined) delete process.env.SNAPSEQ_HOST;
+  const config = findConfig(flags.config);
+  // Before a `--`: Playwright reads what follows one as file filters.
+  const end = flags.rest.indexOf("--");
+  const at = end === -1 ? flags.rest.length : end;
+  const projects = flags.devices.flatMap((d) => ["--project", d]);
+  return { config, args: ["test", "-c", config, ...flags.rest.slice(0, at), ...projects, ...flags.rest.slice(at)] };
 }
 
 /** The folder a config is relative to: a directory (Playwright takes `-c <dir>`) is the base itself. */
@@ -120,17 +89,17 @@ if (argv.includes("--help") || argv.includes("-h")) {
     const code = await main(argv, { findConfig, playwrightCli });
     process.stdout.write("", () => process.exit(code));
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(messageOf(err));
     process.exit(1);
   }
 } else {
   try {
-    const { config, args, run: flag } = translateArgs(argv);
+    const { config, args } = translateArgs(argv);
     const cli = playwrightCli(config);
     // --run, else an inherited SNAPSEQ_RUN: the same named run either way.
-    const run = flag ?? (process.env.SNAPSEQ_RUN || undefined);
-    if (run !== undefined && !isDirName(run)) throw new Error(`snapseq: SNAPSEQ_RUN must be a directory name, not a path: "${run}"`);
+    const run = process.env.SNAPSEQ_RUN || undefined;
     if (run !== undefined) {
+      assertDirName("SNAPSEQ_RUN", run);
       // A hand reshoot into a named run: keep an orchestration off it while Playwright runs, and drop the run's
       // cache first so no entry can outlive the shots it describes.
       // ponytail: drops every entry, not only the parts this run writes; a later repair reshoots more than it must.
@@ -141,7 +110,7 @@ if (argv.includes("--help") || argv.includes("-h")) {
     process.argv = [process.argv[0]!, cli, ...args];
     await import(pathToFileURL(cli).href);
   } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(messageOf(err));
     process.exit(1);
   }
 }

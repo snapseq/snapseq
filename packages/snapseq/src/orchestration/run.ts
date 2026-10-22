@@ -1,15 +1,15 @@
-// run(): one sequence, now, in a child `playwright test`. The parent's half of protocol.md and the run()
-// semantics table: validate, reuse what may be reused, spawn for the rest, accept per capture and per call.
+// run(): one sequence, now, in a child `playwright test`: validate, reuse what may be reused, spawn for the rest,
+// accept per capture and per call. The Errors section of docs/orchestration.md lists what a call rejects with.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PlaywrightTestConfig } from "@playwright/test";
-import { rowLabel } from "../row-label.js";
-import { type CachedCapture, type Origin, type RunCache, cacheDir, canonical, isFile, reusable, saveCache } from "./cache.js";
-import { type Filters, filtering, matches } from "./filters.js";
+import { formatRow, marks, shotCount, type OutStream } from "../reporter.js";
+import { canonical, rowLabel, sequenceIds } from "../sequence-id.js";
+import { type CachedCapture, type Origin, cacheDir, isFile, loadCache, reusable, saveCache } from "./cache.js";
+import type { Entry, Report } from "./result-reporter.js";
+import type { Request } from "./request.js";
 import { type Child, type Closed, spawnChild } from "./spawn.js";
-import { stopChild } from "./stop.js";
-import { type Out, partLine, plural } from "./terminal.js";
 import type { Capture, CaptureShot, ResolvedSnapseqConfig, RunOptions } from "./types.js";
 import { type Checked, checkRun, isDirName } from "./validate.js";
 
@@ -18,12 +18,30 @@ export interface Target {
   host?: string;
 }
 
+/** What the command line asked to reshoot: substrings of sequence ids and exact device names. */
+export interface Filters {
+  readonly sequences: readonly string[];
+  readonly devices: readonly string[];
+}
+
+export const filtering = (f: Filters): boolean => f.sequences.length > 0 || f.devices.length > 0;
+
+/** A part matches when its sequence contains one of the substrings and its device is one of the names; an empty list matches all. */
+export const matches = (f: Filters, sequence: string, device: string): boolean =>
+  (f.sequences.length === 0 || f.sequences.some((s) => sequence.includes(s))) &&
+  (f.devices.length === 0 || f.devices.includes(device));
+
+/** `"12346" --device mobile`, as typed, for `no part matched …`. */
+export const describeFilters = (f: Filters): string =>
+  [...f.sequences.map((s) => JSON.stringify(s)), ...f.devices.map((d) => `--device ${d}`)].join(" ");
+
+/** The parent's own row for a part (`= … reused  12 shots`, `+ … building, no capture yet`), laid out as a child's rows. */
+export const partLine = (out: OutStream, mark: string, label: string, width: number, text: string): unknown =>
+  out.write(`${formatRow(marks(out), mark, label, width, text)}\n`);
+
 /** What every run() of one orchestration shares. */
 export interface Session {
   config: ResolvedSnapseqConfig;
-  overrides: readonly PlaywrightTestConfig[];
-  /** The config's `defaultEnv` as written: what a child falls back to. */
-  defaultEnv?: string;
   /** Absolute. */
   configFile: string;
   run: string;
@@ -33,31 +51,9 @@ export interface Session {
   record?: string;
   filters: Filters;
   cacheFile: string;
-  cache: RunCache;
   /** The child's argv: node, Playwright's CLI, `test -c <config>`, the pass-through flags. */
   command: readonly string[];
-  /** The ids in the sequences folder, read once, so rows line up across children. */
-  sequenceIds: readonly string[];
-  out: Out;
-}
-
-interface Entry {
-  device: string;
-  status: string;
-  retry: number;
-  /** The retries the test was given, `test.describe.configure` included. */
-  retries: number;
-  usedSeq: boolean;
-  skipReason: string | null;
-  error: string | null;
-  capture: CachedCapture | null;
-}
-
-interface Report {
-  version: 1;
-  status: string;
-  errors: string[];
-  tests: Entry[];
+  out: OutStream;
 }
 
 interface Call {
@@ -86,9 +82,9 @@ export function callSite(stack: string | undefined): string | undefined {
 }
 
 /**
- * Layers from low to high: config, the run's options, the invocation. An env at a layer resets the host to that
- * env's own; a host at the same layer wins over it. Only explicit values come out: the child resolves the rest,
- * so the parent never makes up a host.
+ * Layers from low to high, over the config's own (which the child resolves): the run's options, then the invocation.
+ * An env at a layer resets the host to that env's own; a host at the same layer wins over it. Only explicit values
+ * come out: the child resolves the rest, so the parent never makes up a host.
  */
 export function target(options: Target, invocation: Target): Target {
   let env: string | undefined;
@@ -111,14 +107,14 @@ function parseReport(closed: Closed): Report | undefined {
   if (closed.report === undefined) return undefined;
   try {
     const r = JSON.parse(closed.report) as Report;
-    if (r?.version === 1 && typeof r.status === "string" && Array.isArray(r.errors) && Array.isArray(r.tests)) return r;
+    if (typeof r?.status === "string" && Array.isArray(r.errors) && Array.isArray(r.tests)) return r;
   } catch {}
   return undefined;
 }
 
 /** Why a passed entry's capture cannot be used as it is, or undefined when it can. */
 function captureProblem(entry: Entry, sequence: string, dir: string): string | undefined {
-  const c = entry.capture;
+  const c = entry.capture as CachedCapture | null;
   if (entry.error !== null) return entry.error;
   if (!c || typeof c !== "object") return "no capture";
   // NFC: macOS may hand the child the file's name decomposed.
@@ -141,22 +137,17 @@ function captureProblem(entry: Entry, sequence: string, dir: string): string | u
 }
 
 /**
- * The two predicates of protocol.md: which captures are good on their own (cached even when a sibling failed),
- * and whether the call resolves; when it does not, the semantics table's words for why.
+ * Which captures are good on their own (cached even when a sibling failed), and whether the call resolves; when it
+ * does not, why, in the words of the Errors section of docs/orchestration.md.
  */
 function judge(sequence: string, order: readonly string[], closed: Closed, dirOf: (device: string) => string) {
   const accepted = new Map<string, CachedCapture>();
   if (closed.error !== undefined) return { accepted, report: undefined, problem: `${sequence}: could not start the child: ${closed.error}` };
   const report = parseReport(closed);
-  if (!report) {
-    const why = closed.incomplete ? ` (${closed.incomplete})` : "";
-    return { accepted, report, problem: `${sequence}: child exited before reporting${why}; see the output above` };
-  }
+  if (!report) return { accepted, report, problem: `${sequence}: child exited before reporting; see the output above` };
   const failed: string[] = [];
   const notRun: string[] = [];
   const unused: string[] = [];
-  const retried: string[] = [];
-  const configured: string[] = [];
   const other: string[] = [];
   let most = 0;
   for (const device of order) {
@@ -165,13 +156,12 @@ function judge(sequence: string, order: readonly string[], closed: Closed, dirOf
     const e = entries[0];
     if (!e) notRun.push(device);
     else if (entries.length > 1) continue;
-    else if (e.retry !== 0) retried.push(device);
-    else if (e.retries !== 0) configured.push(device);
-    else if (e.status === "passed" && !e.usedSeq) unused.push(device);
+    // No capture and no error: the sequence never used seq (result-reporter.ts).
+    else if (e.status === "passed" && e.capture === null && e.error === null) unused.push(device);
     else if (e.status === "passed") {
       const why = captureProblem(e, sequence, dirOf(device));
       if (why !== undefined) other.push(`reported no usable capture on ${device}: ${firstLine(why)}`);
-      else if (report.status !== "interrupted") accepted.set(device, e.capture!);
+      else if (report.status !== "interrupted") accepted.set(device, e.capture as CachedCapture);
     } else if (e.status === "skipped") other.push(`was skipped on ${device}${e.skipReason ? `: "${e.skipReason}"` : ""}`);
     else if (e.status === "not run") notRun.push(device);
     else failed.push(device);
@@ -181,8 +171,6 @@ function judge(sequence: string, order: readonly string[], closed: Closed, dirOf
     failed.length > 0 ? `failed on ${failed.join(", ")}` : "",
     ...other,
     unused.length > 0 ? `never used seq on ${unused.join(", ")}` : "",
-    retried.length > 0 ? `was retried on ${retried.join(", ")}; retries must be 0` : "",
-    configured.length > 0 ? `is configured with retries on ${configured.join(", ")}; retries must be 0` : "",
   ].filter(Boolean);
   const notRunPart = notRun.length > 0 ? `not run on ${notRun.join(", ")}${failed[0] ? ` after ${failed[0]} failed` : ""}` : "";
   let problem: string | undefined;
@@ -201,6 +189,9 @@ function judge(sequence: string, order: readonly string[], closed: Closed, dirOf
 /** The run() handed to the orchestration, and what main needs to finish: the call still going, counts, a stop. */
 export function createRunner(s: Session) {
   const configDir = dirname(s.configFile);
+  const cache = loadCache(s.cacheFile);
+  /** The ids in the sequences folder, read once, so rows line up across children. */
+  const ids = sequenceIds(resolve(configDir, s.config.sequencesDir));
   /** `<sequence>/<device>` this orchestration already got back from a run(), reused ones included. */
   const claims = new Set<string>();
   /** The fingerprints of a failed call's accepted captures, for its retry; the captures are in the run's cache. */
@@ -225,32 +216,23 @@ export function createRunner(s: Session) {
     // Taken before the first await; only this call clears it, once its child and cleanup settled.
     const call: Call = { sequence, site };
     state.active = call;
-    call.promise = execute(call, sequence, options, playwright, where).finally(() => {
+    call.promise = execute(call, options, playwright).finally(() => {
       if (state.active === call) state.active = undefined;
     });
     return call.promise;
   }
 
-  async function execute(
-    call: Call,
-    sequence: string,
-    options: RunOptions,
-    playwright: PlaywrightTestConfig[],
-    where: string,
-  ): Promise<readonly Capture[]> {
+  async function execute(call: Call, options: RunOptions, playwright: PlaywrightTestConfig[]): Promise<readonly Capture[]> {
+    const { sequence } = call;
+    const where = call.site ? ` (${call.site})` : "";
     let checked: Checked;
     try {
-      checked = checkRun(sequence, options, playwright, {
-        config: s.config,
-        configDir,
-        overrides: s.overrides,
-        invocationEnv: s.invocation.env,
-        defaultEnv: s.defaultEnv,
-      });
+      checked = checkRun(sequence, options, playwright, { config: s.config, configDir, invocationEnv: s.invocation.env });
     } catch (err) {
       throw new Error(`${String(sequence)}: ${(err as Error).message}${where}`);
     }
-    const keyOf = (device: string): string => `${sequence}/${device}`;
+    // Composed, as the file lookup and the fixture compare ids: two spellings of one id are one part.
+    const keyOf = (device: string): string => `${sequence.normalize("NFC")}/${device}`;
     for (const device of checked.deviceOrder) {
       if (claims.has(keyOf(device))) throw new Error(`${keyOf(device)} already captured by this orchestration${where}`);
     }
@@ -266,11 +248,10 @@ export function createRunner(s: Session) {
     };
     const fingerprint = (device: string): string => JSON.stringify([rest, checked.devices[device], playwright, to]);
     const showEnv = to.env !== undefined && to.env !== (options.defaultEnv ?? s.config.defaultEnv);
-    // The widest label the children could print, as the reporter builds it.
+    // The longest device name any call could show; with the widest ` (<env>)`, every child pads its rows the same.
     const widest = [...Object.keys(s.config.devices), ...checked.deviceOrder].reduce((a, b) => (b.length > a.length ? b : a));
-    // With the widest ` (<env>)` any call could show, so every child pads its rows the same.
     const envs = [...(Object.keys(s.config.envs).length > 1 ? Object.keys(s.config.envs) : []), ...(showEnv ? [to.env!] : [])];
-    const width = Math.max(...[...s.sequenceIds, sequence].flatMap((id) => [undefined, ...envs].map((env) => rowLabel(id, widest, env).length)));
+    const width = Math.max(...[...ids, sequence].flatMap((id) => [undefined, ...envs].map((env) => rowLabel(id, widest, env).length)));
 
     // Each device: the accepted capture of a failed call being retried, the run's cache for a part the filters
     // leave out, or a shoot.
@@ -280,48 +261,45 @@ export function createRunner(s: Session) {
       const match = filtering(s.filters) && matches(s.filters, sequence, device);
       if (match) state.matched = true;
       // Through the same checks as a filtered reuse: a file the failed call's cleanup removed means a reshoot.
-      let reuse = held.get(key) === fingerprint(device) ? reusable(s.cache, key, origin) : undefined;
+      let reuse = held.get(key) === fingerprint(device) ? reusable(cache, key, origin) : undefined;
       if (!reuse && filtering(s.filters) && !match) {
-        reuse = reusable(s.cache, key, origin);
+        reuse = reusable(cache, key, origin);
         if (!reuse) partLine(s.out, "+", rowLabel(sequence, device, showEnv ? to.env : undefined), width, "building, no capture yet");
       }
       if (reuse) {
         result.set(device, { ...reuse, reused: true });
-        partLine(s.out, "=", rowLabel(sequence, device, showEnv ? reuse.env : undefined), width, `reused  ${plural(reuse.shots.length)}`);
+        partLine(s.out, "=", rowLabel(sequence, device, showEnv ? reuse.env : undefined), width, `reused  ${shotCount(reuse.shots.length)}`);
       }
     }
 
     const order = checked.deviceOrder.filter((d) => !result.has(d));
     if (order.length > 0) {
-      for (const device of order) {
-        delete s.cache.entries[keyOf(device)];
-        held.delete(keyOf(device));
-      }
-      saveCache(s.cacheFile, s.cache);
-      const request = join(cacheDir(configDir), "requests", `${process.pid}-${++requests}.json`);
-      mkdirSync(dirname(request), { recursive: true });
+      for (const device of order) delete cache.entries[keyOf(device)];
+      saveCache(s.cacheFile, cache);
+      const requestFile = join(cacheDir(configDir), "requests", `${process.pid}-${++requests}.json`);
+      mkdirSync(dirname(requestFile), { recursive: true });
       const body = {
-        version: 1,
         sequence,
         file: checked.file,
-        snapseq: { ...rest, devices: Object.fromEntries(order.map((d) => [d, checked.devices[d]])) },
-        deviceOrder: order,
+        configDir,
+        snapseq: rest,
+        devices: order.map((d) => [d, checked.devices[d]!]),
         playwright,
-        terminal: { labelWidth: width, showEnv },
-      };
-      writeFileSync(request, `${JSON.stringify(body, null, 2)}\n`);
+        rows: { labelWidth: width, showEnv },
+      } satisfies Request;
+      writeFileSync(requestFile, `${JSON.stringify(body, null, 2)}\n`);
       let closed: Closed;
       try {
-        call.child = spawnChild(s.command, childEnv(request, to));
+        call.child = spawnChild(s.command, childEnv(requestFile, to));
         closed = await call.child.closed;
       } finally {
-        rmSync(request, { force: true });
+        rmSync(requestFile, { force: true });
       }
       const { accepted, report, problem } = judge(sequence, order, closed, dirOf);
       for (const t of report?.tests ?? []) state.tally[t.status] = (state.tally[t.status] ?? 0) + 1;
       // Whole, and even when a sibling failed: a retry of this call reshoots only what failed.
-      for (const [device, capture] of accepted) s.cache.entries[keyOf(device)] = { ...origin, capture };
-      if (accepted.size > 0) saveCache(s.cacheFile, s.cache);
+      for (const [device, capture] of accepted) cache.entries[keyOf(device)] = { ...origin, capture };
+      if (accepted.size > 0) saveCache(s.cacheFile, cache);
       if (problem !== undefined) {
         for (const device of accepted.keys()) held.set(keyOf(device), fingerprint(device));
         throw new Error(`${problem}${where}`);
@@ -332,15 +310,14 @@ export function createRunner(s: Session) {
     const captures = checked.deviceOrder.map((d) => result.get(d)!);
     for (const c of captures) {
       claims.add(keyOf(c.device));
-      held.delete(keyOf(c.device));
       state.shots += c.shots.length;
       if (c.reused) state.tally.reused = (state.tally.reused ?? 0) + 1;
     }
     return captures;
   }
 
-  function childEnv(request: string, to: Target): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env, SNAPSEQ_OVERRIDES_FILE: request, SNAPSEQ_RUN: s.run, SNAPSEQ_OPEN: "0", SNAPSEQ_RESULT_FD: "3" };
+  function childEnv(requestFile: string, to: Target): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env, SNAPSEQ_REQUEST_FILE: requestFile, SNAPSEQ_RUN: s.run };
     delete env.SNAPSEQ_ENV;
     delete env.SNAPSEQ_HOST;
     if (to.env !== undefined) env.SNAPSEQ_ENV = to.env;
@@ -359,7 +336,7 @@ export function createRunner(s: Session) {
       () => {},
       () => {},
     );
-    if (call.child) await stopChild(call.child);
+    if (call.child) await call.child.stop();
     await settled;
   }
 

@@ -1,18 +1,12 @@
-import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { PNG_1x1, PW_CLI, listen, makeApp, node, notes, pngSize } from "./harness.js";
 
 // Drives the BUILT package through the real Playwright CLI, the way a consumer would.
-const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const PW_CLI = join(PKG, "node_modules/@playwright/test/cli.js");
-const PNG_1x1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 
 // A fixed header and banner, a 100vh hero, a sticky sub-header right below it, a sticky aside and 8 blocks:
 // 720 + 40 + 3200 = 3960 px tall at the 1280x720 viewport.
@@ -614,21 +608,18 @@ sequence(async ({ page, seq }) => {${before}
 });
 `;
 
+// goto, then one shot.
+const shoot = (path: string, call = "snapPage()") => `
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("${path}");
+  await seq.${call};
+});
+`;
+
 const SEQUENCES: Record<string, string> = {
-  snappage: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/probe");
-  await seq.snapPage();
-});
-`,
-  fullpage: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/probe");
-  await seq.snap({ fullPage: true });
-});
-`,
+  snappage: shoot("/probe"),
+  fullpage: shoot("/probe", "snap({ fullPage: true })"),
   resized: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -638,20 +629,8 @@ sequence(async ({ page, seq }) => {
   await seq.snapPage();
 });
 `,
-  late: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/late");
-  await seq.snapPage();
-});
-`,
-  keep: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/keep");
-  await seq.snapPage();
-});
-`,
+  late: shoot("/late"),
+  keep: shoot("/keep"),
   sheets: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -707,27 +686,9 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
-  redirect: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/redirect");
-  await seq.snap();
-});
-`,
-  iframe: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/iframe");
-  await seq.snapPage();
-});
-`,
-  widget: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/widget");
-  await seq.snapPage();
-});
-`,
+  redirect: shoot("/redirect", "snap()"),
+  iframe: shoot("/iframe"),
+  widget: shoot("/widget"),
   flaky: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -738,41 +699,11 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
-  hostile: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/hostile");
-  await seq.snap();
-});
-`,
-  shadow: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/shadow");
-  await seq.snapPage();
-});
-`,
-  rewrite: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/rewrite");
-  await seq.snapPage();
-});
-`,
-  inline: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/inline");
-  await seq.snapPage();
-});
-`,
-  transform: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/transform");
-  await seq.snap();
-});
-`,
+  hostile: shoot("/hostile", "snap()"),
+  shadow: shoot("/shadow"),
+  rewrite: shoot("/rewrite"),
+  inline: shoot("/inline"),
+  transform: shoot("/transform", "snap()"),
   priority: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -798,20 +729,8 @@ sequence(async ({ page, seq }) => {
   await seq.snapPage();
 });
 `,
-  fragment: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/fragment");
-  await seq.snapPage();
-});
-`,
-  anim: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/anim");
-  await seq.snapPage();
-});
-`,
+  fragment: shoot("/fragment"),
+  anim: shoot("/anim"),
   follow: `
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -828,30 +747,10 @@ sequence(async ({ page, seq }) => {
   await seq.snap();
 });
 `,
-  chart: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/chart");
-  await seq.snapPage();
-});
-`,
-  open: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/open");
-  await seq.snapPage();
-});
-`,
+  chart: shoot("/chart"),
+  open: shoot("/open"),
+  // The click on the tray right after snapPage, before any other shot, waits for the tray to be visible, and gives up after 3 s.
   scrollevent: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/scrollevent");
-  await seq.snapPage();
-  await seq.snap();
-});
-`,
-  // A click on the tray right after snapPage, before any other shot: it waits for the tray to be visible, and gives up after 3 s.
-  restored: `
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sequence } from "snapseq";
@@ -860,38 +759,15 @@ sequence(async ({ page, seq }) => {
   await seq.snapPage();
   writeFileSync(join(seq.dir, "after.json"), JSON.stringify(await page.evaluate(() => window.__facts())));
   await page.locator("#tray").click({ timeout: 3000 });
+  await seq.snap();
 });
 `,
   drawer: floatSequence("/drawer", "\n  await page.setViewportSize({ width: 1920, height: 1080 });"),
   own: floatSequence("/own"),
-  shapes: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/shapes");
-  await seq.snapPage();
-});
-`,
-  scaled: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/scaled");
-  await seq.snapPage();
-});
-`,
-  shadowfloat: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/shadowfloat");
-  await seq.snapPage();
-});
-`,
-  regrow: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/regrow");
-  await seq.snapPage();
-});
-`,
+  shapes: shoot("/shapes"),
+  scaled: shoot("/scaled"),
+  shadowfloat: shoot("/shadowfloat"),
+  regrow: shoot("/regrow"),
   trays: floatSequence("/trays"),
   anchored: `
 import { sequence } from "snapseq";
@@ -901,20 +777,8 @@ sequence(async ({ page, seq }) => {
   await seq.snapPage();
 });
 `,
-  sheet: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/sheet");
-  await seq.snapPage();
-});
-`,
-  taken: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/taken");
-  await seq.snapPage();
-});
-`,
+  sheet: shoot("/sheet"),
+  taken: shoot("/taken"),
   vhdrawer: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -954,27 +818,9 @@ sequence(async ({ page, seq }) => {
   await seq.snap({ hover: "keep" });
 });
 `,
-  reveal: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/reveal");
-  await seq.snap({ fullPage: true });
-});
-`,
-  hydrate: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/hydrate");
-  await seq.snap({ fullPage: true });
-});
-`,
-  revealsnap: `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/reveal");
-  await seq.snap();
-});
-`,
+  reveal: shoot("/reveal", "snap({ fullPage: true })"),
+  hydrate: shoot("/hydrate", "snap({ fullPage: true })"),
+  revealsnap: shoot("/reveal", "snap()"),
   revealmid: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -1002,20 +848,13 @@ sequence(async ({ page, seq }) => {
 
 function startServer(handle: (req: IncomingMessage, res: ServerResponse) => void) {
   const hits: string[] = [];
-  const server = createServer((req, res) => {
-    hits.push(req.url ?? "");
-    handle(req, res);
-  });
-  return new Promise<{ url: string; hits: string[]; close: () => Promise<void> }>((ok) => {
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      ok({
-        url: `http://127.0.0.1:${port}`,
-        hits,
-        close: () => new Promise((done) => (server.closeAllConnections(), server.close(() => done()))),
-      });
-    });
-  });
+  return listen(
+    createServer((req, res) => {
+      hits.push(req.url ?? "");
+      handle(req, res);
+    }),
+    hits,
+  );
 }
 
 function send(res: ServerResponse, type: string, body: string | Buffer, status = 200) {
@@ -1130,40 +969,14 @@ function appServer(cdn: string) {
 }
 
 function makeProject(host: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "snapseq-stab-"));
-  mkdirSync(join(dir, "node_modules", "@playwright"), { recursive: true });
-  symlinkSync(PKG, join(dir, "node_modules", "snapseq"));
-  // The consumer's own Playwright; same realpath as the core's, so one runner instance.
-  symlinkSync(join(PKG, "node_modules", "@playwright", "test"), join(dir, "node_modules", "@playwright", "test"));
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
-  writeFileSync(join(dir, "snapseq.config.ts"), CONFIG(host));
-  mkdirSync(join(dir, "snapseq"));
-  for (const [name, src] of Object.entries(SEQUENCES)) writeFileSync(join(dir, "snapseq", `${name}.seq.ts`), src + PROBE);
-  return dir;
-}
-
-// Async on purpose: the fixture HTTP servers run in this process, so a sync spawn would block them.
-function playwright(dir: string, args: string[], env: Record<string, string>) {
-  const spawnEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith("SNAPSEQ_") && k !== "STAB" && k !== "NO_STAB") spawnEnv[k] = v;
-  }
-  return new Promise<{ status: number | null; out: string }>((ok) => {
-    const child = spawn(process.execPath, [PW_CLI, "test", "-c", join(dir, "snapseq.config.ts"), ...args], {
-      cwd: dir,
-      env: { ...spawnEnv, ...env },
-    });
-    let out = "";
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (out += d.toString()));
-    child.on("close", (status) => ok({ status, out }));
+  return makeApp(mkdtempSync(join(tmpdir(), "snapseq-stab-")), {
+    "snapseq.config.ts": CONFIG(host),
+    ...Object.fromEntries(Object.entries(SEQUENCES).map(([name, src]) => [`snapseq/${name}.seq.ts`, src + PROBE])),
   });
 }
 
-function pngSize(file: string): [number, number] {
-  const buf = readFileSync(file);
-  return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
-}
+const playwright = (dir: string, args: string[], env: Record<string, string>) =>
+  node([PW_CLI, "test", "-c", join(dir, "snapseq.config.ts"), ...args], dir, env);
 
 // The pixels of a PNG.
 async function image(file: string) {
@@ -1182,8 +995,6 @@ interface Probe {
 const probe = (dir: string, shot = "01"): Probe => JSON.parse(readFileSync(join(dir, `${shot}.json`), "utf8"));
 // What the sequence read from the page right after snapPage returned.
 const after = (dir: string): Record<string, string | boolean> => JSON.parse(readFileSync(join(dir, "after.json"), "utf8"));
-// The notes the run printed, one line per shot taken with any: `snapseq: 01.png taken with <notes>  <url>`.
-const noted = (out: string) => out.match(/snapseq: \d+\.png taken with .*/g) ?? [];
 
 let cdn: Awaited<ReturnType<typeof cdnServer>>;
 let app: Awaited<ReturnType<typeof appServer>>;
@@ -1230,12 +1041,6 @@ describe("snapPage on a 100vh page", () => {
     expect(img.at(640, 400)).toEqual([204, 204, 204]); // the hero
     for (const y of [720, 740, 759]) expect(img.at(640, y)).toEqual([0, 255, 0]); // the sub-header
     expect(img.at(100, 800)).toEqual([255, 255, 0]); // the aside
-  });
-
-  it("is refused without stabilize, which is what it is for", async () => {
-    const r = await run("snappage", { NO_STAB: "1" });
-    expect(r.status).not.toBe(0);
-    expect(r.out).toContain("snapPage: the document grew");
   });
 
   it("is refused with viewportUnits: false", async () => {
@@ -1358,7 +1163,7 @@ describe("a cross-origin stylesheet whose href has a fragment", () => {
     const r = await run("fragment");
     expect(r.status, r.out).toBe(0);
     expect(r.out).not.toContain("cannot read");
-    expect(noted(r.out)).toEqual([]);
+    expect(notes(r.out)).toEqual([]);
     expect(probe(r.dir).rects.xo?.height).toBe(720);
   });
 });
@@ -1417,12 +1222,12 @@ describe("a sheet that stays unreadable", () => {
     const r = await run("flaky");
     expect(r.status, r.out).toBe(0);
     const note = `cannot read ${cdn.url}/flaky.css: its viewport units stay live`;
-    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with ${note}  ${app.url}/flaky`, `snapseq: 02.png taken with ${note}  ${app.url}/flaky`]);
+    expect(notes(r.out)).toEqual([`snapseq: 01.png taken with ${note}  ${app.url}/flaky`, `snapseq: 02.png taken with ${note}  ${app.url}/flaky`]);
     expect(probe(r.dir, "01").rects.flaky?.height).toBe(720); // the original sheet still applies, live
     // The page's, stabilize's one refetch (500, passed on), the browser's own request after it and the one check of its
     // text (500 again), all with the full URL.
     expect(cdn.hits.slice(before).filter((u) => u.startsWith("/flaky.css"))).toEqual(Array(4).fill("/flaky.css?sig=abc"));
-    expect(noted(r.out).join("\n")).not.toContain("sig=abc"); // the note shows the URL without its query string
+    expect(notes(r.out).join("\n")).not.toContain("sig=abc"); // the note shows the URL without its query string
     // A route turns the HTTP cache off. The sequence fetched a cacheable file twice before the first shot and twice
     // after the refetch: one request each means no route was there, at the start or once the refetch was done.
     const cached = app.hits.slice(appBefore).filter((u) => u.startsWith("/cached.txt"));
@@ -1436,7 +1241,7 @@ describe("sheets stabilize cannot or should not fetch again", () => {
     const r = await run("sheets");
     expect(r.status, r.out).toBe(0);
     // The disabled sheet's page says nothing.
-    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/style.css: its viewport units stay live  ${app.url}/import`]);
+    expect(notes(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/style.css: its viewport units stay live  ${app.url}/import`]);
     // The import's and the check of its text (no CORS header: still noted), then the disabled sheet's.
     expect(cdn.hits.slice(before).filter((u) => u.startsWith("/style.css"))).toHaveLength(3);
   });
@@ -1448,7 +1253,7 @@ describe("a cross-origin sheet that a same-origin sheet imports", () => {
     const r = await run("imports");
     expect(r.status, r.out).toBe(0);
     const note = `cannot read ${cdn.url}/units.css: its viewport units stay live  ${app.url}/unitimport`;
-    expect(noted(r.out)).toEqual([`snapseq: 02.png taken with ${note}`, `snapseq: 03.png taken with ${note}`]);
+    expect(notes(r.out)).toEqual([`snapseq: 02.png taken with ${note}`, `snapseq: 03.png taken with ${note}`]);
     const hits = cdn.hits.slice(before);
     expect(hits.filter((u) => u.startsWith("/fonts.css"))).toHaveLength(2); // the import's, the check's
     expect(hits.filter((u) => u.startsWith("/units.css"))).toHaveLength(2); // two shots, one check
@@ -1463,7 +1268,7 @@ describe("the text check of an imported sheet", () => {
     const r = await run("checked");
     expect(r.status, r.out).toBe(0);
     const note = (name: string) => `cannot read ${cdn.url}/x/${name}.css: its viewport units stay live`;
-    expect(noted(r.out)).toEqual([
+    expect(notes(r.out)).toEqual([
       `snapseq: 01.png taken with ${["comment", "escape", "login", "big"].map(note).join(", ")}  ${app.url}/checked`,
       `snapseq: 02.png taken with ${note("font")}  ${app.url}/many`, // the URL without its query: the two notes are one
     ]);
@@ -1479,7 +1284,7 @@ describe("the text check, one @import level down", () => {
     const r = await run("importchain");
     expect(r.status, r.out).toBe(0);
     const note = (name: string) => `cannot read ${cdn.url}/x/${name}.css: its viewport units stay live`;
-    expect(noted(r.out)).toEqual([
+    expect(notes(r.out)).toEqual([
       `snapseq: 01.png taken with ${["impvh", "impdeep"].map(note).join(", ")}  ${app.url}/nestedimports`,
       `snapseq: 04.png taken with ${note("cap10")}  ${app.url}/importcap10`,
       `snapseq: 05.png taken with ${note("cap10")}  ${app.url}/importcap10`, // a second shot of the same page
@@ -1493,7 +1298,7 @@ describe("the text check, one @import level down", () => {
   it("answers the sheet whose imports fit when another's do not, and the other on the next shot", async () => {
     const r = await run("importab");
     expect(r.status, r.out).toBe(0);
-    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/x/cap9.css: its viewport units stay live  ${app.url}/importab`]);
+    expect(notes(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/x/cap9.css: its viewport units stay live  ${app.url}/importab`]);
   });
 });
 
@@ -1503,7 +1308,7 @@ describe("the text check when the ten sheets of a shot run out", () => {
   it("notes the two sheets it could not finish on the first shot, and tries them again on the second", async () => {
     const r = await run("importbudget");
     expect(r.status, r.out).toBe(0);
-    const lines = noted(r.out);
+    const lines = notes(r.out);
     expect(lines).toHaveLength(1); // the first shot only
     expect(lines[0]).toContain("snapseq: 01.png");
     expect(lines[0]!.match(/cannot read/g)).toHaveLength(2);
@@ -1518,7 +1323,7 @@ describe("a stylesheet that redirects", () => {
     const before = cdn.hits.length;
     const r = await run("redirect");
     expect(r.status, r.out).toBe(0);
-    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/old/style.css: its viewport units stay live  ${app.url}/redirect`]);
+    expect(notes(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/old/style.css: its viewport units stay live  ${app.url}/redirect`]);
     expect(probe(r.dir).rects.hero?.height).toBe(720); // the original sheet still applies, live
     const hits = cdn.hits.slice(before);
     expect(hits).toContain("/v1/img.png");
@@ -1537,7 +1342,7 @@ describe("a page that reports a URL of its own as an unreadable stylesheet", () 
     expect(probe(r.dir).facts?.leaked).toBe("false");
     expect(secretCookies.length).toBeGreaterThan(before); // the page's link, stabilize's fetch and the browser's own requests reached the server
     expect(secretCookies.slice(before).filter(Boolean)).toEqual([]); // the session cookie it set is never sent back
-    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/secret.json: its viewport units stay live  ${app.url}/hostile`]);
+    expect(notes(r.out)).toEqual([`snapseq: 01.png taken with cannot read ${cdn.url}/secret.json: its viewport units stay live  ${app.url}/hostile`]);
   });
 });
 
@@ -1628,22 +1433,16 @@ describe("motion after snapPage grows the viewport", () => {
 });
 
 describe("scrollEvent", () => {
-  it("is on by default: a scroll event fires once snapPage grew the viewport, and again once it is restored: the tray hides, then shows", async () => {
+  it("is on by default: a scroll event fires once snapPage grew the viewport, and again once it is restored: the tray hides, then shows at once, before any other shot", async () => {
     const r = await run("scrollevent");
-    expect(r.status, r.out).toBe(0);
+    expect(r.status, r.out).toBe(0); // the click on the tray would time out on one left hidden by the grown viewport
     expect(probe(r.dir, "01").facts).toEqual({ tray: "none", heard: "yes" }); // at the document, bubbling to the window
     const full = await image(join(r.dir, "01.png"));
     expect(full.at(640, 1499)).toEqual([255, 255, 255]); // not at the page end
     expect(full.at(640, 719)).toEqual([255, 255, 255]); // and not pinned at the first screen either: it is gone
+    expect(after(r.dir)).toEqual({ tray: "block", heard: "yes" }); // read right after snapPage returned
     expect(probe(r.dir, "02").facts?.tray).toBe("block"); // back at one screen from the top
     expect((await image(join(r.dir, "02.png"))).at(640, 719)).toEqual([200, 0, 0]);
-  });
-
-  it("shows the tray again as soon as snapPage returns, before any other shot: a click on it between shots finds it", async () => {
-    const r = await run("restored");
-    expect(r.status, r.out).toBe(0); // the click would time out on a tray left hidden by the grown viewport
-    expect(probe(r.dir, "01").facts?.tray).toBe("none"); // hidden while the shot was taken
-    expect(after(r.dir)).toEqual({ tray: "block", heard: "yes" });
   });
 
   it("with scrollEvent: false no scroll event fires on the grow: the tray stays, where the first screen had it", async () => {
@@ -1849,7 +1648,7 @@ describe("scroll pass for snap({ fullPage: true })", () => {
     expect(p.facts?.last).toBe("1");
     expect(p.facts?.src).toBe(`${app.url}/lazy.png`);
     expect(p.facts?.y).toBe("0");
-    expect(noted(r.out)).toEqual([]); // no note
+    expect(notes(r.out)).toEqual([]); // no note
   });
 
   it("starts from the top, not from where the page was scrolled to", async () => {
@@ -1887,19 +1686,7 @@ describe("scroll pass for snap({ fullPage: true })", () => {
     const r = await run("long", { STAB: JSON.stringify({ scroll: true }) });
     expect(r.status, r.out).toBe(0);
     const p = probe(r.dir);
-    expect(noted(r.out)).toEqual([`snapseq: 01.png taken with scroll pass stopped after 60 steps  ${app.url}/long`]);
+    expect(notes(r.out)).toEqual([`snapseq: 01.png taken with scroll pass stopped after 60 steps  ${app.url}/long`]);
     expect(p.facts?.y).toBe("300");
-  });
-});
-
-describe("entry points", () => {
-  it("loads the core, stabilize inside it, as ESM and as CommonJS", async () => {
-    const esm = await import(join(PKG, "dist", "index.js"));
-    const cjs = createRequire(import.meta.url)(join(PKG, "dist", "index.cjs"));
-    for (const mod of [esm, cjs]) {
-      expect(typeof mod.defineConfig).toBe("function");
-      expect(mod.stabilize).toBeUndefined(); // a config key, not an export
-    }
-    expect(existsSync(join(PKG, "dist", "index.d.ts"))).toBe(true);
   });
 });

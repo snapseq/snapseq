@@ -5,11 +5,14 @@ Symptom, cause, fix. Error text is quoted as the terminal prints it.
 ## Injected styles do nothing
 
 **Symptom.** Animations still run after `disableTransitions`, or
-`addPersistentStyle` / `page.addStyleTag` throws.
+`addPersistentStyle` / `page.addStyleTag` throws. With `stabilize` on, every
+sequence on that site fails before its body with `snapseq: stabilize threw in begin: …`.
 **Cause.** The site's `Content-Security-Policy` has a strict `style-src`, which
-rejects an injected `<style>` element.
+rejects an injected `<style>` element. `stabilize`'s `motion` step injects the same
+element in every sequence.
 **Fix.** `use: { bypassCSP: true }` for that site, on the env or composed over
-the config. See [Config](config.md#overriding-playwright-options).
+the config ([Config](config.md#overriding-playwright-options)). Or turn the step off
+with `stabilize: { motion: false }` ([Config](config.md#stabilize)).
 
 ## ReferenceError: __name is not defined
 
@@ -197,22 +200,22 @@ redirect to a second origin gets none, and an `origin` set on the env wins over
 message lists the available ones.
 **Fix.** Use a listed name, or `--env ""` for the default.
 
-## `snapseq: SNAPSEQ_RUN must be a directory name, not a path: "…"`
+## `snapseq: --run must be …` or `SNAPSEQ_RUN must be …`
 
-**Cause.** The run name contains a slash or backslash, or is `.` or `..`. The
+**Cause.** The run name contains a slash or backslash, or is `.` or `..`, or `--run` is empty. The
 run's sequence directories are wiped, so the name may not point outside the
 screenshots dir.
-**Fix.** A plain name: `SNAPSEQ_RUN=review-1`.
+**Fix.** A plain name: `--run review-1` or `SNAPSEQ_RUN=review-1`.
 
 ## `snapseq: no snapseq.config.ts in …; pass -c <path>`
 
 **Cause.** The current directory has no `snapseq.config.{ts,mts,cts,js,mjs,cjs}`
-and `-c` was not given.
+and `-c` was not given, or, in an orchestration run, `-c` names a folder without one.
 **Fix.** Run from the app's directory, or pass `-c <path>`.
 
 ## `snapseq: <flag> requires a value`
 
-**Cause.** A flag that takes a value (`--env`, `--host`, `--device`, `-c`,
+**Cause.** A flag that takes a value (`--env`, `--host`, `--device`, `--run`, `-c`,
 `--config`) is the last argument. Often `--env $ENV` with an empty `ENV`: the
 word vanishes.
 **Fix.** `--env staging` or `--env=staging`. Quote a variable that may be
@@ -241,16 +244,9 @@ Playwright as a file filter.
 ## `snapseq: a shot is already in progress; await each snap before the next`
 
 **Cause.** A `snap` or `snapPage` started before the previous one resolved: a
-missing `await` or a `Promise.all`.
+missing `await` or a `Promise.all`. A shot still running when the body returns
+gives `a shot was still being taken when the sequence ended; await each snap`.
 **Fix.** Await each shot.
-
-## `snapseq: the sequence ended before … was listed`
-
-**Cause.** A `snap` or `snapPage` was still running when the sequence ended:
-the body returned without awaiting it, or the sequence failed or timed out
-during the shot. The file may be on disk, but the shot does not count.
-**Fix.** Await every shot before the body returns. If the sequence failed or
-timed out, read its first error; this one follows it.
 
 ## `snapPage: the page has no viewport size`
 
@@ -272,8 +268,9 @@ starts, so snapseq refuses.
 device `mobile` writes `home/mobile/`; `home/mobile.seq.ts` on `desktop`
 writes `home/mobile/desktop/`, and so does every sequence under `home/mobile/`.
 A sequence's directory is wiped when it starts, so snapseq refuses first,
-naming the sequence file that writes inside it, and nothing is deleted. A
-subfolder a step made in it, such as `labelled/`, is wiped with the rest.
+naming the id of the sequence that writes inside it (`home/mobile`), and nothing
+is deleted. A subfolder a step made in it, such as `labelled/`, is wiped with the
+rest.
 **Fix.** Rename one of the sequences so its name is not a device's, such as
 `home/mobile-menu.seq.ts`.
 
@@ -305,9 +302,8 @@ yourself and pass `--host`. `DEBUG=pw:webserver` shows the server's output.
 
 ## No live terminal view, just one line per shot
 
-**Cause.** Stdout is not a terminal (CI, a pipe, `| tee`), or the run used
-`--list`, `--debug`, `--ui`, `--ui-host`, `--ui-port` or `PWDEBUG`, or
-`TERM=dumb`. Those get Playwright's list reporter instead.
+**Cause.** Stdout is not a terminal, or a flag or variable turned the view off;
+[Running](running.md#the-terminal) lists them.
 **Fix.** None needed; the list output has the same information. For the frame,
 run in a terminal without piping. Words instead of marks (`ok`, `FAIL`) mean
 the terminal cannot draw them; `NO_COLOR` drops colors on purpose.

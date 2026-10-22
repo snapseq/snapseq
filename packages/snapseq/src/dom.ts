@@ -25,9 +25,9 @@ export async function addPersistentStyle(page: Page, css: string): Promise<void>
 // Pseudo-elements that can carry a transition of their own: a <details> fold
 // (::details-content, Chromium 131+) and a <dialog> backdrop. Each in its own
 // rule: one unsupported pseudo-element would drop a shared selector list whole.
-const NO_MOTION_CSS = `*, *::before, *::after { transition: none !important; animation: none !important; }
-*::details-content { transition: none !important; animation: none !important; }
-*::backdrop { transition: none !important; animation: none !important; }
+export const NO_TRANSITIONS = `*, *::before, *::after { transition: none !important; }
+*::details-content { transition: none !important; }
+*::backdrop { transition: none !important; }
 html { scroll-behavior: auto !important; }`;
 
 /**
@@ -37,5 +37,11 @@ html { scroll-behavior: auto !important; }`;
  * state instead of freezing it at an arbitrary keyframe.
  */
 export function disableTransitions(page: Page): Promise<void> {
-  return addPersistentStyle(page, NO_MOTION_CSS);
+  return addPersistentStyle(
+    page,
+    `${NO_TRANSITIONS}
+*, *::before, *::after { animation: none !important; }
+*::details-content { animation: none !important; }
+*::backdrop { animation: none !important; }`,
+  );
 }

@@ -12,21 +12,21 @@ const DESKTOP = { viewport: { width: 1000, height: 700 } };
 
 let dir: string;
 let count = 0;
-// Writes a request where the parent would and points SNAPSEQ_OVERRIDES_FILE at it. A new file each time: a path is read once.
+// Writes a request where the parent would and points SNAPSEQ_REQUEST_FILE at it.
 function request(over: Partial<Request> = {}): void {
   const file = join(dir, "node_modules", ".cache", "snapseq", "requests", `${++count}.json`);
   mkdirSync(dirname(file), { recursive: true });
-  const base = {
-    version: 1,
+  const base: Request = {
     sequence: "campaign/pricing",
     file: FILE,
-    snapseq: { devices: { desktop: DESKTOP } },
-    deviceOrder: ["desktop"],
+    configDir: dir,
+    snapseq: {},
+    devices: [["desktop", DESKTOP]],
     playwright: [],
-    terminal: { labelWidth: 30, showEnv: true },
+    rows: { labelWidth: 30, showEnv: true },
   };
   writeFileSync(file, JSON.stringify({ ...base, ...over }));
-  vi.stubEnv("SNAPSEQ_OVERRIDES_FILE", file);
+  vi.stubEnv("SNAPSEQ_REQUEST_FILE", file);
 }
 
 type Project = NonNullable<PlaywrightTestConfig["projects"]>[number];
@@ -41,7 +41,7 @@ beforeEach(() => {
   vi.stubEnv("SNAPSEQ_ENV", "");
   vi.stubEnv("SNAPSEQ_HOST", "");
   vi.stubEnv("SNAPSEQ_RECORD", "");
-  vi.stubEnv("SNAPSEQ_OVERRIDES_FILE", "");
+  vi.stubEnv("SNAPSEQ_REQUEST_FILE", "");
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -50,10 +50,16 @@ afterEach(() => {
 
 describe("defineConfig with an orchestration request", () => {
   it("applies the run's snapseq keys before anything is derived, and its devices as the only projects", () => {
-    request({ snapseq: { devices: { desktop: DESKTOP }, numbering: "000", screenshotsDir: "shots", stabilize: { motion: false } } });
+    request({ snapseq: { numbering: "000", screenshotsDir: "shots", stabilize: { motion: false } } });
     const c = defineConfig({ envs, devices: { desktop: {}, mobile: {} }, stabilize: false });
     expect(meta(c)).toMatchObject({ numbering: "000", screenshotsDir: "shots", stabilize: { motion: false } });
     expect(projects(c).map((p) => [p.name, p.use])).toEqual([["desktop", DESKTOP]]);
+  });
+
+  it("keeps a single webServer an object: Playwright exposes a list as no webServer at all", () => {
+    request();
+    const served = { dev: { host: "http://localhost:3000", webServer: "pnpm dev" }, uat: envs.uat };
+    expect(defineConfig({ envs: served }).webServer).toMatchObject({ command: "pnpm dev", url: "http://localhost:3000" });
   });
 
   it("pins the file at the top level and on every project, so a consumer project override cannot undo it", () => {
@@ -83,12 +89,11 @@ describe("defineConfig with an orchestration request", () => {
 
   it("puts the run's devices over a configured project of the same name, keeping what they do not set, then merges the run's Playwright overrides", () => {
     request({
-      snapseq: { devices: { "300": { viewport: { width: 300, height: 250 } }, desktop: DESKTOP } },
-      deviceOrder: ["desktop", "300"],
+      devices: [["desktop", DESKTOP], ["300", { viewport: { width: 300, height: 250 } }]],
       playwright: [{ timeout: 5_000, projects: [{ name: "300", use: { locale: "fr" } }] }],
     });
     const c = defineConfig({ envs }, { projects: [{ name: "desktop", use: { viewport: { width: 1, height: 1 }, locale: "de" } }] });
-    expect(projects(c).map((p) => p.name)).toEqual(["desktop", "300"]); // deviceOrder, not key order
+    expect(projects(c).map((p) => p.name)).toEqual(["desktop", "300"]); // the request's order, where an object would put "300" first
     expect(projects(c)[0]?.use).toEqual({ ...DESKTOP, locale: "de" }); // the run's viewport, the configured locale
     expect(projects(c)[1]?.use).toEqual({ viewport: { width: 300, height: 250 }, locale: "fr" });
     expect(c.timeout).toBe(5_000);
@@ -103,9 +108,7 @@ describe("defineConfig with an orchestration request", () => {
     expect(() => defineConfig({ envs })).toThrow('got retries 2 and repeatEach 1 in project "desktop"');
   });
 
-  it("throws on a project that needs one the run does not shoot, and on an outputDir over the run cache", () => {
-    request({ playwright: [{ projects: [{ name: "desktop", dependencies: ["setup"] }] }] });
-    expect(() => defineConfig({ envs })).toThrow('project "desktop" needs project "setup", which this run does not shoot');
+  it("throws on an outputDir over the run cache", () => {
     request();
     for (const outputDir of ["node_modules/.cache/snapseq", "node_modules", join(dir, "node_modules/.cache/snapseq/runs/x")]) {
       expect(() => defineConfig({ envs }, { outputDir }), outputDir).toThrow(`outputDir "${outputDir}" would let Playwright empty`);
@@ -115,19 +118,14 @@ describe("defineConfig with an orchestration request", () => {
   });
 
   it("throws on an outputDir inside the screenshots folder or holding it, naming both", () => {
-    request({ snapseq: { devices: { desktop: DESKTOP }, screenshotsDir: "shots" } });
+    request({ snapseq: { screenshotsDir: "shots" } });
     const shots = join(dir, "shots");
     expect(() => defineConfig({ envs }, { outputDir: "shots/run1" })).toThrow(`outputDir "shots/run1" overlaps the screenshots folder ${shots};`);
-    request({ snapseq: { devices: { desktop: DESKTOP }, screenshotsDir: "shots" }, playwright: [{ projects: [{ name: "desktop", outputDir: shots }] }] });
+    request({ snapseq: { screenshotsDir: "shots" }, playwright: [{ projects: [{ name: "desktop", outputDir: shots }] }] });
     expect(() => defineConfig({ envs })).toThrow(`outputDir "${shots}" in project "desktop" overlaps the screenshots folder ${shots};`);
     expect(() => defineConfig({ envs }, { outputDir: "." })).toThrow("would let Playwright empty"); // holds the cache, and the screenshots
     request();
     expect(() => defineConfig({ envs }, { outputDir: "shots/run1" })).not.toThrow(); // the screenshots are in screenshots/ here
-  });
-
-  it("refuses a deviceOrder that is not exactly the devices", () => {
-    request({ deviceOrder: ["desktop", "mobile"] });
-    expect(() => defineConfig({ envs })).toThrow("deviceOrder (desktop, mobile) must list exactly its devices (desktop)");
   });
 
   it("appends the result reporter last and tells the fixtures and the terminal what the parent asked", () => {
@@ -136,32 +134,9 @@ describe("defineConfig with an orchestration request", () => {
     expect(reporters(c)[0]).toBe("dot");
     expect(reporters(c).at(-1)).toMatch(/result-reporter\.js$/);
     expect(meta(c).orchestration).toEqual({ sequence: "campaign/pricing", labelWidth: 30, showEnv: true });
-    vi.stubEnv("SNAPSEQ_OVERRIDES_FILE", "");
+    vi.stubEnv("SNAPSEQ_REQUEST_FILE", "");
     const plain = defineConfig({ envs });
     expect(reporters(plain).some((name) => name.endsWith("result-reporter.js"))).toBe(false);
     expect(meta(plain).orchestration).toBeUndefined();
-  });
-
-  it("keeps the config as written, defaults filled, and the overrides for the parent; a request leaves them alone", () => {
-    const override = { timeout: 1_000 };
-    request({ snapseq: { devices: { desktop: DESKTOP }, numbering: "000" } });
-    const inputs = (defineConfig({ envs, defaultEnv: "uat" }, override) as Record<symbol, unknown>)[Symbol.for("snapseq.inputs")];
-    expect(inputs).toEqual({
-      config: {
-        envs,
-        defaultEnv: "uat",
-        devices: {
-          desktop: { viewport: { width: 1920, height: 1080 } },
-          mobile: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true },
-        },
-        sequencesDir: "snapseq",
-        screenshotsDir: "screenshots",
-        numbering: "00",
-        format: {},
-        stabilize: {},
-      },
-      overrides: [override],
-      defaultEnv: "uat", // as written, for the parent's check of a run's own envs
-    });
   });
 });

@@ -33,7 +33,7 @@ export async function pdf(captures: readonly Capture[], file: string): Promise<s
     page.drawImage(img, { x: 0, y: 0, width: page.getWidth(), height: page.getHeight() });
     // embedPng/embedJpg keep the decoded image in memory until save(); embed() writes it
     // into the document now and drops the decoded pixels. The compressed streams stay in the
-    // document until save, so memory still grows with the PDF, far less than before.
+    // document until save, so memory still grows with the PDF, far less.
     await img.embed();
   }
 

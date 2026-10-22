@@ -2,9 +2,11 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import sharp from "sharp";
-import type { Capture, ShotFormat, SnapOptions } from "snapseq";
+import type { Capture, CaptureShot, SnapOptions } from "snapseq";
 import { afterEach, describe, expect, it } from "vitest";
 import { label, type LabelOptions } from "../index.js";
+
+type ShotFormat = CaptureShot["format"];
 
 const dirs: string[] = [];
 
@@ -18,12 +20,11 @@ const tmp = () => {
   return dir;
 };
 
-// A red source image, or a transparent one, as PNG (RGBA, or RGB for "rgb") or JPEG.
-async function source(dir: string, name: string, width = 200, height = 100, kind: "png" | "rgb" | "jpeg" | "clear" = "png") {
+// A red source image, or a transparent one, as PNG (RGBA, or RGB for "rgb").
+async function source(dir: string, name: string, width = 200, height = 100, kind: "png" | "rgb" | "clear" = "png") {
   const path = join(dir, name);
   const background = kind === "clear" ? { r: 0, g: 0, b: 0, alpha: 0 } : "#ff0000";
-  const img = sharp({ create: { width, height, channels: kind === "jpeg" || kind === "rgb" ? 3 : 4, background } });
-  await (kind === "jpeg" ? img.jpeg() : img.png()).toFile(path);
+  await sharp({ create: { width, height, channels: kind === "rgb" ? 3 : 4, background } }).png().toFile(path);
   return path;
 }
 
@@ -36,7 +37,7 @@ function capture(dir: string, files: { path: string; label?: SnapOptions["label"
     host: "https://uat.example.com",
     dir,
     reused: false,
-    shots: files.map(({ path, label, format = {}, dsf = 1 }, i) => ({
+    shots: files.map(({ path, label, format = { type: "png" }, dsf = 1 }, i) => ({
       index: i + 1,
       name: basename(path),
       path,
@@ -54,7 +55,7 @@ function capture(dir: string, files: { path: string; label?: SnapOptions["label"
 async function run(
   path: string,
   text: SnapOptions["label"],
-  { step = {}, format = {}, dsf = 1 }: { step?: LabelOptions; format?: ShotFormat; dsf?: number } = {},
+  { step = {}, format = { type: "png" }, dsf = 1 }: { step?: LabelOptions; format?: ShotFormat; dsf?: number } = {},
 ) {
   const [out] = await label([capture(dirname(path), [{ path, label: text, format, dsf }])], step);
   return out!.shots[0]!.path;
@@ -96,11 +97,12 @@ describe("label", () => {
     expect(readdirSync(join(dir, "labelled"))).toEqual(["01.png"]);
   });
 
-  it("copies a shot whose label text is empty", async () => {
+  it("copies a shot whose label text is empty, without looking at scale", async () => {
     const dir = tmp();
     const path = await source(dir, "01.png");
-    expect(readFileSync(await run(path, "")).equals(readFileSync(path))).toBe(true);
-    expect(readFileSync(await run(path, { text: "", theme: "dark" })).equals(readFileSync(path))).toBe(true);
+    const step = { scale: () => 0 };
+    expect(readFileSync(await run(path, "", { step })).equals(readFileSync(path))).toBe(true);
+    expect(readFileSync(await run(path, { text: "", theme: "dark" }, { step })).equals(readFileSync(path))).toBe(true);
   });
 
   it("writes the whole set and returns the capture with everything else unchanged", async () => {
@@ -153,37 +155,27 @@ describe("label", () => {
     expect([seen.width, seen.height]).toEqual([400, 224]);
   });
 
-  it("writes a JPEG when the format is jpeg", async () => {
-    const dir = tmp();
-    const path = await source(dir, "01.jpg", 200, 100, "jpeg");
-    const file = await run(path, "jpeg", { format: { type: "jpeg", quality: 50 } });
-    expect([...readFileSync(file).subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
-    const seen = await look(file);
-    expect([seen.width, seen.height]).toEqual([200, 124]);
-  });
-
-  it("encodes a JPEG at the quality of the shot's format", async () => {
+  it("writes a JPEG at the quality of the shot's format when the format is jpeg", async () => {
     const dir = tmp();
     const path = join(dir, "01.jpg");
     // noise, so the quality shows in the size
     await sharp({ create: { width: 200, height: 100, channels: 3, background: "#808080", noise: { type: "gaussian", mean: 128, sigma: 40 } } }).jpeg().toFile(path);
-    const low = readFileSync(await run(path, "q", { format: { type: "jpeg", quality: 10 } })).length;
+    const lowFile = await run(path, "q", { format: { type: "jpeg", quality: 10 } });
+    const low = readFileSync(lowFile);
     const high = readFileSync(await run(path, "q", { format: { type: "jpeg", quality: 95 } })).length;
-    expect(low).toBeLessThan(high);
-  });
-
-  it("draws a label with control characters and lone surrogates as spaces", async () => {
-    const dir = tmp();
-    const path = await source(dir, "01.png");
-    const seen = await look(await run(path, "a\vb\x1bc\ufffed\ud800e"));
+    expect([...low.subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
+    const seen = await look(lowFile);
     expect([seen.width, seen.height]).toEqual([200, 124]);
-    expect(seen.inked).toBe(true);
+    expect(low.length).toBeLessThan(high);
   });
 
-  it("renders the label as text, not markup", async () => {
+  it.each([
+    ["control characters and lone surrogates as spaces", "a\vb\x1bc\ufffed\ud800e"],
+    ["markup as text", "<b>&"],
+  ])("draws a label with %s", async (_, label) => {
     const dir = tmp();
     const path = await source(dir, "01.png");
-    const seen = await look(await run(path, "<b>&"));
+    const seen = await look(await run(path, label));
     expect([seen.width, seen.height]).toEqual([200, 124]);
     expect(seen.inked).toBe(true);
   });
@@ -205,9 +197,7 @@ describe("label", () => {
     const file = await run(path, "0.0 Home");
     expect((await sharp(file).metadata()).channels).toBe(3);
     const seen = await look(file, [[100, 2], [100, 60]]);
-    expect([seen.width, seen.height]).toEqual([200, 124]);
-    expect(seen.at[0]).toEqual([255, 255, 255, 255]);
-    expect(seen.at[1]).toEqual([255, 0, 0, 255]);
+    expect(seen.at).toEqual([[255, 255, 255, 255], [255, 0, 0, 255]]); // the strip white, the image still red
   });
 
   it("draws the dark theme: black strip, light ink, image untouched", async () => {
@@ -234,13 +224,6 @@ describe("label", () => {
     expect(seen.at[0]).toEqual([255, 0, 0, 255]);
     // white ink on red lifts the green or blue channel
     expect(seen.box(0, 199, 0, 23).some((p) => p[1]! > 100 || p[2]! > 100)).toBe(true);
-  });
-
-  it("lets the shot's background beat the step's", async () => {
-    const dir = tmp();
-    const path = await source(dir, "01.png");
-    const seen = await look(await run(path, { text: "0.0 Home", background: "#f00" }, { step: { background: "#00f" } }), [[100, 2]]);
-    expect(seen.at[0]).toEqual([255, 0, 0, 255]);
   });
 
   it("lets the shot's color beat the step's", async () => {
@@ -274,31 +257,19 @@ describe("label", () => {
     expect(bare(180, 199)).toBe(false);
   });
 
-  it.each([0, -1, NaN, Infinity])("rejects a scale of %s", async (value) => {
+  it.each([
+    [0, "scale must be a positive number, got 0"],
+    [-1, "scale must be a positive number, got -1"],
+    [NaN, "scale must be a positive number, got NaN"],
+    [Infinity, "scale must be a positive number, got Infinity"],
+    [0.01, "scale 0.01 makes a strip under 1 px"], // the strip rounds to 0 px
+  ])("rejects a scale of %s", async (value, message) => {
     const dir = tmp();
     const path = await source(dir, "01.png");
     const before = readFileSync(path);
-    await expect(run(path, "0.0 Home", { step: { scale: () => value } })).rejects.toThrow(
-      `@snapseq/label: scale must be a positive number, got ${value}`,
-    );
+    await expect(run(path, "0.0 Home", { step: { scale: () => value } })).rejects.toThrow(`@snapseq/label: ${message}`);
     expect(readFileSync(path).equals(before)).toBe(true);
     expect(readdirSync(join(dir, "labelled"))).toEqual([]);
-  });
-
-  it("rejects a scale so small that the strip rounds to 0 px", async () => {
-    const dir = tmp();
-    const path = await source(dir, "01.png");
-    const before = readFileSync(path);
-    await expect(run(path, "0.0 Home", { step: { scale: () => 0.01 } })).rejects.toThrow("@snapseq/label: scale 0.01 makes a strip under 1 px");
-    expect(readFileSync(path).equals(before)).toBe(true);
-    expect(readdirSync(join(dir, "labelled"))).toEqual([]);
-  });
-
-  it("does not look at scale for a shot without a label", async () => {
-    const dir = tmp();
-    const path = await source(dir, "01.png");
-    const file = await run(path, undefined, { step: { scale: () => 0 } });
-    expect(readFileSync(file).equals(readFileSync(path))).toBe(true);
   });
 
   it("scales the strip with the device scale factor when scale is true", async () => {

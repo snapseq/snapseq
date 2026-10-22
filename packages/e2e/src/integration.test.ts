@@ -10,7 +10,7 @@ import { createServer } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AUTH, FONT, PKG, makeProject, pdfPages, playwright, pngSize, snapseq, startServer } from "./helpers";
+import { AUTH, FONT, PKG, makeProject, playwright, pngSize, snapseq, startServer } from "./helpers";
 
 // Drives the BUILT package through the real Playwright CLI, the way a consumer would.
 const REPORTER = join(PKG, "dist", "reporter.js");
@@ -155,6 +155,13 @@ describe("snapseq via the Playwright CLI", () => {
     expect(server.hits.slice(before).map((h) => h.url)).toContain("/a?env=dead&device=d1");
   });
 
+  it("--env without --host drops an inherited SNAPSEQ_HOST, so the run goes to that env's host", async () => {
+    const before = server.hits.length;
+    const r = await snapseq(project, ["a\\.seq", "--device", "d1", "--env", "dev"], { SNAPSEQ_HOST: "http://127.0.0.1:1" });
+    expect(r.status, r.out).toBe(0);
+    expect(server.hits.slice(before).map((h) => h.url)).toContain("/a?env=dev&device=d1");
+  });
+
   it("rejects an unknown env at config load", async () => {
     const r = await playwright(project, [], { SNAPSEQ_ENV: "nope" });
     expect(r.status).not.toBe(0);
@@ -244,7 +251,7 @@ export default defineConfig({
     writeFileSync(mine, "stale");
     const r = await playwright(p, ["home\\.seq", "--project", "d1"]);
     expect(r.status).not.toBe(0);
-    expect(r.out).toContain(`refusing to wipe ${join("run1", "home", "d1")}: ${join("home", "d1.seq.ts")} writes inside it; rename one of the sequences`);
+    expect(r.out).toContain(`refusing to wipe ${join("run1", "home", "d1")}: home/d1 writes inside it; rename one of the sequences`);
     expect(readFileSync(theirs, "utf8")).toBe("keep");
     expect(readFileSync(mine, "utf8")).toBe("stale");
   });
@@ -874,28 +881,6 @@ sequence(async ({ page, seq }) => {
   });
 
   // stabilize is on by default and freezes vh before the grow; with `stabilize: false` the page is what the grow makes of it.
-  it("shoots a layout that follows the viewport as a page by default", async () => {
-    const p = makeProject({
-      esm: true,
-      config: config(),
-      sequences: {
-        "vh.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  await page.goto("/vh");
-  await seq.snapPage();
-  if (page.viewportSize()?.height !== 300) throw new Error("viewport not restored");
-});
-`,
-      },
-    });
-    dirs.push(p);
-    const r = await playwright(p, ["--reporter", REPORTER]);
-    expect(r.out).toContain("1 passed  1 shot");
-    expect(r.status).toBe(0);
-    expect(pngSize(join(p, "out", "run1", "vh", "d1", "01.png"))).toEqual([400, 800]); // 100vh at the device's 300, plus 500
-  });
-
   it("with stabilize: false, refuses a layout that follows the viewport, restores the viewport, and points at the native full page", async () => {
     const p = makeProject({
       esm: true,

@@ -10,16 +10,15 @@ import {
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
-  realpathSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SnapseqMetadata } from "./define.js";
-import { attachCapture } from "./orchestration/capture.js";
-import { createSequence, type Sequence } from "./sequence.js";
+import type { Capture, CaptureShot } from "./orchestration/types.js";
+import { createSequence, type Sequence, type Shot, type ShotFormat } from "./sequence.js";
+import { configDirOf, DEFAULT_TITLE, sequenceId, sequenceIds } from "./sequence-id.js";
 import { stabilize } from "./stabilize.js";
 
 /** The bag handed to helpers that need more than `page`. Also available as the `ctx` fixture. */
@@ -34,7 +33,7 @@ export interface SequenceContext {
   device: string;
 }
 
-export interface SequenceFixtures {
+interface SequenceFixtures {
   seq: Sequence;
   env: string;
   host: string;
@@ -48,16 +47,14 @@ interface WorkerFixtures {
   realisticUA: string;
 }
 
-export type SequenceArgs = PlaywrightTestArgs &
+type SequenceArgs = PlaywrightTestArgs &
   PlaywrightTestOptions &
   PlaywrightWorkerArgs &
   PlaywrightWorkerOptions &
   SequenceFixtures &
   WorkerFixtures;
 
-export type SequenceFn = (args: SequenceArgs, testInfo: TestInfo) => Promise<void> | void;
-
-const DEFAULT_TITLE = "sequence";
+type SequenceFn = (args: SequenceArgs, testInfo: TestInfo) => Promise<void> | void;
 
 // Replay file -> the request (method, URL, body) --record claimed it for, in this worker's run.
 // `label` is what the error shows; `id` adds the body, which can be large.
@@ -65,55 +62,41 @@ const DEFAULT_TITLE = "sequence";
 // it per run.
 const recorded = new Map<string, { id: string; label: string }>();
 
-function configDirOf(testInfo: TestInfo): string {
-  return testInfo.config.configFile
-    ? dirname(testInfo.config.configFile)
-    : testInfo.config.rootDir;
-}
-
 function metadataOf(testInfo: TestInfo): SnapseqMetadata {
   const meta = (testInfo.config.metadata as { snapseq?: SnapseqMetadata }).snapseq;
   if (!meta) throw new Error("snapseq: the Playwright config must come from snapseq's defineConfig()");
   return meta;
 }
 
-const SEQUENCE_FILE = /\.seq\.[cm]?[jt]s$/;
-
 /**
- * `snapseq/nested/pricing.seq.ts` → `nested/pricing`, with `/` on every platform. A titled test or a
- * `describe` block appends its titles, so two "hero" tests in different
- * describes never share (and wipe) one directory.
+ * Attaches the capture a passed sequence hands the orchestration parent as `snapseq-capture`, each shot field by field:
+ * at most 1 MiB of JSON, paths and options, never the images. `format` is the config's, which every shot was taken in.
  */
-export function sequenceId(testInfo: TestInfo): string {
-  // realpath both sides: Playwright reports the file through resolved symlinks
-  // (macOS /var → /private/var) while testDir keeps the configured path, and a
-  // mismatch would make relative() escape the screenshots root.
-  const rel = relative(
-    realpathSync(testInfo.project.testDir),
-    realpathSync(testInfo.file),
-  ).replace(SEQUENCE_FILE, "");
-  const titles = testInfo.titlePath.slice(1); // [0] is the file
-  return (titles.length === 1 && titles[0] === DEFAULT_TITLE ? rel : join(rel, ...titles)).split(sep).join("/");
-}
-
-const list = (dir: string): string[] => {
-  try {
-    return readdirSync(dir, { recursive: true, encoding: "utf8" });
-  } catch {
-    return [];
-  }
-};
-
-/**
- * `home.seq.ts` on mobile wipes `home/mobile/`, where `home/mobile.seq.ts` on any device and every sequence under
- * `home/mobile/` write too: the first such file, relative to the sequences dir, or undefined. A sequence file since
- * deleted is not looked for; its output goes with the wipe.
- */
-function nestedSequence(testDir: string, id: string, device: string): string | undefined {
-  const hit = list(join(testDir, id)).find(
-    (entry) => SEQUENCE_FILE.test(entry) && (entry.replace(SEQUENCE_FILE, "") === device || entry.startsWith(`${device}${sep}`)),
-  );
-  return hit ? join(id, hit) : undefined;
+export async function attachCapture(
+  testInfo: TestInfo,
+  part: Omit<Capture, "reused" | "shots">,
+  shots: readonly Shot[],
+  format: ShotFormat,
+): Promise<void> {
+  // What the files are: the config's `{}` is a PNG.
+  const as = { ...format, type: format.type ?? "png" };
+  const body = JSON.stringify({
+    ...part,
+    shots: shots.map(
+      (shot): CaptureShot => ({
+        index: shot.index,
+        name: shot.name,
+        path: shot.path,
+        url: shot.url,
+        notes: [...shot.notes],
+        deviceScaleFactor: shot.deviceScaleFactor,
+        format: as,
+        options: shot.given,
+      }),
+    ),
+  });
+  if (Buffer.byteLength(body) > 1024 * 1024) throw new Error("snapseq: capture metadata over 1 MiB");
+  await testInfo.attach("snapseq-capture", { contentType: "application/json", body });
 }
 
 export const test = base.extend<SequenceFixtures, WorkerFixtures>({
@@ -144,18 +127,17 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
   },
 
   // Not auto: a sequence skipped by a file-level skipIf must get no directory,
-  // and a sequence that never touches `seq` has no sequence and no stabilize steps.
+  // and a sequence that never touches `seq` gets no directory and no stabilize.
   seq: async ({ page, deviceScaleFactor, baseURL }, use, testInfo) => {
-    // First: an orchestration parent tells a sequence that never used `seq` from one that failed in it.
-    testInfo.annotations.push({ type: "snapseq", description: "usedSeq" });
     if (testInfo.repeatEachIndex > 0 || testInfo.retry > 0) {
       throw new Error(
         "snapseq: --repeat-each and retries are not supported; a second run would overwrite the first run's screenshots",
       );
     }
     const meta = metadataOf(testInfo);
-    const id = sequenceId(testInfo);
-    // Before the wipe: in an orchestration run the parent asked for this id on this host, and caches what it gets under them.
+    const id = sequenceId(testInfo.project.testDir, testInfo.file, testInfo.titlePath.slice(1)); // [0] is the file
+    // Before the wipe: in an orchestration run the capture reports this id and this host, and the parent caches it under the
+    // id: neither may drift from what it asked for.
     const declared = meta.orchestration?.sequence;
     // NFC: macOS may hand Playwright the file's name decomposed, where the parent has the id as typed.
     if (declared !== undefined && id.normalize("NFC") !== declared.normalize("NFC")) {
@@ -164,11 +146,14 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
     if (declared !== undefined && baseURL !== meta.host) {
       throw new Error(`snapseq: the context's baseURL "${baseURL}" is not this run's host "${meta.host}"; a use.baseURL or test.use({ baseURL }) changed it`);
     }
-    const inside = nestedSequence(testInfo.project.testDir, id, testInfo.project.name);
+    // `home.seq.ts` on mobile wipes `home/mobile/`, where `home/mobile.seq.ts` on any device and every sequence under
+    // `home/mobile/` write too. A sequence file since deleted is not looked for; its output goes with the wipe.
+    const device = testInfo.project.name;
+    const inside = sequenceIds(join(testInfo.project.testDir, id)).find((s) => s === device || s.startsWith(`${device}/`));
     if (inside) {
-      throw new Error(`snapseq: refusing to wipe ${join(meta.run, id, testInfo.project.name)}: ${inside} writes inside it; rename one of the sequences`);
+      throw new Error(`snapseq: refusing to wipe ${join(meta.run, id, device)}: ${id}/${inside} writes inside it; rename one of the sequences`);
     }
-    const root = resolve(configDirOf(testInfo), meta.screenshotsDir);
+    const root = resolve(configDirOf(testInfo.config), meta.screenshotsDir);
     mkdirSync(root, { recursive: true });
     const ignore = join(root, ".gitignore");
     if (!existsSync(ignore)) writeFileSync(ignore, "*\n");
@@ -181,39 +166,27 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
     // this line (sub-second); an auto fixture taken first would make it exact.
     const started = performance.now(); // monotonic, like Playwright's own clock
     const idle = testInfo.timeout;
-    const ended = new AbortController();
-    const stabilizer = meta.stabilize === false ? undefined : stabilize(meta.stabilize);
-    const seq = createSequence(page, root, join(meta.run, id, testInfo.project.name), {
+    const stabilizer = meta.stabilize === false ? undefined : stabilize(meta.stabilize, page);
+    const seq = createSequence(page, root, join(meta.run, id, device), {
       wrap: (title, shoot) =>
         test.step(title, async () => {
           await shoot();
-          if (idle > 0 && !ended.signal.aborted) {
-            testInfo.setTimeout(Math.ceil(performance.now() - started + idle));
-          }
+          if (idle > 0) testInfo.setTimeout(Math.ceil(performance.now() - started + idle));
         }),
       numbering: meta.numbering,
       format: meta.format,
-      stabilize: stabilizer,
-      signal: ended.signal,
+      stabilizer,
       deviceScaleFactor,
     });
     // Before the body: what stabilize sets up on the page is there for its first line.
-    try {
-      await stabilizer?.begin(page);
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      throw new Error(`snapseq: stabilize threw in begin: ${message}`, { cause });
-    }
-    try {
-      await use(seq);
-    } finally {
-      ended.abort();
-    }
+    await stabilizer?.begin();
+    await use(seq);
     if (testInfo.status === "passed") {
       if (seq.inFlight) throw new Error("snapseq: a shot was still being taken when the sequence ended; await each snap");
       // What the orchestration parent reads back, under the id it asked for: the shots as data, never the files.
       if (declared !== undefined) {
-        await attachCapture(testInfo, { sequence: declared, device: testInfo.project.name, env: meta.env, host: meta.host, dir: seq.dir }, seq.shots);
+        const part = { sequence: declared, device, env: meta.env, host: meta.host, dir: seq.dir };
+        await attachCapture(testInfo, part, seq.shots, meta.format);
       }
     }
     // The page as it was when the sequence died, beside the shots it did take.
@@ -259,7 +232,7 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
   replay: [
     async ({ page }, use, testInfo) => {
       const meta = metadataOf(testInfo);
-      const configDir = configDirOf(testInfo);
+      const configDir = configDirOf(testInfo.config);
       for (const [pattern, rel] of Object.entries(meta.replay ?? {})) {
         const file = resolve(configDir, rel);
         if (meta.record) {

@@ -39,9 +39,9 @@ sequence(async ({ page, seq }) => {
 });
 ```
 
-`label` is typed once `@snapseq/label` is installed: see its
-[README](https://github.com/snapseq/snapseq/tree/main/packages/label). The other
-two sequences are files of the same kind.
+`label` is typed once the package's types are in your TypeScript program: the
+[Use](https://github.com/snapseq/snapseq/tree/main/packages/label#use) section of
+the label README says how. The other two sequences are files of the same kind.
 
 ```ts
 // snapseq/spring.orchestration.ts
@@ -108,8 +108,7 @@ what it returns is ignored.
 
 snapseq loads the file and the config with jiti, rooted at the config file's
 folder, so TypeScript and the `paths` of your `tsconfig.json` work without a
-build. The config must export the result of `defineConfig` from snapseq 0.7 or
-newer.
+build. The config must export the result of `defineConfig`.
 
 The function is plain code. Loops, conditions, `try`/`catch` and `console.log`
 all work. snapseq adds one thing to it: `run()`.
@@ -128,7 +127,8 @@ to one capture per device, in device order. It rejects when any device did not
 produce one: see [Errors](#errors).
 
 Await every call. Calls do not overlap, and each sequence and device can be
-captured once per orchestration.
+captured once per orchestration. The one exception is calling again after a
+rejection: see [Errors](#errors).
 
 ### Options
 
@@ -142,7 +142,7 @@ config's key whole; keys you leave out keep the config's.
 | `host`           | Over the env's host, like `--host`. An `http://` or `https://` URL.                                          |
 | `envs`, `defaultEnv`, `sequencesDir`, `screenshotsDir`, `numbering`, `format`, `stabilize` | As in [Config](config.md), for this call. |
 
-Nothing else is accepted: an unknown key (`plugins` from a 0.6 config, say) is
+Nothing else is accepted: an unknown key (`device` for `devices`, say) is
 refused before anything runs. Options are plain JSON, because they travel to
 another process: no functions, no `undefined`.
 
@@ -177,20 +177,22 @@ await run("12346-spring-offer", { env: "uat" }, { use: { locale: "de-DE" } });
 They are plain JSON too. A `grep` that is a `RegExp`, or a `Buffer` in
 `clientCertificates`, is refused with its path. `retries` above 0 and
 `repeatEach` above 1 are refused, and so is `use.baseURL`: the host comes from
-the env, `host` or `--host`. Whatever the overrides say, a child shoots only that
+the env, `host` or `--host`. The child does the refusing: `retries` and
+`repeatEach` when it loads its config, `baseURL` when the sequence starts, before
+any shot ([Errors](#errors)). Whatever the overrides say, a child shoots only that
 sequence's file, on the devices of the call, once.
 
 ## config and dir
 
-`config` is the config with its defaults filled in: `envs`, `defaultEnv`,
-`devices` (desktop and mobile when the config names none), `sequencesDir`,
-`screenshotsDir`, `numbering`, `format` and `stabilize`. Paths are as the config
-spells them, relative to the config file. Read it to build options, as the
-example does with `config.devices`.
+`config` is the config with its defaults filled in, a `ResolvedSnapseqConfig`
+(every key of `SnapseqConfig`, required):
+`envs`, `defaultEnv`, `devices` (desktop and mobile when the config names none),
+`sequencesDir`, `screenshotsDir`, `numbering`, `format` and `stabilize`. Paths are
+as the config spells them, relative to the config file. Read it to build options,
+as the example does with `config.devices`.
 
 `dir` is this run's absolute folder, `<screenshotsDir>/<run>`. Put what the
-orchestration makes there. The run's name is `--run`, else `SNAPSEQ_RUN`, else
-the time the run started.
+orchestration makes there. [Running it](#running-it) says how the run is named.
 
 ## Captures and shots
 
@@ -203,7 +205,7 @@ interface Capture {
   readonly env: string;
   readonly host: string;
   readonly dir: string;        // the absolute folder the shots are in
-  readonly reused: boolean;    // a filter left this part out; it came from the run's cache
+  readonly reused: boolean;    // not shot by this call: from the run's cache (a filtered-out part, or a device that passed in a retried call)
   readonly shots: readonly CaptureShot[];
 }
 
@@ -304,9 +306,8 @@ Steps print nothing. A step that throws ends the run (see [Errors](#errors)). A
 pnpm snapseq <file>.orchestration.ts [--run <name> [sequence...] [--device <name>]] [options]
 ```
 
-Any argument that ends in `.orchestration.ts` (or the other extensions) switches
-snapseq to this mode. The run's folder is named by `--run`, else `SNAPSEQ_RUN`, else
-the time the run started.
+Any argument that names an orchestration file switches snapseq to this mode. The
+run's folder is named by `--run`, else `SNAPSEQ_RUN`, else the time the run started.
 The flags it takes, and the ones it refuses, are in [Running](running.md#orchestration-runs).
 
 What to shoot is in the file, so the words after it are not Playwright's file
@@ -343,8 +344,8 @@ Things to know:
 
 - The cache does not remember options. If you change what `run()` is given for a
   part, shoot that part again with a filter.
-- A filter needs `--run` naming an earlier run, and a part to match, or the run
-  fails with `no part matched "zzz"`.
+- A filter without `--run`, or with a `--run` that names no folder, stops snapseq
+  before the file runs. A filter that matches no part fails with `no part matched "zzz"`.
 - A shot again wipes the sequence's folder on that device first, `labelled/` inside it
   too. The steps write it again.
 - A plain `pnpm snapseq --run review-1` (or `SNAPSEQ_RUN=review-1`) into the same run drops
@@ -362,12 +363,12 @@ the shot it is on and its URL, the server wait, the error line
 ```
   snapseq  spring.orchestration.ts  review-1
 
-  ✔ 12345-spring-launch / desktop    2 shots  1.5s
+  ✔ 12345-spring-launch / desktop          2 shots  1.5s
   ✔ 12346-spring-offer / desktop (uat)     2 shots  1.5s
   ✔ 12346-spring-offer / mobile (uat)      2 shots  1.5s
-  ✔ 12347-spring-reminder / desktop  2 shots  1.5s
-  ✔ 12347-spring-reminder / mobile   2 shots  1.5s
-  ✔ 12347-spring-reminder / tablet   2 shots  1.5s
+  ✔ 12347-spring-reminder / desktop        2 shots  1.5s
+  ✔ 12347-spring-reminder / mobile         2 shots  1.5s
+  ✔ 12347-spring-reminder / tablet         2 shots  1.5s
 
   6 passed  12 shots  22s  screenshots/review-1
   reshoot one part: snapseq snapseq/spring.orchestration.ts --run review-1 <sequence> --device <device>
@@ -377,8 +378,8 @@ the shot it is on and its URL, the server wait, the error line
 - A row names the env, `(uat)`, when the env in use is not the default.
 - After a repair, a part it did not shoot gets a line of its own, `reused  2 shots`.
   A part with nothing to reuse says `building, no capture yet`.
-- The footer counts every part by outcome (`6 passed, 1 reused`), the shots in all
-  the captures, the time and the run folder. When the run ended on an error, a
+- The footer counts every part by outcome (`6 passed, 1 reused`, or `nothing captured`
+  when no part ran), the shots in all the captures, the time and the run folder. When the run ended on an error, a
   `failed  <message>` line comes before it. After Ctrl-C the last line is
   `interrupted  <run folder>` and there is no footer.
 - On an interactive run the run folder then opens in a file manager window, once,
@@ -398,17 +399,18 @@ Ctrl-C stops the child the way it stops a plain run, then ends the run: no furth
 `(spring.orchestration.ts:9)`. Catch it to carry on, or leave it: an error nothing
 catches ends the run with `failed  <message>` and exit code 1.
 
-Before any child starts, nothing is shot:
+Before any child starts, nothing is shot. Each message follows `<sequence>: `, except the last three:
 
 | Message starts with | Cause |
 | ------------------- | ----- |
-| `unknown option "plugins"; options take …` | A key `run()` does not take. The list names the ones it does. |
+| `unknown option "device"; options take …` | A key `run()` does not take. The list names the ones it does. |
 | `options must be an object` | `options` is not a plain object. |
 | `a sequence id names a file in snapseq/ …` | The id is not a name, or is a path out of the folder. |
 | `no snapseq/<id>.seq.ts; sequences: …` | No such file. The message lists the ids it found. |
 | `one sequence, N files: …; keep one` | The id matches `.seq.ts` and `.seq.js`, say. |
 | `unknown device "x" at options.devices[0]; devices: …` | A name not in the config's `devices`. |
 | `options.devices is empty; pick at least one device` | An empty list. |
+| `the config has no devices; give this run some, …` | The config's `devices` is `{}` and the run names none. |
 | `device "x" twice in options.devices, at [1]` | A name picked twice. |
 | `options.devices must be device names or a map …` | Neither names nor a map of use options. |
 | `options.devices["a/b"]: a device name is a folder name …` | A key with a `/` or `\`. A value that is not an object: `options.devices.x must be Playwright use options …`. |
@@ -417,8 +419,6 @@ Before any child starts, nothing is shot:
 | `options.host must be an http(s) URL` | A host such as `localhost:3000`. |
 | `… is a RegExp`, `… is a Buffer`, `… is undefined` | Something that is not plain JSON, with its path. |
 | `playwright[0] must be a Playwright config object` | An override that is not an object. |
-| `playwright[0].use.baseURL is set; …` | Also on a device or an env's `use`. The host comes from the env, `host` or `--host`. |
-| `playwright[0].retries is 2; …`, `….repeatEach is 2; …` | Retries and repeats overwrite shots. |
 | `options.numbering must be zeros …` | As in [Config](config.md#fields). |
 | `options.screenshotsDir must be a folder …` | An empty or non-string path. |
 | `options.sequencesDir must be a folder …` | An empty or non-string path. |
@@ -430,14 +430,14 @@ After the child ran, with its output still on your terminal above the error:
 
 | Message starts with | Cause |
 | ------------------- | ----- |
-| `<sequence> failed on mobile` | The sequence failed on a device. When `maxFailures` stopped the others: `<sequence> failed on desktop, not run on mobile after desktop failed`. |
+| `<sequence> failed on mobile` | The sequence failed on a device. One that sets retries itself fails on its first retry, with `--repeat-each and retries are not supported …` in the output. When `maxFailures` stopped the others: `<sequence> failed on desktop, not run on mobile after desktop failed`. A describe title or a second test in the file fails with `this file runs as "<id>"; a describe title or a second test changes the id to "…"`. |
 | `<sequence> was skipped on mobile: "desktop only"` | A `skipIf` skipped a device. Pick the devices instead: `devices: ["desktop"]`. |
 | `<sequence> never used seq on desktop` | The sequence never used the `seq` or `ctx` fixture, so it has no capture. |
 | `<sequence> reported no usable capture on mobile: …` | The child's capture did not check out: no capture, or a shot file missing. |
-| `<sequence> was retried on mobile; retries must be 0` | A retry, which would overwrite the shots. |
-| `<sequence> ran 2 tests; one sequence per file` | The file has more than one `sequence()` or test. |
+| `<sequence> ran 2 tests; one sequence per file` | A test besides the file's `sequence()`. Two `sequence()` calls stop at load with `duplicate test title "sequence"`. |
 | `<sequence>: …` | An error outside any test, such as a dev server that never came up. The text is the error's first line. |
-| `<sequence>: child exited before reporting …` | The child died or never started its tests, e.g. a config error; read its output. |
+| `<sequence>: could not start the child: …` | The operating system refused to start the child (the Node executable is missing or cannot run). The text is its error. |
+| `<sequence>: child exited before reporting; see the output above` | The child died or never started its tests, e.g. a config error; its own message is above. A `retries` or `repeatEach` an override sets, or an env the run cannot resolve, is refused there when the child loads its config; a `baseURL` when the sequence starts, as `failed on <device>` with `the context's baseURL … is not this run's host` above. |
 | `<sequence>: child ended with 1 after reporting passed …` | The child's exit disagrees with its report. |
 | `<sequence>: was interrupted …` | The child was stopped. |
 
@@ -454,22 +454,21 @@ Ending the run:
 | `<the step's message>` | A step threw, e.g. `@snapseq/pdf: nothing to bind`. |
 
 Before the file runs, the command itself refuses what cannot work, with a message that
-starts `snapseq:`: a filter without `--run`, a `--run` that names no folder, a
-flag the mode refuses, a file with no default export, a config that is not from
-`defineConfig` in 0.7 or newer.
+starts `snapseq:`: a filter without `--run`, a filter whose `--run` names no folder, a
+flag the mode refuses, a file that does not exist, two orchestration files, a file with no
+default export, a config that is not from `defineConfig` in 0.7 or newer, a config whose
+`snapseq` the command cannot talk to (install one version for both).
 
 ## Limits
 
-- One call at a time. Children do not run in parallel; each `run()` is one
-  `playwright test`, so each starts its own browser.
 - An env's `webServer` is started and stopped by each child, unless something
   already answers at its host. Start the server yourself and keep it running for the
   length of the orchestration.
 - Options and Playwright overrides are JSON. Page setup that needs a function belongs
   in the sequence or in a Playwright fixture.
-- A part is captured once per orchestration. Catching a failed call and calling it again
-  is allowed.
+- A capture's metadata (paths, URLs, options) is capped at 1 MiB; over it the sequence
+  fails with `capture metadata over 1 MiB`.
 - `maxFailures` is 1 in each child: after a device fails, the call's other devices
   are not shot. `--max-failures 0` shoots them; the call still rejects.
-- The run cache lives in `node_modules/.cache/snapseq`, beside the config. An
-  `outputDir` that Playwright would empty over it is refused.
+- An `outputDir` over the run cache or the screenshots is refused:
+  [Config](config.md#overriding-playwright-options).

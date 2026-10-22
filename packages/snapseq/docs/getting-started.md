@@ -79,11 +79,8 @@ pnpm snapseq
 Every sequence runs on every device, one at a time. On a terminal, you see one
 line per sequence and device, updated in place as the run goes. When the run
 ends, the run directory opens in a file manager window (Finder on macOS);
-`SNAPSEQ_OPEN=0` keeps it closed. Piped, in CI or in an agent, or with
-`--list`, `--debug`, `--ui`, `--ui-host`, `--ui-port`, `PWDEBUG` or
-`TERM=dumb`, the output is Playwright's list reporter instead: it ends with a
-count like `2 passed (4.9s)`, not the summary line below, and it does not
-print the run directory or open a window.
+`SNAPSEQ_OPEN=0` keeps it closed. Piped or in CI, the output is Playwright's
+list reporter instead ([Running](running.md#the-terminal)).
 
 ```
   ✔ pricing / desktop  2 shots  3.1s

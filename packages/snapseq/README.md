@@ -11,9 +11,10 @@ command, and defaults suited to long sequential runs. Everything else is stock
 Playwright: `--headed`, `--ui`, `--debug`, `--trace on`, reporters, the VS Code
 extension.
 
-Capture lives in `snapseq`: it takes the shots, and its `stabilize` setting, on by
-default, holds the page still for each one (steady viewport units for `snapPage`,
-no motion, the pointer off the content). What happens to the shots afterwards is
+Capture lives in `snapseq`: it takes the shots, and its `stabilize` setting
+([Config](docs/config.md#stabilize)), on by default, holds the page still for each
+one (steady viewport units for `snapPage`, no motion, the pointer off the content).
+What happens to the shots afterwards is
 steps in an [orchestration file](docs/orchestration.md), which runs several
 sequences in an order you choose: `@snapseq/label` puts a label strip above each
 shot, and `@snapseq/pdf` binds shots into a PDF.
@@ -35,11 +36,6 @@ export default defineConfig({
   envs: { dev: { host: "http://localhost:3000" } },
 });
 ```
-
-`stabilize` is on without being listed. A page with a `100vh` section would make
-`snapPage` refuse it (`the document grew …`); with `stabilize` the section keeps
-its height, and motion stops and the pointer leaves the content before each shot.
-`stabilize: false` turns it off ([Config](docs/config.md#stabilize)).
 
 ```ts
 // snapseq/pricing.seq.ts

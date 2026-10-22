@@ -1,7 +1,7 @@
 {
   "name": "snapseq",
   "version": "0.6.0",
-  "description": "Playwright Test fixtures for scripted screenshot sequences.",
+  "description": "Scripted screenshot sequences on Playwright Test, and orchestration files that run them.",
   "license": "ISC",
   "repository": {
     "type": "git",
@@ -17,6 +17,7 @@
     "screenshot",
     "screenshots",
     "sequence",
+    "orchestration",
     "full-page",
     "visual",
     "fixtures",
@@ -30,7 +31,6 @@
     "dist"
   ],
   "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
     "snapseq": "dist/cli.js"

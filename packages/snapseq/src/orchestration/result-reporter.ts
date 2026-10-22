@@ -2,26 +2,25 @@
 // defineConfig appends it last in an orchestration run; it prints nothing, so the terminal stays the other reporters'.
 import { writeSync } from "node:fs";
 import type { FullResult, Reporter, Suite, TestCase, TestError, TestResult } from "@playwright/test/reporter";
+import { errorText, skipReason } from "../reporter.js";
 
-interface Entry {
+export interface Entry {
   device: string;
   status: TestResult["status"] | "not run";
-  retry: number;
-  /** The retries the test was given, `test.describe.configure({ retries })` included: a pass at attempt 0 does not show them. */
-  retries: number;
-  usedSeq: boolean;
   skipReason: string | null;
   error: string | null;
   capture: unknown;
 }
 
-const message = (error: TestError | undefined): string | null => error?.message ?? error?.value ?? null;
+export interface Report {
+  status: FullResult["status"];
+  errors: string[];
+  tests: Entry[];
+}
 
-// The pipe the parent opened, named by SNAPSEQ_RESULT_FD; an ordinary run sets none, and gets nothing, whatever fd 3 it inherited.
+// fd 3: the pipe the parent opened (spawn.ts). Only a request adds this reporter, and only the parent writes one.
 function toParent(text: string): void {
-  const fd = Number(process.env.SNAPSEQ_RESULT_FD);
-  if (!Number.isInteger(fd) || fd < 3) return;
-  for (let rest = Buffer.from(text); rest.length > 0; ) rest = rest.subarray(writeSync(fd, rest));
+  for (let rest = Buffer.from(text); rest.length > 0; ) rest = rest.subarray(writeSync(3, rest));
 }
 
 export default class ResultReporter implements Reporter {
@@ -42,24 +41,23 @@ export default class ResultReporter implements Reporter {
   onBegin(_config: unknown, suite: Suite): void {
     for (const test of suite.allTests()) {
       const device = test.parent.project()?.name ?? "";
-      this.tests.set(test.id, { device, status: "not run", retry: 0, retries: test.retries, usedSeq: false, skipReason: null, error: null, capture: null });
+      this.tests.set(test.id, { device, status: "not run", skipReason: null, error: null, capture: null });
     }
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
     const entry = this.tests.get(test.id);
     if (!entry) return;
-    const annotations = [...result.annotations, ...test.annotations];
     entry.status = result.status;
-    entry.retry = result.retry;
-    entry.usedSeq = annotations.some((a) => a.type === "snapseq" && a.description === "usedSeq");
-    entry.skipReason = annotations.find((a) => a.type === "skip" || a.type === "fixme")?.description ?? null;
-    entry.error = message(result.errors[0]);
+    entry.skipReason = skipReason(test, result) ?? null;
+    entry.error = result.errors[0] ? errorText(result.errors[0]) : null;
     entry.capture = null;
     if (result.status !== "passed") return;
     const attached = result.attachments.filter((a) => a.name === "snapseq-capture");
-    if (attached.length !== 1) {
-      entry.error = `snapseq: ${attached.length === 0 ? "no" : attached.length} snapseq-capture attachments on a passed test, expected one`;
+    // None: the sequence never used `seq`, as the fixture attaches one whenever it did and the test passed.
+    if (attached.length === 0) return;
+    if (attached.length > 1) {
+      entry.error = `snapseq: ${attached.length} snapseq-capture attachments on a passed test, expected one`;
       return;
     }
     try {
@@ -70,10 +68,10 @@ export default class ResultReporter implements Reporter {
   }
 
   onError(error: TestError): void {
-    this.errors.push(message(error) ?? "unknown error");
+    this.errors.push(errorText(error));
   }
 
   onEnd(result: FullResult): void {
-    this.write(JSON.stringify({ version: 1, status: result.status, errors: this.errors, tests: [...this.tests.values()] }));
+    this.write(JSON.stringify({ status: result.status, errors: this.errors, tests: [...this.tests.values()] } satisfies Report));
   }
 }
