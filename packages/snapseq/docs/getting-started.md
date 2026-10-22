@@ -9,7 +9,7 @@ In the app that owns the pages. In a monorepo, each app gets its own install
 and its own config.
 
 ```bash
-pnpm add -D @playwright/test snapseq @snapseq/stabilize
+pnpm add -D @playwright/test snapseq
 pnpm exec playwright install chromium
 ```
 
@@ -19,8 +19,7 @@ Node 22 (`nvm use 22`).
 Without access to the registry, vendor it instead: run `pnpm build` in a
 checkout, copy `dist/`, `README.md` and `package.json` (without `scripts`,
 `devDependencies` and `files`) into the consumer, e.g. `vendor/snapseq`, and
-depend on it with `"snapseq": "file:../../vendor/snapseq"`. Do the same for
-`@snapseq/stabilize`.
+depend on it with `"snapseq": "file:../../vendor/snapseq"`.
 
 ## 2. Write the config
 
@@ -29,13 +28,11 @@ depend on it with `"snapseq": "file:../../vendor/snapseq"`. Do the same for
 ```ts
 // snapseq.config.ts
 import { defineConfig } from "snapseq";
-import { stabilize } from "@snapseq/stabilize";
 
 export default defineConfig({
   envs: {
     dev: { host: "http://localhost:3000", webServer: "pnpm dev" },
   },
-  plugins: [stabilize()],
 });
 ```
 
@@ -44,10 +41,11 @@ command that serves it: snapseq starts it before the run if nothing answers
 at `host` yet, and stops it after. Leave `webServer` out to run against a
 server you start yourself.
 
-`stabilize()` is a plugin. Without it, a page with a `100vh` section makes
+`stabilize` is on without being listed. A page with a `100vh` section would make
 `snapPage` fail (`the document grew …`): the section grows with the viewport
-and the page never settles. With it, the section keeps its height. The plugin
+and the page never settles. With `stabilize` the section keeps its height. It
 also stops motion and moves the pointer off the content before each shot.
+[Config](config.md#stabilize) lists its steps and how to turn them off.
 
 Two devices come by default, `desktop` (1920 × 1080) and `mobile` (390 × 844
 at 2x, touch). [Config](config.md#devices) covers changing them.
@@ -116,4 +114,5 @@ a script or CI, name it: `SNAPSEQ_RUN=nightly pnpm snapseq` writes
 
 - One sequence, one device, another env: [Running](running.md).
 - A menu that opens, a tray that docks, a state that loads late: [Examples](examples.md).
+- A label on each shot, a PDF per device, several sequences in one run: [Orchestration](orchestration.md).
 - A shot that looks wrong: [Troubleshooting](troubleshooting.md).

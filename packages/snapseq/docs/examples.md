@@ -145,12 +145,11 @@ A promo tray docks to the bottom of the viewport and lands in its slot when
 the page end scrolls into view. `snapPage` grows the viewport to the page
 height, so the tray lands and the shot shows it in place.
 
-A page whose height follows the viewport, a `100vh` hero or a loader pinned
-to the page end, grows again with every resize. `snapPage` refuses it; use
-Playwright's native full page there, or list `stabilize()` from
-`@snapseq/stabilize` in `plugins` ([Plugins](plugins.md)) so `snapPage` takes a
-`100vh` hero (`stabilize({ motion: false, hover: false, floating: false, scrollEvent: false })`
-for that alone).
+A page whose height follows the viewport in a way `stabilize` cannot freeze, such
+as a script that sizes a loader from `innerHeight`, grows again with every resize.
+`snapPage` refuses it; use Playwright's native full page there. A plain `100vh`
+hero is not one of those: with `stabilize` on, the default, `snapPage` takes it
+([Config](config.md#viewport-units)).
 
 ```ts
 // snapseq/landing.seq.ts
@@ -161,7 +160,7 @@ sequence(async ({ page, seq }) => {
   await page.goto("/landing");
   await seq.snapPage();                // 01.png  the tray rests in its slot at the page end
 
-  await page.goto("/landing/video");   // a 100vh hero: its height follows the viewport
+  await page.goto("/landing/video");   // a script sizes the page from innerHeight
   await seq.snap({ fullPage: true });  // 02.png  native full page; sticky elements stay pinned
 });
 ```
