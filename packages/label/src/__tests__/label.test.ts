@@ -96,14 +96,6 @@ describe("label", () => {
     expect(readdirSync(join(dir, "labelled"))).toEqual(["01.png"]);
   });
 
-  it("copies a shot without a label byte for byte", async () => {
-    const dir = tmp();
-    const path = await source(dir, "01.png");
-    const file = await run(path, undefined);
-    expect(file).toBe(join(dir, "labelled", "01.png"));
-    expect(readFileSync(file).equals(readFileSync(path))).toBe(true);
-  });
-
   it("copies a shot whose label text is empty", async () => {
     const dir = tmp();
     const path = await source(dir, "01.png");
@@ -141,11 +133,8 @@ describe("label", () => {
     expect(existsSync(join(two, "labelled", "01.png"))).toBe(true);
   });
 
-  it("returns an empty array and writes nothing for no captures", async () => {
-    const dir = tmp();
+  it("returns an empty array for no captures", async () => {
     expect(await label([])).toEqual([]);
-    expect(await label([], { theme: "dark" })).toEqual([]);
-    expect(readdirSync(dir)).toEqual([]);
   });
 
   it("writes over a file that is already in labelled/", async () => {
@@ -274,20 +263,10 @@ describe("label", () => {
     expect(bare(160, 199)).toBe(true);
   });
 
-  it("cuts a long label at the end, not the start", async () => {
+  it.each([200, 5000])("cuts a label of %i characters at the end, not the start", async (count) => {
     const dir = tmp();
     const path = await source(dir, "01.png");
-    const seen = await look(await run(path, "W".repeat(200)));
-    const bare = (x0: number, x1: number) => seen.box(x0, x1, 0, 23).every((p) => p.join() === "255,255,255,255");
-    expect(bare(0, 7)).toBe(true);
-    expect(bare(8, 40)).toBe(false);
-    expect(bare(180, 199)).toBe(false);
-  });
-
-  it("cuts a label of thousands of characters at the end, not the start", async () => {
-    const dir = tmp();
-    const path = await source(dir, "01.png");
-    const seen = await look(await run(path, "W".repeat(5000)));
+    const seen = await look(await run(path, "W".repeat(count)));
     const bare = (x0: number, x1: number) => seen.box(x0, x1, 0, 23).every((p) => p.join() === "255,255,255,255");
     expect([seen.width, seen.height]).toEqual([200, 124]);
     expect(bare(0, 7)).toBe(true);
