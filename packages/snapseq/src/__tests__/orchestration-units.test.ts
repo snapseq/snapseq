@@ -1,12 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { type RunCache, loadCache, lockRun, reusable, saveCache } from "../orchestration/cache.js";
 import { describeFilters, matches } from "../orchestration/filters.js";
 import { callSite, target } from "../orchestration/run.js";
+import { spawnChild } from "../orchestration/spawn.js";
+import { partLine } from "../orchestration/terminal.js";
 import type { ResolvedSnapseqConfig } from "../orchestration/types.js";
 import { checkRun } from "../orchestration/validate.js";
 
@@ -79,11 +81,55 @@ describe("checkRun", () => {
     ["baseURL in an env's use", "a", { envs: { dev: { host: "https://dev.example", use: { baseURL: "https://x" } } } }, [], "options.envs.dev.use.baseURL is set"],
     ["baseURL in Playwright's use", "a", {}, [{ use: { baseURL: "https://x" } }], "playwright[0].use.baseURL is set"],
     ["baseURL in a Playwright project", "a", {}, [{ projects: [{ name: "x", use: { baseURL: "https://x" } }] }], "playwright[0].projects[0].use.baseURL is set"],
-    ["retries", "a", {}, [{ retries: 1 }], "playwright[0].retries is 1; a retry overwrites the shots"],
-    ["repeatEach", "a", {}, [{ repeatEach: 2 }], "playwright[0].repeatEach is 2; a sequence runs once per device"],
+    ["retries", "a", {}, [{ retries: 1 }], "retries is 1 after the overrides merge; a retry overwrites the shots"],
+    ["repeatEach", "a", {}, [{ repeatEach: 2 }], "repeatEach is 2 after the overrides merge; a sequence runs once per device"],
+    ["retries on a selected project", "a", {}, [{ projects: [{ name: "mobile", retries: 1 }] }], 'retries is 1 on project "mobile" after the overrides merge'],
     ["numbering that is not zeros", "a", { numbering: "01" }, [], 'options.numbering must be zeros, like "00", not "01"'],
   ])("refuses %s", (_, sequence, options, playwright, message, invocationEnv) => {
     expect(() => check(sequence, options, playwright, invocationEnv)).toThrow(message);
+  });
+
+  it("checks retries and repeatEach as the child merges them, on the selected projects only", () => {
+    const run = (overrides: unknown[], playwright: unknown[], options: object = {}) => () =>
+      checkRun("a", options, playwright, { config, configDir: dir, overrides });
+    expect(run([{ retries: 1, repeatEach: 3 }], [{ retries: 0, repeatEach: 1 }])).not.toThrow();
+    expect(run([], [{ projects: [{ name: "tablet", retries: 2 }] }])).not.toThrow();
+    expect(run([{ projects: [{ name: "mobile", retries: 2 }] }], [], { devices: ["desktop"] })).not.toThrow();
+    expect(run([{ projects: [{ name: "mobile", retries: 2 }] }], [])).toThrow('retries is 2 on project "mobile"');
+    expect(run([{ projects: [{ name: "mobile", retries: 2 }] }], [{ projects: [{ name: "mobile", retries: 0 }] }])).not.toThrow();
+    expect(run([{ retries: 1 }], [])).toThrow("retries is 1 after the overrides merge");
+  });
+
+  it("checks the devices picked from the config for JSON too, naming the path", () => {
+    const cert = { viewport: { width: 1, height: 1 }, clientCertificates: [{ origin: "https://x", cert: Buffer.from("c") }] };
+    const withCert = { ...config, devices: { ...config.devices, desktop: cert } };
+    const run = (options: object) => () => checkRun("a", options, [], { config: withCert, configDir: dir, overrides: [] });
+    const message = "config.devices.desktop.clientCertificates[0].cert is a Buffer; a device reaches the child as JSON";
+    expect(run({})).toThrow(message);
+    expect(run({ devices: ["desktop"] })).toThrow(message);
+    expect(run({ devices: ["mobile"] })).not.toThrow();
+  });
+
+  it("refuses a run with no devices at all, before anything measures them", () => {
+    expect(() => checkRun("a", {}, [], { config: { ...config, devices: {} }, configDir: dir, overrides: [] })).toThrow(
+      "the config has no devices; give this run some",
+    );
+  });
+
+  it("refuses a run whose envs drop the defaultEnv the config wrote, unless the run names its env", () => {
+    const preview = { envs: { preview: { host: "https://preview.example" } } };
+    const run = (options: object, written?: string, invocationEnv?: string) => () =>
+      checkRun("a", options, [], { config, configDir: dir, overrides: [], defaultEnv: written, invocationEnv });
+    expect(run(preview, "dev")).toThrow('the config\'s defaultEnv "dev" is not in options.envs (preview); name one with env: "preview" or defaultEnv');
+    expect(run(preview)).not.toThrow(); // nothing written: the child takes the first env
+    expect(run({ ...preview, env: "preview" }, "dev")).not.toThrow();
+    expect(run({ ...preview, defaultEnv: "preview" }, "dev")).not.toThrow();
+  });
+
+  it("finds a file the disk names decomposed from an id typed composed, and hands back the disk's spelling", () => {
+    const nfd = "caf\u0065\u0301";
+    write(join(dir, "snapseq", nfd, `${nfd}.seq.ts`));
+    expect(check("caf\u00e9/caf\u00e9").file).toBe(join(dir, "snapseq", nfd, `${nfd}.seq.ts`));
   });
 });
 
@@ -127,6 +173,7 @@ describe("callSite", () => {
   it("reads file URLs, paths with spaces and frames without a function name", () => {
     expect(callSite(`Error\n    at run (${own}:1:1)\n    at file:///My%20App/a.orchestration.mjs:4:2`)).toBe("a.orchestration.mjs:4");
     expect(callSite("Error\n    at main (/My App/b.orchestration.ts:7:1)")).toBe("b.orchestration.ts:7");
+    expect(callSite("Error\n    at main (/My (App)/c.orchestration.ts:8:1)")).toBe("c.orchestration.ts:8");
     expect(callSite(`Error\n    at run (${own}:1:1)\n    at node:internal/x:1:1`)).toBeUndefined();
   });
 });
@@ -148,6 +195,35 @@ describe("lockRun", () => {
     writeFileSync(lock, "12345678"); // somebody else's now: not ours to remove
     again();
     expect(existsSync(lock)).toBe(true);
+    expect(readdirSync(dirname(file))).toEqual(["r1.lock"]); // the takeover left nothing behind
+  });
+
+  it("counts a lock that is empty or not a pid as busy: another process may be writing it", () => {
+    const file = join(tmp(), "runs", "r1.json");
+    const lock = join(dirname(file), "r1.lock");
+    for (const text of ["", "abc"]) {
+      write(lock, text);
+      expect(() => lockRun(file)).toThrow(`snapseq: another snapseq is writing this run; its lock is ${lock}`);
+      expect(readFileSync(lock, "utf8")).toBe(text);
+    }
+  });
+});
+
+describe("spawnChild", () => {
+  it("keeps why a child could not start", async () => {
+    const closed = await spawnChild([join(tmp(), "no-such-node")], {}).closed;
+    expect(closed).toMatchObject({ code: null, error: expect.stringContaining("ENOENT") });
+  });
+});
+
+describe("partLine", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("gives the parent's lines the mark slot a child's rows have: one column where marks are drawn, four for words", () => {
+    vi.stubEnv("TERM", "xterm-256color");
+    let out = "";
+    partLine({ isTTY: true, write: (s: string) => (out += s) }, "=", "a / desktop", 14, "reused  2 shots");
+    partLine({ write: (s: string) => (out += s) }, "+", "a / desktop", 14, "building, no capture yet");
+    expect(out).toBe("  = a / desktop     reused  2 shots\n  +    a / desktop     building, no capture yet\n");
   });
 });
 

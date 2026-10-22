@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { lockRun, runCacheFile } from "./orchestration/cache.js";
 import { ORCHESTRATION_FILE, checkRunName, main } from "./orchestration/main.js";
+import { isDirName } from "./orchestration/validate.js";
 
 const CONFIG_FILES = ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
   (ext) => `snapseq.config.${ext}`,
@@ -32,12 +33,14 @@ reshoot the matching parts and reuse the rest. Every child takes --headed,
 --debug, --trace, --timeout, --max-failures and --record.
 `;
 
+/** The given file; for a directory, or none given, the snapseq.config.* in it. A directory without one goes to Playwright as it is. */
 function findConfig(given: string | undefined): string {
-  const config = given ?? CONFIG_FILES.find((file) => existsSync(resolve(file)));
-  if (!config) {
+  if (given !== undefined && !statSync(given, { throwIfNoEntry: false })?.isDirectory()) return given;
+  const config = CONFIG_FILES.map((file) => join(given ?? "", file)).find((file) => existsSync(resolve(file)));
+  if (!config && given === undefined) {
     throw new Error(`snapseq: no ${CONFIG_FILES[0]} in ${process.cwd()}; pass -c <path>`);
   }
-  return config;
+  return config ?? given!;
 }
 
 function translateArgs(argv: string[]): { config: string; args: string[]; run?: string } {
@@ -122,8 +125,11 @@ if (argv.includes("--help") || argv.includes("-h")) {
   }
 } else {
   try {
-    const { config, args, run } = translateArgs(argv);
+    const { config, args, run: flag } = translateArgs(argv);
     const cli = playwrightCli(config);
+    // --run, else an inherited SNAPSEQ_RUN: the same named run either way.
+    const run = flag ?? (process.env.SNAPSEQ_RUN || undefined);
+    if (run !== undefined && !isDirName(run)) throw new Error(`snapseq: SNAPSEQ_RUN must be a directory name, not a path: "${run}"`);
     if (run !== undefined) {
       // A hand reshoot into a named run: keep an orchestration off it while Playwright runs, and drop the run's
       // cache first so no entry can outlive the shots it describes.

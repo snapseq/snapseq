@@ -123,6 +123,10 @@ const real = (p: string): string => {
   }
 };
 
+/** Braille and one-column marks where the terminal can draw them; words in a four-column slot elsewhere. */
+export const marks = (out: { isTTY?: boolean }): boolean =>
+  !!out.isTTY && process.env.TERM !== "linux" && (process.platform !== "win32" || !!process.env.WT_SESSION);
+
 /** `nested/pricing / desktop`, the same identity the screenshots directory uses; ` (uat)` after it when `env` is given. */
 function labelOf(test: TestCase, env?: string): string {
   const project = test.parent.project();
@@ -174,10 +178,7 @@ export default class SnapseqReporter implements Reporter {
     this.server = options.server;
     this.terminal = !!this.out.isTTY && this.out.columns !== undefined;
     this.live = this.terminal && (this.out.rows ?? 0) >= MIN_ROWS;
-    this.fancy =
-      !!this.out.isTTY &&
-      process.env.TERM !== "linux" &&
-      (process.platform !== "win32" || !!process.env.WT_SESSION);
+    this.fancy = marks(this.out);
     this.color = this.fancy && !process.env.NO_COLOR && process.env.FORCE_COLOR !== "0";
     // A resize invalidates the cursor arithmetic; print events from then on.
     // The last frame stays as it was, its errors clipped to a line, so what it

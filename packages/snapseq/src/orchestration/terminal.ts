@@ -3,6 +3,7 @@
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { openInFileManager } from "../open.js";
+import { marks } from "../reporter.js";
 
 export interface Out {
   isTTY?: boolean;
@@ -22,9 +23,9 @@ export function duration(ms: number): string {
 export const heading = (out: Out, file: string, run: string): unknown =>
   out.write(`  snapseq  ${basename(file)}  ${run}\n\n`);
 
-/** `12345-spring-launch / desktop  reused  12 shots`, the label padded like the children's rows. */
-export const partLine = (out: Out, label: string, width: number, text: string): unknown =>
-  out.write(`  ${label.padEnd(width)}  ${text}\n`);
+/** `= 12345-spring-launch / desktop  reused  12 shots`: a mark, then the label padded, as a child composes its rows. */
+export const partLine = (out: Out, mark: string, label: string, width: number, text: string): unknown =>
+  out.write(`  ${mark.padEnd(marks(out) ? 1 : 4)} ${label.padEnd(width)}  ${text}\n`);
 
 export const failed = (out: Out, message: string): unknown => out.write(`\n  failed  ${message}\n`);
 

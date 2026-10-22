@@ -426,14 +426,14 @@ export function createSequence(
   // devicePixelRatio. Read from the page only when the option is unset (a headed run takes the screen's), once,
   // at the first shot, and bounded: it sizes the label strip and the PDF page.
   let ratio = deviceScaleFactor;
-  const open = async (options: SnapOptions | undefined): Promise<Shot> => {
+  const open = async (options: SnapOptions | undefined, given: SnapOptions): Promise<Shot> => {
     if (ratio === undefined) {
       const read: unknown = await page.evaluate(() => window.devicePixelRatio);
       ratio = typeof read === "number" && Number.isFinite(read) ? Math.min(16, Math.max(0.1, read)) : 1;
     }
     const index = counter + 1;
     const name = `${String(index).padStart(numbering.length, "0")}.${ext}`;
-    return { name, path: join(full, name), url: page.url(), index, options: { ...options }, given: snapshot(options), notes: [], format: { ...format }, deviceScaleFactor: ratio };
+    return { name, path: join(full, name), url: page.url(), index, options: { ...options }, given, notes: [], format: { ...format }, deviceScaleFactor: ratio };
   };
   // A throw names stabilize and the shot, so the reader knows which switch to look at.
   const hook = async (kind: "beforeSnap" | "afterGrow" | "afterRestore", shot: Shot): Promise<void> => {
@@ -475,8 +475,10 @@ export function createSequence(
   // One shot at a time: a second snap before the first resolved (a hook taking
   // its own, a Promise.all in a sequence) would number and list them out of order.
   let busy = false;
-  const one = async <T>(shoot: () => Promise<T>): Promise<T> => {
+  const one = async <T>(options: SnapOptions | undefined, shoot: (given: SnapOptions) => Promise<T>): Promise<T> => {
     if (busy) throw new Error("snapseq: a shot is already in progress; await each snap before the next");
+    // What the sequence gave, recorded at the call, before any await: a later change to its object cannot reach it.
+    const given = snapshot(options);
     busy = true;
     try {
       // A click that navigates resolves once the new document commits, while it
@@ -484,23 +486,23 @@ export function createSequence(
       // would see half a page. Not "load": a hung beacon would hold every shot
       // to the navigation bound, which bounds this wait too.
       await page.waitForLoadState("domcontentloaded");
-      return await shoot();
+      return await shoot(given);
     } finally {
       busy = false;
     }
   };
 
   return {
-    snap: (options) => one(async () => {
-      const shot = await open(options);
+    snap: (options) => one(options, async (given) => {
+      const shot = await open(options, given);
       await hook("beforeSnap", shot);
       const notes: string[] = [];
       await ready(page, notes, !!shot.options.fullPage, shot.options.clip);
       return take(shot, notes);
     }),
-    snapPage: (options) => one(async () => {
+    snapPage: (options) => one(options, async (given) => {
       // Before the viewport is read and grown, so what a hook changed is settled and measured.
-      const shot = await open(options);
+      const shot = await open(options, given);
       await hook("beforeSnap", shot);
       delete shot.options.fullPage; // the grown viewport is the full page already
       const viewport = page.viewportSize();

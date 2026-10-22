@@ -1,6 +1,6 @@
 // What a run() can get wrong before any child starts. Each check throws its first problem with the path to
 // the value and, where there are some, the valid names; run.ts adds the sequence and the call site.
-import { existsSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DeviceConfig } from "../define.js";
 import type { ResolvedSnapseqConfig } from "./types.js";
@@ -16,6 +16,8 @@ export interface CheckContext {
   overrides: readonly unknown[];
   /** `--env`, or the SNAPSEQ_ENV snapseq started with. */
   invocationEnv?: string;
+  /** The config's `defaultEnv` as written, which a child falls back to when nothing names an env. */
+  defaultEnv?: string;
 }
 
 export interface Checked {
@@ -32,6 +34,14 @@ export interface Checked {
 export const isDirName = (name: string): boolean =>
   name !== "" && name !== "." && name !== ".." && !/[\\/\0]/.test(name);
 
+/** A run's default name, a plain run's and an orchestration's alike: local time, the way Finder names screenshots, with a two-digit hour: `2026-10-01 at 04.07.16 PM`. */
+export function runStamp(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  const h = d.getHours();
+  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return `${date} at ${p(h % 12 || 12)}.${p(d.getMinutes())}.${p(d.getSeconds())} ${h < 12 ? "AM" : "PM"}`;
+}
+
 export function isHttpUrl(host: string): boolean {
   try {
     const url = new URL(host);
@@ -41,7 +51,7 @@ export function isHttpUrl(host: string): boolean {
   }
 }
 
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+export const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) && [Object.prototype, null].includes(Object.getPrototypeOf(v));
 
 const prop = (path: string, key: string): string =>
@@ -88,6 +98,27 @@ export function sequenceIds(dir: string): string[] {
   }
 }
 
+const entries = (dir: string): string[] => {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+};
+
+/** The files of `id` under `dir` as the disk spells them: names compared NFC, as macOS may keep them decomposed. */
+function sequenceFiles(dir: string, id: string): string[] {
+  const parts = id.normalize("NFC").split("/");
+  const name = parts.pop()!;
+  for (const part of parts) {
+    const hit = entries(dir).find((entry) => entry.normalize("NFC") === part);
+    if (hit === undefined) return [];
+    dir = join(dir, hit);
+  }
+  const here = entries(dir);
+  return EXTENSIONS.flatMap((ext) => here.filter((entry) => entry.normalize("NFC") === `${name}.seq.${ext}`)).map((entry) => join(dir, entry));
+}
+
 /** Everything about one run() that can be checked before a child starts. */
 export function checkRun(sequence: unknown, options: unknown, playwright: readonly unknown[], ctx: CheckContext): Checked {
   const { config, configDir } = ctx;
@@ -107,7 +138,7 @@ export function checkRun(sequence: unknown, options: unknown, playwright: readon
   if (typeof sequence !== "string" || isAbsolute(sequence) || !sequence.split("/").every(isDirName)) {
     fail(`a sequence id names a file in ${dirOption}/ without .seq.ts, like "12345-spring-launch"; got ${JSON.stringify(sequence)}`);
   }
-  const files = EXTENSIONS.map((ext) => join(sequencesDir, `${sequence}.seq.${ext}`)).filter((f) => existsSync(f));
+  const files = sequenceFiles(sequencesDir, sequence as string);
   if (files.length === 0) {
     fail(`no ${dirOption}/${sequence}.seq.ts; sequences: ${sequenceIds(sequencesDir).join(", ") || "(none)"}`);
   }
@@ -141,6 +172,14 @@ export function checkRun(sequence: unknown, options: unknown, playwright: readon
       if (!isPlainObject(devices[name])) fail(`${path} must be Playwright use options, like { viewport: { width: 1440, height: 900 } }`);
     }
   }
+  // Picked from the config, by name or by default: they reach the child as JSON too.
+  if (!isPlainObject(o.devices)) {
+    for (const name of deviceOrder) {
+      const problem = notJson(devices[name], prop("config.devices", name));
+      if (problem) fail(`${problem}; a device reaches the child as JSON`);
+    }
+  }
+  if (deviceOrder.length === 0) fail("the config has no devices; give this run some, like { devices: { desktop: { viewport: { width: 1440, height: 900 } } } }");
 
   // Envs and the host.
   if (o.envs !== undefined) {
@@ -157,6 +196,10 @@ export function checkRun(sequence: unknown, options: unknown, playwright: readon
   }
   if (ctx.invocationEnv !== undefined && !known(ctx.invocationEnv)) {
     fail(`unknown env "${ctx.invocationEnv}" from --env or SNAPSEQ_ENV; this run's envs: ${envNames}`);
+  }
+  const fallback = o.defaultEnv ?? ctx.defaultEnv;
+  if (o.env === undefined && ctx.invocationEnv === undefined && fallback !== undefined && !known(fallback)) {
+    fail(`the config's defaultEnv "${fallback}" is not in options.envs (${envNames}); name one with env: "${Object.keys(envs)[0]}" or defaultEnv`);
   }
   if (o.host !== undefined && (typeof o.host !== "string" || !isHttpUrl(o.host))) {
     fail(`options.host must be an http(s) URL, got ${JSON.stringify(o.host)}`);
@@ -176,12 +219,26 @@ export function checkRun(sequence: unknown, options: unknown, playwright: readon
     for (const [at, level] of [[path, layer], ...projects.map((p, j) => [`${path}.projects[${j}]`, p] as const)] as const) {
       if (!isPlainObject(level)) continue;
       if (path.startsWith("playwright")) baseURLs.push([`${at}.use`, level.use]);
-      if (typeof level.retries === "number" && level.retries > 0) {
-        fail(`${at}.retries is ${level.retries}; a retry overwrites the shots: catch the rejection and call run() again`);
-      }
-      if (typeof level.repeatEach === "number" && level.repeatEach > 1) {
-        fail(`${at}.repeatEach is ${level.repeatEach}; a sequence runs once per device`);
-      }
+    }
+  }
+  // retries and repeatEach as the child ends up with them: each override in order, the config's first, at the top
+  // level, and on a selected device's project what an override sets on a project of that name.
+  const top: Record<string, unknown> = {};
+  const selected = new Map(deviceOrder.map((name) => [name, {} as Record<string, unknown>]));
+  const pick = (into: Record<string, unknown> | undefined, from: Record<string, unknown>): void => {
+    for (const key of ["retries", "repeatEach"]) if (into && Object.hasOwn(from, key)) into[key] = from[key];
+  };
+  for (const [, layer] of layers) {
+    if (!isPlainObject(layer)) continue;
+    pick(top, layer);
+    for (const p of Array.isArray(layer.projects) ? layer.projects : []) if (isPlainObject(p)) pick(selected.get(p.name as string), p);
+  }
+  for (const [at, level] of [["", top], ...[...selected].map(([name, p]) => [` on project "${name}"`, p] as const)] as const) {
+    if (typeof level.retries === "number" && level.retries > 0) {
+      fail(`retries is ${level.retries}${at} after the overrides merge; a retry overwrites the shots: catch the rejection and call run() again`);
+    }
+    if (typeof level.repeatEach === "number" && level.repeatEach > 1) {
+      fail(`repeatEach is ${level.repeatEach}${at} after the overrides merge; a sequence runs once per device`);
     }
   }
   for (const [path, use] of baseURLs) {

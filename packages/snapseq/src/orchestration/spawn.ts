@@ -10,6 +10,8 @@ export interface Closed {
   report?: string;
   /** Why there is no `report` although bytes arrived. */
   incomplete?: string;
+  /** Why the child could not be started. */
+  error?: string;
 }
 
 export interface Child {
@@ -31,8 +33,11 @@ export function spawnChild(argv: readonly string[], env: NodeJS.ProcessEnv): Chi
   });
   pipe.on("end", () => (ended = true));
   pipe.on("error", () => {});
+  let spawned = false;
+  child.on("spawn", () => (spawned = true));
   const closed = new Promise<Closed>((done) => {
-    child.on("error", () => done({ code: null, signal: null }));
+    // Only a failed start settles it here; a later error (a kill that fails) leaves it to the close.
+    child.on("error", (err) => spawned || done({ code: null, signal: null, error: err.message }));
     child.on("close", (code, signal) => {
       if (size > MAX_REPORT) done({ code, signal, incomplete: "its report was over 8 MiB" });
       else if (!ended && size > 0) done({ code, signal, incomplete: "its report was cut off" });

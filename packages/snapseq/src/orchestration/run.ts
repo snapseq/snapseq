@@ -22,6 +22,8 @@ export interface Target {
 export interface Session {
   config: ResolvedSnapseqConfig;
   overrides: readonly PlaywrightTestConfig[];
+  /** The config's `defaultEnv` as written: what a child falls back to. */
+  defaultEnv?: string;
   /** Absolute. */
   configFile: string;
   run: string;
@@ -43,6 +45,8 @@ interface Entry {
   device: string;
   status: string;
   retry: number;
+  /** The retries the test was given, `test.describe.configure` included. */
+  retries: number;
   usedSeq: boolean;
   skipReason: string | null;
   error: string | null;
@@ -71,7 +75,8 @@ export function callSite(stack: string | undefined): string | undefined {
   for (const line of (stack ?? "").split("\n").slice(1)) {
     const text = line.trim();
     if (!text.startsWith("at ")) continue;
-    const at = text.endsWith(")") ? text.slice(text.lastIndexOf("(") + 1, -1) : text.replace(/^at (?:async )?/, "");
+    // `at fn (location)`: the first " (" ends the name, as a path may hold a "(" of its own.
+    const at = text.endsWith(")") ? text.slice(text.indexOf(" (") + 2, -1) : text.replace(/^at (?:async )?/, "");
     const m = /^(.*):(\d+):\d+$/.exec(at);
     if (!m) continue;
     const file = m[1]!.startsWith("file://") ? fileURLToPath(m[1]!) : m[1]!;
@@ -116,8 +121,9 @@ function captureProblem(entry: Entry, sequence: string, dir: string): string | u
   const c = entry.capture;
   if (entry.error !== null) return entry.error;
   if (!c || typeof c !== "object") return "no capture";
-  if (c.sequence !== sequence || c.device !== entry.device) return `a capture of ${c.sequence}/${c.device}`;
-  if (typeof c.dir !== "string" || canonical(c.dir) !== canonical(dir)) return `shots in ${c.dir}, not ${dir}`;
+  // NFC: macOS may hand the child the file's name decomposed.
+  if (String(c.sequence).normalize("NFC") !== sequence.normalize("NFC") || c.device !== entry.device) return `a capture of ${c.sequence}/${c.device}`;
+  if (typeof c.dir !== "string" || canonical(c.dir).normalize("NFC") !== canonical(dir).normalize("NFC")) return `shots in ${c.dir}, not ${dir}`;
   if (!Array.isArray(c.shots)) return "no shots";
   const seen = new Set<number>();
   for (const shot of c.shots as CaptureShot[]) {
@@ -140,6 +146,7 @@ function captureProblem(entry: Entry, sequence: string, dir: string): string | u
  */
 function judge(sequence: string, order: readonly string[], closed: Closed, dirOf: (device: string) => string) {
   const accepted = new Map<string, CachedCapture>();
+  if (closed.error !== undefined) return { accepted, report: undefined, problem: `${sequence}: could not start the child: ${closed.error}` };
   const report = parseReport(closed);
   if (!report) {
     const why = closed.incomplete ? ` (${closed.incomplete})` : "";
@@ -149,6 +156,7 @@ function judge(sequence: string, order: readonly string[], closed: Closed, dirOf
   const notRun: string[] = [];
   const unused: string[] = [];
   const retried: string[] = [];
+  const configured: string[] = [];
   const other: string[] = [];
   let most = 0;
   for (const device of order) {
@@ -158,6 +166,7 @@ function judge(sequence: string, order: readonly string[], closed: Closed, dirOf
     if (!e) notRun.push(device);
     else if (entries.length > 1) continue;
     else if (e.retry !== 0) retried.push(device);
+    else if (e.retries !== 0) configured.push(device);
     else if (e.status === "passed" && !e.usedSeq) unused.push(device);
     else if (e.status === "passed") {
       const why = captureProblem(e, sequence, dirOf(device));
@@ -173,6 +182,7 @@ function judge(sequence: string, order: readonly string[], closed: Closed, dirOf
     ...other,
     unused.length > 0 ? `never used seq on ${unused.join(", ")}` : "",
     retried.length > 0 ? `was retried on ${retried.join(", ")}; retries must be 0` : "",
+    configured.length > 0 ? `is configured with retries on ${configured.join(", ")}; retries must be 0` : "",
   ].filter(Boolean);
   const notRunPart = notRun.length > 0 ? `not run on ${notRun.join(", ")}${failed[0] ? ` after ${failed[0]} failed` : ""}` : "";
   let problem: string | undefined;
@@ -193,8 +203,8 @@ export function createRunner(s: Session) {
   const configDir = dirname(s.configFile);
   /** `<sequence>/<device>` this orchestration already got back from a run(), reused ones included. */
   const claims = new Set<string>();
-  /** Accepted captures of a failed call, for its retry. */
-  const held = new Map<string, { capture: CachedCapture; fingerprint: string }>();
+  /** The fingerprints of a failed call's accepted captures, for its retry; the captures are in the run's cache. */
+  const held = new Map<string, string>();
   const state = {
     active: undefined as Call | undefined,
     stopped: false,
@@ -235,6 +245,7 @@ export function createRunner(s: Session) {
         configDir,
         overrides: s.overrides,
         invocationEnv: s.invocation.env,
+        defaultEnv: s.defaultEnv,
       });
     } catch (err) {
       throw new Error(`${String(sequence)}: ${(err as Error).message}${where}`);
@@ -257,7 +268,9 @@ export function createRunner(s: Session) {
     const showEnv = to.env !== undefined && to.env !== (options.defaultEnv ?? s.config.defaultEnv);
     // The widest label the children could print, as the reporter builds it.
     const widest = [...Object.keys(s.config.devices), ...checked.deviceOrder].reduce((a, b) => (b.length > a.length ? b : a));
-    const width = Math.max(...[...s.sequenceIds, sequence].map((id) => rowLabel(id, widest, showEnv ? to.env : undefined).length));
+    // With the widest ` (<env>)` any call could show, so every child pads its rows the same.
+    const envs = [...(Object.keys(s.config.envs).length > 1 ? Object.keys(s.config.envs) : []), ...(showEnv ? [to.env!] : [])];
+    const width = Math.max(...[...s.sequenceIds, sequence].flatMap((id) => [undefined, ...envs].map((env) => rowLabel(id, widest, env).length)));
 
     // Each device: the accepted capture of a failed call being retried, the run's cache for a part the filters
     // leave out, or a shoot.
@@ -266,15 +279,15 @@ export function createRunner(s: Session) {
       const key = keyOf(device);
       const match = filtering(s.filters) && matches(s.filters, sequence, device);
       if (match) state.matched = true;
-      const kept = held.get(key);
-      let reuse = kept?.fingerprint === fingerprint(device) ? kept.capture : undefined;
+      // Through the same checks as a filtered reuse: a file the failed call's cleanup removed means a reshoot.
+      let reuse = held.get(key) === fingerprint(device) ? reusable(s.cache, key, origin) : undefined;
       if (!reuse && filtering(s.filters) && !match) {
         reuse = reusable(s.cache, key, origin);
-        if (!reuse) partLine(s.out, rowLabel(sequence, device, showEnv ? to.env : undefined), width, "building, no capture yet");
+        if (!reuse) partLine(s.out, "+", rowLabel(sequence, device, showEnv ? to.env : undefined), width, "building, no capture yet");
       }
       if (reuse) {
         result.set(device, { ...reuse, reused: true });
-        partLine(s.out, rowLabel(sequence, device, showEnv ? reuse.env : undefined), width, `reused  ${plural(reuse.shots.length)}`);
+        partLine(s.out, "=", rowLabel(sequence, device, showEnv ? reuse.env : undefined), width, `reused  ${plural(reuse.shots.length)}`);
       }
     }
 
@@ -310,7 +323,7 @@ export function createRunner(s: Session) {
       for (const [device, capture] of accepted) s.cache.entries[keyOf(device)] = { ...origin, capture };
       if (accepted.size > 0) saveCache(s.cacheFile, s.cache);
       if (problem !== undefined) {
-        for (const [device, capture] of accepted) held.set(keyOf(device), { capture, fingerprint: fingerprint(device) });
+        for (const device of accepted.keys()) held.set(keyOf(device), fingerprint(device));
         throw new Error(`${problem}${where}`);
       }
       for (const [device, capture] of accepted) result.set(device, { ...capture, reused: false });
@@ -327,7 +340,7 @@ export function createRunner(s: Session) {
   }
 
   function childEnv(request: string, to: Target): NodeJS.ProcessEnv {
-    const env: NodeJS.ProcessEnv = { ...process.env, SNAPSEQ_OVERRIDES_FILE: request, SNAPSEQ_RUN: s.run, SNAPSEQ_OPEN: "0" };
+    const env: NodeJS.ProcessEnv = { ...process.env, SNAPSEQ_OVERRIDES_FILE: request, SNAPSEQ_RUN: s.run, SNAPSEQ_OPEN: "0", SNAPSEQ_RESULT_FD: "3" };
     delete env.SNAPSEQ_ENV;
     delete env.SNAPSEQ_HOST;
     if (to.env !== undefined) env.SNAPSEQ_ENV = to.env;

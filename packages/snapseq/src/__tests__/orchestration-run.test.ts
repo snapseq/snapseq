@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,7 @@ import { main } from "../orchestration/main.js";
 // main() in this process, each run()'s child a stand-in for `playwright test` (fixtures/fake-playwright.mjs)
 // that does what the project's scenario.json says and logs what it was given to calls.jsonl.
 const FAKE = fileURLToPath(new URL("./fixtures/fake-playwright.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
 const LAUNCH = "12345-spring-launch";
 const OFFER = "12346-spring-offer";
 const dirs: string[] = [];
@@ -85,6 +87,28 @@ async function orchestrate(dir: string, body: string, args: string[] = [], name 
   return { code, out, calls, file };
 }
 
+/** The fake as the project's own `@playwright/test/cli`, where the built bin looks for it. */
+function fakePlaywright(dir: string): string {
+  const pkg = join(dir, "node_modules/@playwright/test");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@playwright/test", type: "module" }));
+  copyFileSync(FAKE, join(pkg, "cli.js"));
+  return dir;
+}
+
+/** The built bin in its own process, as a terminal runs it. */
+function bin(cwd: string, args: string[]) {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("SNAPSEQ_") && k !== "CI") env[k] = v;
+  const proc = spawn(process.execPath, [CLI, ...args], { cwd, env });
+  let out = "";
+  proc.stdout.on("data", (d: Buffer) => (out += d));
+  proc.stderr.on("data", (d: Buffer) => (out += d));
+  // On exit, not close: a child left behind keeps the pipes open.
+  const closed = new Promise<{ status: number | null; out: string }>((ok) => proc.on("exit", (status) => ok({ status, out })));
+  return { proc, closed };
+}
+
 const runDir = (dir: string, run: string): string => relative(process.cwd(), join(dir, "screenshots", run));
 const cacheOf = (dir: string, run: string) =>
   JSON.parse(readFileSync(join(dir, "node_modules/.cache/snapseq/runs", `${run}.json`), "utf8")) as {
@@ -109,12 +133,12 @@ describe("a full run", () => {
       snapseq: { devices: { desktop: { viewport: { width: 1920, height: 1080 } }, mobile: { viewport: { width: 390, height: 844 } } } },
       deviceOrder: ["desktop", "mobile"],
       playwright: [],
-      // The widest id in snapseq/ (19), " / ", the widest device (7).
-      terminal: { labelWidth: 29, showEnv: false },
+      // The widest id in snapseq/ (19), " / ", the widest device (7), the widest env a call could show, " (uat)".
+      terminal: { labelWidth: 35, showEnv: false },
     });
     expect(dirname(call!.requestFile)).toBe(join(dir, "node_modules/.cache/snapseq/requests"));
     expect(existsSync(call!.requestFile)).toBe(false);
-    expect(call!.env).toEqual({ SNAPSEQ_ENV: null, SNAPSEQ_HOST: null, SNAPSEQ_RUN: "r1", SNAPSEQ_OPEN: "0", SNAPSEQ_RECORD: null });
+    expect(call!.env).toEqual({ SNAPSEQ_ENV: null, SNAPSEQ_HOST: null, SNAPSEQ_RUN: "r1", SNAPSEQ_OPEN: "0", SNAPSEQ_RECORD: null, SNAPSEQ_RESULT_FD: "3" });
 
     const cache = cacheOf(dir, "r1");
     expect(Object.keys(cache.entries)).toEqual([`${LAUNCH}/desktop`, `${LAUNCH}/mobile`]);
@@ -146,6 +170,13 @@ describe("a full run", () => {
     expect(call!.request.playwright).toEqual([{ timeout: 60000 }]);
     expect(call!.request.terminal).toEqual({ labelWidth: 35, showEnv: true }); // " (uat)" on every row
     expect(call!.env).toMatchObject({ SNAPSEQ_ENV: "uat", SNAPSEQ_HOST: "https://h.example" });
+  });
+
+  it("pads every child's rows to one width, the widest env any call could show included", async () => {
+    const dir = project();
+    const r = await orchestrate(dir, `await run("${LAUNCH}"); await run("${OFFER}", { env: "uat" });`, ["--run", "r1"]);
+    expect(r.code, r.out).toBe(0);
+    expect(r.calls.map((c) => c.request.terminal)).toEqual([{ labelWidth: 35, showEnv: false }, { labelWidth: 35, showEnv: true }]);
   });
 
   it("reads the inputs the real defineConfig keeps, defaults filled", async () => {
@@ -222,6 +253,7 @@ describe("a call that does not resolve", () => {
       `${LAUNCH}: Timed out waiting 120000ms from config.webServer. ${site}`,
     ],
     ["a retried test", { devices: { mobile: { retry: 1 } } }, `${LAUNCH} was retried on mobile; retries must be 0 ${site}`],
+    ["a test given retries that passed at once", { devices: { mobile: { retries: 1 } } }, `${LAUNCH} is configured with retries on mobile; retries must be 0 ${site}`],
     ["a capture outside its device folder", { devices: { mobile: { capture: "wrong-dir" } } }, `${LAUNCH} reported no usable capture on mobile: shots in `],
     ["a shot file that is not there", { devices: { mobile: { capture: "missing-file" } } }, "02.png is not a file"],
     ["a passed test without a capture", { devices: { mobile: { capture: false, error: "Error: no snapseq-capture attachment" } } }, `${LAUNCH} reported no usable capture on mobile: no snapseq-capture attachment ${site}`],
@@ -249,6 +281,22 @@ writeFileSync(${JSON.stringify(join(dir, "scenario.json"))}, "{}");
     expect(r.calls.map((c) => c.request.deviceOrder)).toEqual([["desktop", "mobile"], ["mobile"]]);
     expect(r.calls[1]!.cacheAtStart!.entries).toHaveProperty([`${LAUNCH}/desktop`]);
     expect(summary(g.result)).toEqual([`${LAUNCH}/desktop reused`, `${LAUNCH}/mobile`]);
+  });
+
+  it("reshoots a sibling that passed when its files are gone by the retry", async () => {
+    const dir = project({ [LAUNCH]: { devices: { mobile: { status: "failed" } } } });
+    const r = await orchestrate(
+      dir,
+      `try { await run("${LAUNCH}"); } catch {}
+const { rmSync, writeFileSync } = await import("node:fs");
+rmSync(${JSON.stringify(join(dir, `screenshots/r1/${LAUNCH}/desktop/01.png`))});
+writeFileSync(${JSON.stringify(join(dir, "scenario.json"))}, "{}");
+(globalThis as any).result = await run("${LAUNCH}");`,
+      ["--run", "r1"],
+    );
+    expect(r.code, r.out).toBe(0);
+    expect(r.calls.map((c) => c.request.deviceOrder)).toEqual([["desktop", "mobile"], ["desktop", "mobile"]]);
+    expect(summary(g.result)).toEqual([`${LAUNCH}/desktop`, `${LAUNCH}/mobile`]);
   });
 });
 
@@ -309,7 +357,8 @@ describe("filters", () => {
     expect(atStart).not.toContain(`${OFFER}/mobile`);
     expect(Object.keys(cacheOf(dir, "r1").entries)).toContain(`${OFFER}/mobile`);
     expect(summary(g.result)).toEqual([`${LAUNCH}/desktop reused`, `${LAUNCH}/mobile reused`, `${OFFER}/desktop reused`, `${OFFER}/mobile`]);
-    expect(r.out).toContain(`  ${LAUNCH} / desktop`.padEnd(31) + "  reused  2 shots\n");
+    // A mark slot as a child's rows have; four columns where the terminal draws words, not marks.
+    expect(r.out).toContain(`  =    ${`${LAUNCH} / desktop`.padEnd(35)}  reused  2 shots\n`);
     expect(r.out).toContain(`  1 passed, 3 reused  8 shots  0s  ${runDir(dir, "r1")}\n`);
     expect(r.out).not.toContain("reshoot one part");
   });
@@ -320,7 +369,7 @@ describe("filters", () => {
     rmSync(join(dir, `screenshots/r1/${LAUNCH}/desktop/01.png`));
     const r = await repair(dir, ["zzz"]);
     expect(r.code).toBe(1);
-    expect(r.out).toContain(`  ${LAUNCH} / desktop`.padEnd(31) + "  building, no capture yet\n");
+    expect(r.out).toContain(`  +    ${`${LAUNCH} / desktop`.padEnd(35)}  building, no capture yet\n`);
     expect(r.calls.map((c) => [c.request.sequence, c.request.deviceOrder])).toEqual([[LAUNCH, ["desktop"]]]);
     expect(r.out).toContain('failed  no part matched "zzz"');
   });
@@ -350,6 +399,43 @@ while (!existsSync(${JSON.stringify(join(dir, "started"))})) await new Promise((
     expect(r.code).toBe(1);
     expect(r.out).toContain(`failed  run("${LAUNCH}") was not awaited; the orchestration finished first (spring.orchestration.ts:2)`);
     expect(existsSync(r.calls[0]!.requestFile)).toBe(false);
+  });
+
+  it("exits 1 with the error of a run() nobody awaited that failed at once", async () => {
+    const dir = project();
+    // Vitest fails the file on an unhandled rejection of its own accord; this one is main's to catch.
+    const theirs = process.listeners("unhandledRejection");
+    process.removeAllListeners("unhandledRejection");
+    try {
+      const r = await orchestrate(dir, `void run("missing");`, ["--run", "r1"]);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain("failed  missing: no snapseq/missing.seq.ts; sequences: ");
+      expect(r.calls).toHaveLength(0);
+    } finally {
+      for (const listener of theirs) process.on("unhandledRejection", listener);
+    }
+  });
+
+  it("stops the child when the parent is killed, and leaves no lock or request behind", async () => {
+    const dir = fakePlaywright(project({ [LAUNCH]: { hang: true } }));
+    const file = join(dir, "snapseq/spring.orchestration.ts");
+    writeFileSync(file, `export default async ({ run }: any) => { await run("${LAUNCH}"); };\n`);
+    const parent = bin(dir, [file, "-c", join(dir, "snapseq.config.ts"), "--run", "r1"]);
+    const started = join(dir, "started");
+    for (let i = 0; i < 400 && !existsSync(started); i++) await new Promise((ok) => setTimeout(ok, 25));
+    const child = Number(readFileSync(started, "utf8"));
+    try {
+      parent.proc.kill("SIGTERM");
+      const { status, out } = await parent.closed;
+      expect(status, out).toBe(130);
+      expect(() => process.kill(child, 0)).toThrow();
+      expect(existsSync(join(dir, "node_modules/.cache/snapseq/runs/r1.lock"))).toBe(false);
+      expect(readdirSync(join(dir, "node_modules/.cache/snapseq/requests"))).toEqual([]);
+    } finally {
+      try {
+        process.kill(child, "SIGKILL");
+      } catch {}
+    }
   });
 
   it("exits 1 with the message of an error the script threw", async () => {
@@ -384,6 +470,16 @@ while (!existsSync(${JSON.stringify(join(dir, "started"))})) await new Promise((
 });
 
 describe("arguments", () => {
+  it("-c takes the folder of the config, as a plain run does", async () => {
+    const dir = fakePlaywright(project());
+    const file = join(dir, "snapseq/spring.orchestration.ts");
+    writeFileSync(file, `export default async ({ run }: any) => { await run("${LAUNCH}", { devices: ["desktop"] }); };\n`);
+    const { status, out } = await bin(dir, [file, "-c", dir, "--run", "r1"]).closed;
+    expect(status, out).toBe(0);
+    const [call] = readFileSync(join(dir, "calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as Call);
+    expect(call!.argv).toEqual(["test", "-c", join(dir, "snapseq.config.ts")]);
+  });
+
   const options = { findConfig: (c: string | undefined) => c!, playwrightCli: () => FAKE, stdout: { write: () => true } };
   it.each([
     ["--ui", "snapseq: --ui does not work with an orchestration file: it opens one Playwright window on one run"],
