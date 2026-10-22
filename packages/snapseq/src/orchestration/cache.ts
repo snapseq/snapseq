@@ -1,0 +1,122 @@
+// The run cache (node_modules/.cache/snapseq/runs/<run>.json) and its lock: what lets a filtered run reuse
+// the parts it does not reshoot. Outside Playwright's outputDir, which Playwright empties before each run.
+import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import type { Capture } from "./types.js";
+
+export type CachedCapture = Omit<Capture, "reused">;
+
+/** Where a capture came from; reuse needs all four to be what they are now. Canonical paths. */
+export interface Origin {
+  configFile: string;
+  sequencesDir: string;
+  sequenceFile: string;
+  screenshotsDir: string;
+}
+
+export interface CacheEntry extends Origin {
+  capture: CachedCapture;
+}
+
+export interface RunCache {
+  version: 1;
+  /** By `<sequence>/<device>`. */
+  entries: Record<string, CacheEntry>;
+}
+
+/** snapseq's folder in node_modules/.cache beside the config; Playwright's outputDir is a folder inside it. */
+export const cacheDir = (configDir: string): string => join(configDir, "node_modules", ".cache", "snapseq");
+
+export const runCacheFile = (configDir: string, run: string): string => join(cacheDir(configDir), "runs", `${run}.json`);
+
+/** The path with symlinks resolved, or as given when it does not exist. */
+export function canonical(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+export const isFile = (path: string): boolean => statSync(path, { throwIfNoEntry: false })?.isFile() ?? false;
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/**
+ * Keeps a second snapseq off this run: `<run>.lock` holding this pid, created with `wx`. A lock whose process
+ * is gone is taken over. Removed by the returned function, or when this process exits, and never by another.
+ */
+export function lockRun(cacheFile: string): () => void {
+  const lock = cacheFile.replace(/\.json$/, ".lock");
+  mkdirSync(dirname(lock), { recursive: true });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const fd = openSync(lock, "wx");
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      let pid = Number.NaN;
+      try {
+        pid = Number(readFileSync(lock, "utf8"));
+      } catch {}
+      if (attempt > 0 || (Number.isInteger(pid) && pid > 0 && alive(pid))) {
+        throw new Error(`snapseq: another snapseq (pid ${pid}) is writing this run; its lock is ${lock}`);
+      }
+      rmSync(lock, { force: true });
+    }
+  }
+  let held = true;
+  const release = (): void => {
+    if (!held) return;
+    held = false;
+    try {
+      if (readFileSync(lock, "utf8") === String(process.pid)) rmSync(lock, { force: true });
+    } catch {}
+  };
+  process.once("exit", release);
+  return () => {
+    process.off("exit", release);
+    release();
+  };
+}
+
+export function loadCache(file: string): RunCache {
+  try {
+    const data = JSON.parse(readFileSync(file, "utf8")) as RunCache;
+    if (data?.version === 1 && data.entries && typeof data.entries === "object") return data;
+  } catch {}
+  return { version: 1, entries: {} };
+}
+
+/** Temp file, then rename: a reader never sees half a cache. */
+export function saveCache(file: string, cache: RunCache): void {
+  mkdirSync(dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(cache, null, 2)}\n`);
+  renameSync(temp, file);
+}
+
+/** The cached capture of `key` when it can stand in for a shoot: same origin as now, every shot still a file. */
+export function reusable(cache: RunCache, key: string, now: Origin): CachedCapture | undefined {
+  const entry = Object.hasOwn(cache.entries, key) ? cache.entries[key] : undefined;
+  if (
+    !entry ||
+    entry.configFile !== now.configFile ||
+    entry.sequencesDir !== now.sequencesDir ||
+    entry.sequenceFile !== now.sequenceFile ||
+    entry.screenshotsDir !== now.screenshotsDir ||
+    !Array.isArray(entry.capture?.shots)
+  ) {
+    return undefined;
+  }
+  return entry.capture.shots.every((s) => typeof s?.path === "string" && isFile(s.path)) ? entry.capture : undefined;
+}
