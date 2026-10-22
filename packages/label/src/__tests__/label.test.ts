@@ -173,6 +173,16 @@ describe("label", () => {
     expect([seen.width, seen.height]).toEqual([200, 124]);
   });
 
+  it("encodes a JPEG at the quality of the shot's format", async () => {
+    const dir = tmp();
+    const path = join(dir, "01.jpg");
+    // noise, so the quality shows in the size
+    await sharp({ create: { width: 200, height: 100, channels: 3, background: "#808080", noise: { type: "gaussian", mean: 128, sigma: 40 } } }).jpeg().toFile(path);
+    const low = readFileSync(await run(path, "q", { format: { type: "jpeg", quality: 10 } })).length;
+    const high = readFileSync(await run(path, "q", { format: { type: "jpeg", quality: 95 } })).length;
+    expect(low).toBeLessThan(high);
+  });
+
   it("draws a label with control characters and lone surrogates as spaces", async () => {
     const dir = tmp();
     const path = await source(dir, "01.png");
@@ -186,6 +196,7 @@ describe("label", () => {
     const path = await source(dir, "01.png");
     const seen = await look(await run(path, "<b>&"));
     expect([seen.width, seen.height]).toEqual([200, 124]);
+    expect(seen.inked).toBe(true);
   });
 
   it("keeps a transparent shot transparent; only the strip is white", async () => {
@@ -236,11 +247,31 @@ describe("label", () => {
     expect(seen.box(0, 199, 0, 23).some((p) => p[1]! > 100 || p[2]! > 100)).toBe(true);
   });
 
+  it("lets the shot's background beat the step's", async () => {
+    const dir = tmp();
+    const path = await source(dir, "01.png");
+    const seen = await look(await run(path, { text: "0.0 Home", background: "#f00" }, { step: { background: "#00f" } }), [[100, 2]]);
+    expect(seen.at[0]).toEqual([255, 0, 0, 255]);
+  });
+
+  it("lets the shot's color beat the step's", async () => {
+    const dir = tmp();
+    const path = await source(dir, "01.png");
+    const seen = await look(await run(path, { text: "0.0 Home", color: "#0f0" }, { step: { color: "#f00" } }));
+    const strip = seen.box(0, 199, 0, 23);
+    // green ink on white never has less green than red; red ink always does
+    expect(strip.every((p) => p[1]! >= p[0]!)).toBe(true);
+    expect(strip.some((p) => p[1]! > p[0]!)).toBe(true);
+  });
+
   it("centers a short label", async () => {
     const dir = tmp();
     const path = await source(dir, "01.png");
     const seen = await look(await run(path, "0.0 Home"));
-    expect(seen.box(0, 39, 0, 23).every((p) => p.join() === "255,255,255,255")).toBe(true);
+    const bare = (x0: number, x1: number) => seen.box(x0, x1, 0, 23).every((p) => p.join() === "255,255,255,255");
+    expect(seen.inked).toBe(true);
+    expect(bare(0, 39)).toBe(true);
+    expect(bare(160, 199)).toBe(true);
   });
 
   it("cuts a long label at the end, not the start", async () => {
@@ -271,6 +302,15 @@ describe("label", () => {
     await expect(run(path, "0.0 Home", { step: { scale: () => value } })).rejects.toThrow(
       `@snapseq/label: scale must be a positive number, got ${value}`,
     );
+    expect(readFileSync(path).equals(before)).toBe(true);
+    expect(readdirSync(join(dir, "labelled"))).toEqual([]);
+  });
+
+  it("rejects a scale so small that the strip rounds to 0 px", async () => {
+    const dir = tmp();
+    const path = await source(dir, "01.png");
+    const before = readFileSync(path);
+    await expect(run(path, "0.0 Home", { step: { scale: () => 0.01 } })).rejects.toThrow("@snapseq/label: scale 0.01 makes a strip under 1 px");
     expect(readFileSync(path).equals(before)).toBe(true);
     expect(readdirSync(join(dir, "labelled"))).toEqual([]);
   });

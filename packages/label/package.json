@@ -50,7 +50,7 @@
     "prepublishOnly": "pnpm typecheck && pnpm test"
   },
   "peerDependencies": {
-    "snapseq": ">=0.7.0"
+    "snapseq": ">=0.7.0 <1.0.0-0"
   },
   "devDependencies": {
     "@playwright/test": "1.59.1",

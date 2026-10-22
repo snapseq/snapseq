@@ -10,8 +10,8 @@ pdf(captures: readonly Capture[], file: string): Promise<string>
 
 ## Install
 
-In the app that has snapseq. Peer dependency: `snapseq`. Runtime dependency:
-`@cantoo/pdf-lib` 2.11.
+In the app that has snapseq. Peer dependency: `snapseq` 0.7 or later. Runtime
+dependency: `@cantoo/pdf-lib` 2.11.
 
 ```bash
 pnpm add -D @snapseq/pdf
@@ -64,13 +64,18 @@ returns instead of the raw captures.
 
 ## What it writes
 
-The file goes to a temporary name beside `file` and is renamed into place, so an
-earlier file at that path is replaced whole or left alone, never half written. The
-parent directory is created if it is missing.
+The file goes to a temporary name beside `file`, one per call, and is renamed into
+place, so an earlier file at that path is replaced whole or left alone, never half
+written, and two calls on the same `file` do not clash. The parent directory is
+created if it is missing.
 
 ## Limits
 
 - An empty list, or captures with no shots, throws `@snapseq/pdf: nothing to bind`
   and writes nothing.
 - A shot file that cannot be read throws, and nothing is written.
+- A `file` that is one of the shots throws `@snapseq/pdf: file is one of the shots`
+  and writes nothing, so a shot is never replaced by the PDF.
+- A shot whose `deviceScaleFactor` is not a finite number above 0 throws, and
+  nothing is written.
 - It does not merge existing PDF files and has no cover page.

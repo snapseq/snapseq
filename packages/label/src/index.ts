@@ -1,4 +1,4 @@
-import { copyFile, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
 import type { Capture, CaptureShot } from "snapseq";
@@ -64,6 +64,7 @@ async function labelShot(shot: CaptureShot, file: string, options: LabelOptions)
   const { scale } = options;
   const s = scale === true ? shot.deviceScaleFactor : typeof scale === "function" ? scale(shot.deviceScaleFactor) : 1;
   if (!(Number.isFinite(s) && s > 0)) throw new Error(`@snapseq/label: scale must be a positive number, got ${s}`);
+  if (Math.round(STRIP * s) < 1) throw new Error(`@snapseq/label: scale ${s} makes a strip under 1 px`);
   const [height, size, y, inset] = [Math.round(STRIP * s), 12 * s, 16 * s, 8 * s];
   const img = sharp(shot.path);
   const { width, hasAlpha } = await img.metadata();
@@ -79,13 +80,13 @@ async function labelShot(shot: CaptureShot, file: string, options: LabelOptions)
   // optimiseCoding (sharp's default) holds the whole compressed image: a 3840x60000 shot peaked at 1.6 GB,
   // and 1920x34198 at 527 MB against 141 MB without it. The file is under 1% bigger.
   const encoded = shot.format.type === "jpeg" ? out.jpeg({ quality: shot.format.quality, optimiseCoding: false }) : out.png();
-  await writeFile(file, await encoded.toBuffer());
+  await encoded.toFile(file);
 }
 
 /**
  * Every shot of every capture into `<capture.dir>/labelled/<name>`: a strip above the shots whose
  * `options.label` is set, a plain copy for the rest, so the labelled set is complete. The raw shots are
- * not touched. Resolves to the same captures, `dir` and every shot's `path` pointing at the labelled files.
+ * not touched. Resolves to new captures, with `dir` and every shot's `path` pointing at the labelled files.
  */
 export async function label(captures: readonly Capture[], options: LabelOptions = {}): Promise<Capture[]> {
   const labelled: Capture[] = [];
