@@ -2,7 +2,6 @@
 // then one line per sequence and device with a spinner and the shot count, then
 // a frozen summary with errors and the run directory. Zero dependencies.
 // Playwright owns exit codes and Ctrl-C; this only draws.
-import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { clearScreenDown, moveCursor } from "node:readline";
@@ -17,6 +16,7 @@ import type {
   TestStep,
 } from "@playwright/test/reporter";
 import type { SnapseqMetadata } from "./define.js";
+import { openInFileManager } from "./open.js";
 
 type State = TestResult["status"] | "queued" | "running" | "not run";
 
@@ -121,15 +121,6 @@ const real = (p: string): string => {
     return p;
   }
 };
-
-/** Show a directory in Finder, Explorer or the desktop's file manager; silent when there is none. */
-function openInFileManager(dir: string): void {
-  const command =
-    process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-  spawn(command, [dir], { detached: true, stdio: "ignore" })
-    .on("error", () => {})
-    .unref();
-}
 
 /** `nested/pricing / desktop`, the same identity the screenshots directory uses. */
 function labelOf(test: TestCase): string {
