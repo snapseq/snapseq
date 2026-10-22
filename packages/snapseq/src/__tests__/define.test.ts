@@ -27,6 +27,12 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("defineConfig", () => {
+  it("refuses a 0.6 config's plugins, saying where each went", () => {
+    expect(() => defineConfig({ envs, plugins: [] } as Parameters<typeof defineConfig>[0])).toThrow(
+      'snapseq: plugins were removed in 0.7; stabilize is the "stabilize" key, label() and pdf() are steps in an orchestration file',
+    );
+  });
+
   it("bounds navigation on its own, apart from actions and the sequence timeout", () => {
     const u = use(defineConfig({ envs }));
     expect(u.navigationTimeout).toBe(120_000);

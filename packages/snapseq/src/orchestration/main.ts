@@ -1,7 +1,7 @@
 // `snapseq <file>.orchestration.ts …`: parses its own flags, loads the config and the file, runs the function
 // with run(), and turns how it ended into the last lines and an exit code: 0; 1 for a script error, a missing
 // `await` or no filter match; 130 for Ctrl-C.
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { loadCache, lockRun, runCacheFile } from "./cache.js";
 import { type Filters, describeFilters, filtering } from "./filters.js";
@@ -9,7 +9,7 @@ import { loadConfig, loadOrchestration } from "./load.js";
 import { type Target, createRunner } from "./run.js";
 import { trap } from "./stop.js";
 import { type Out, failed, footer, heading, hint, interrupted, openRun } from "./terminal.js";
-import { isDirName, isHttpUrl, sequenceIds } from "./validate.js";
+import { isDirName, isHttpUrl, runStamp, sequenceIds } from "./validate.js";
 
 export const ORCHESTRATION_FILE = /\.orchestration\.[cm]?[jt]s$/;
 
@@ -50,14 +50,6 @@ interface Args {
 export function checkRunName(name: string): string {
   if (!isDirName(name)) throw new Error(`snapseq: --run must be a directory name, not a path: "${name}"`);
   return name;
-}
-
-/** As defineConfig names a plain run: local time, the way Finder names screenshots, `2026-10-01 at 04.07.16 PM`. */
-function runStamp(d: Date): string {
-  const p = (n: number): string => String(n).padStart(2, "0");
-  const h = d.getHours();
-  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  return `${date} at ${p(h % 12 || 12)}.${p(d.getMinutes())}.${p(d.getSeconds())} ${h < 12 ? "AM" : "PM"}`;
 }
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -136,6 +128,7 @@ export async function main(argv: readonly string[], options: Options): Promise<n
     throw new Error(`snapseq: host must be an http(s) URL, got "${invocation.host}"`);
   }
   const configFile = resolve(options.findConfig(args.config));
+  if (statSync(configFile, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`snapseq: no snapseq.config.ts in ${configFile}; pass -c <path>`);
   const configDir = dirname(configFile);
   const command = [process.execPath, options.playwrightCli(configFile), "test", "-c", configFile, ...args.pass];
   // Named before the config loads, so the config and every child agree on it.
@@ -153,15 +146,9 @@ export async function main(argv: readonly string[], options: Options): Promise<n
   const fn = await loadOrchestration(jiti, resolve(args.file));
   const cacheFile = runCacheFile(configDir, run);
   const release = lockRun(cacheFile);
-  const end: { halted?: { code: number; message?: string } } = {};
-  let wake = (): void => {};
-  const woken = new Promise<undefined>((done) => (wake = () => done(undefined)));
   // One way to end, whichever comes first: the script settling, Ctrl-C, or an error nothing caught.
-  const halt = (code: number, message?: string): void => {
-    if (end.halted) return;
-    end.halted = { code, message };
-    wake();
-  };
+  let halt!: (code: number, message?: string) => void;
+  const halted = new Promise<{ code: number; message?: string }>((done) => (halt = (code, message) => done({ code, message })));
   const untrap = trap(
     () => halt(130),
     (error) => halt(1, messageOf(error)),
@@ -171,6 +158,7 @@ export async function main(argv: readonly string[], options: Options): Promise<n
     const runner = createRunner({
       config,
       overrides: inputs.overrides ?? [],
+      defaultEnv: inputs.defaultEnv,
       configFile,
       run,
       invocation,
@@ -189,8 +177,10 @@ export async function main(argv: readonly string[], options: Options): Promise<n
         () => ({ error: undefined as string | undefined }),
         (error: unknown) => ({ error: messageOf(error) }),
       );
-    const ended = await Promise.race([script, woken]);
+    const ended = await Promise.race([script, halted.then(() => undefined)]);
     if (ended) {
+      // A run() nobody awaited that failed at once surfaces as an unhandled rejection only after this turn; the trap is still on.
+      await new Promise<void>((done) => setImmediate(done));
       const pending = runner.state.active;
       if (pending) {
         const site = pending.site ? ` (${pending.site})` : "";
@@ -200,7 +190,7 @@ export async function main(argv: readonly string[], options: Options): Promise<n
       else halt(0);
     }
     await runner.stop();
-    const { code, message } = end.halted!;
+    const { code, message } = await halted;
     if (code === 130) {
       interrupted(out, runDir);
       return code;

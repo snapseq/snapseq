@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inflateSync } from "node:zlib";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Drives the BUILT package through the real Playwright CLI, the way a consumer would.
@@ -1165,32 +1165,10 @@ function pngSize(file: string): [number, number] {
   return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
 }
 
-// The pixels of a PNG as Playwright writes it (8-bit RGB or RGBA, not interlaced), with node:zlib: the IDAT chunks
-// inflated, then each row's filter undone.
+// The pixels of a PNG.
 async function image(file: string) {
-  const png = readFileSync(file);
-  const width = png.readUInt32BE(16);
-  const height = png.readUInt32BE(20);
-  const channels = png[25] === 6 ? 4 : 3;
-  const chunks: Buffer[] = [];
-  for (let at = 8; at < png.length; at += png.readUInt32BE(at) + 12) {
-    if (png.toString("latin1", at + 4, at + 8) === "IDAT") chunks.push(png.subarray(at + 8, at + 8 + png.readUInt32BE(at)));
-  }
-  const raw = inflateSync(Buffer.concat(chunks));
-  const stride = width * channels;
-  const data = Buffer.alloc(height * stride);
-  for (let y = 0; y < height; y++) {
-    const filter = raw[y * (stride + 1)]!;
-    for (let x = 0; x < stride; x++) {
-      const a = x >= channels ? data[y * stride + x - channels]! : 0;
-      const b = y > 0 ? data[(y - 1) * stride + x]! : 0;
-      const c = x >= channels && y > 0 ? data[(y - 1) * stride + x - channels]! : 0;
-      const p = a + b - c;
-      const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
-      data[y * stride + x] = raw[y * (stride + 1) + 1 + x]! + [0, a, b, (a + b) >> 1, paeth][filter]!; // stored mod 256
-    }
-  }
-  return { at: (x: number, y: number) => [0, 1, 2].map((c) => data[(y * width + x) * channels + c]) };
+  const { data, info } = await sharp(file).raw().toBuffer({ resolveWithObject: true });
+  return { at: (x: number, y: number) => [0, 1, 2].map((c) => data[(y * info.width + x) * info.channels + c]) };
 }
 
 interface Probe {

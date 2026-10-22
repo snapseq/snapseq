@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyRequest, readRequest } from "./orchestration/request.js";
 import type { ResolvedSnapseqConfig } from "./orchestration/types.js";
+import { isDirName, isHttpUrl, runStamp } from "./orchestration/validate.js";
 import type { ShotFormat } from "./sequence.js";
 import type { StabilizeOptions } from "./stabilize.js";
 
@@ -91,17 +92,9 @@ export interface SnapseqMetadata {
 
 /** One directory name, since the directory it names is wiped: no separators, not `.` or `..`. */
 function assertName(what: string, name: string): void {
-  if (name === "" || name === "." || name === ".." || /[\\/]/.test(name)) {
+  if (!isDirName(name)) {
     throw new Error(`snapseq: ${what} must be a directory name, not a path: "${name}"`);
   }
-}
-
-/** Local time, the way Finder names screenshots, with a two-digit hour: `2026-10-01 at 04.07.16 PM`. */
-function runStamp(d = new Date()): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  const h = d.getHours();
-  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  return `${date} at ${p(h % 12 || 12)}.${p(d.getMinutes())}.${p(d.getSeconds())} ${h < 12 ? "AM" : "PM"}`;
 }
 
 // Built as ESM (dist/reporter.js). The CJS build of this file sees __dirname;
@@ -159,8 +152,12 @@ export function defineConfig(
   config: SnapseqConfig,
   ...overrides: PlaywrightTestConfig[]
 ): PlaywrightTestConfig {
+  if (Object.hasOwn(config, "plugins")) {
+    throw new Error('snapseq: plugins were removed in 0.7; stabilize is the "stabilize" key, label() and pdf() are steps in an orchestration file');
+  }
   // Kept for the orchestration parent, which reads the config file without a request.
   const defaults = resolved(config);
+  const written = config.defaultEnv;
   const request = readRequest();
   // Before anything is derived, each key the run gives replaces the config's; its devices become the projects last.
   if (request) {
@@ -182,13 +179,8 @@ export function defineConfig(
   const host = process.env.SNAPSEQ_HOST || env.host;
   // A bare "localhost:3000" parses, as the scheme "localhost:"; a baseURL like that
   // fails on the first goto, far from the config.
-  let url: URL | undefined;
-  try {
-    url = new URL(host);
-  } catch {}
-  if (!url || !/^https?:$/.test(url.protocol) || !url.hostname) {
-    throw new Error(`snapseq: host must be an http(s) URL, got "${host}"`);
-  }
+  if (!isHttpUrl(host)) throw new Error(`snapseq: host must be an http(s) URL, got "${host}"`);
+  const url = new URL(host);
   const { screenshotsDir, numbering, devices } = c;
   // Stamped once per run: this file is evaluated again in every worker process,
   // but workers inherit the env of the main process, which set it first.
@@ -261,18 +253,21 @@ export function defineConfig(
         : {}),
       ...env.use,
     },
-    projects: Object.entries(devices).map(([name, use]) => ({
-      name,
-      use,
-    })),
+    // A request's devices go on last, over what the consumer's overrides set on a project of the same name.
+    projects: request
+      ? request.deviceOrder.map((name) => ({ name }))
+      : Object.entries(devices).map(([name, use]) => ({
+          name,
+          use,
+        })),
     },
     ...overrides,
   );
   // Last, so nothing the consumer or the run overrides can undo the isolation.
-  const result = request ? applyRequest(merged, request, c.sequencesDir) : merged;
+  const result = request ? applyRequest(merged, request, c.sequencesDir, c.screenshotsDir) : merged;
   // After the merge: an override's own `metadata` replaces the whole object, and
   // the fixtures and the reporter read snapseq's from it.
   result.metadata = { ...result.metadata, snapseq: metadata };
-  (result as Record<symbol, unknown>)[Symbol.for("snapseq.inputs")] = { config: defaults, overrides };
+  (result as Record<symbol, unknown>)[Symbol.for("snapseq.inputs")] = { config: defaults, overrides, defaultEnv: written };
   return result;
 }

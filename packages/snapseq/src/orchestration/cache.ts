@@ -1,6 +1,7 @@
 // The run cache (node_modules/.cache/snapseq/runs/<run>.json) and its lock: what lets a filtered run reuse
 // the parts it does not reshoot. Outside Playwright's outputDir, which Playwright empties before each run.
-import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { linkSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Capture } from "./types.js";
 
@@ -49,29 +50,53 @@ const alive = (pid: number): boolean => {
   }
 };
 
+/** The pid a lock file holds; NaN when it is empty, unreadable or not a pid (a lock being written counts as busy). */
+const pidIn = (file: string): number => {
+  try {
+    const text = readFileSync(file, "utf8");
+    return /^[1-9]\d*$/.test(text) ? Number(text) : Number.NaN;
+  } catch {
+    return Number.NaN;
+  }
+};
+
+const stale = (pid: number): boolean => Number.isInteger(pid) && !alive(pid);
+
 /**
  * Keeps a second snapseq off this run: `<run>.lock` holding this pid, created with `wx`. A lock whose process
- * is gone is taken over. Removed by the returned function, or when this process exits, and never by another.
+ * is gone is taken over: moved to a name of its own first, so of two processes taking it over only one gets
+ * it, and checked again there. Removed by the returned function, or when this process exits, and never by another.
  */
 export function lockRun(cacheFile: string): () => void {
   const lock = cacheFile.replace(/\.json$/, ".lock");
   mkdirSync(dirname(lock), { recursive: true });
+  const busy = (pid: number): Error =>
+    new Error(`snapseq: another snapseq${Number.isInteger(pid) ? ` (pid ${pid})` : ""} is writing this run; its lock is ${lock}`);
   for (let attempt = 0; ; attempt++) {
     try {
-      const fd = openSync(lock, "wx");
-      writeSync(fd, String(process.pid));
-      closeSync(fd);
+      writeFileSync(lock, String(process.pid), { flag: "wx" });
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      let pid = Number.NaN;
+      const pid = pidIn(lock);
+      if (attempt > 0 || !stale(pid)) throw busy(pid);
+      const moved = `${lock}.${randomUUID()}`;
       try {
-        pid = Number(readFileSync(lock, "utf8"));
-      } catch {}
-      if (attempt > 0 || (Number.isInteger(pid) && pid > 0 && alive(pid))) {
-        throw new Error(`snapseq: another snapseq (pid ${pid}) is writing this run; its lock is ${lock}`);
+        renameSync(lock, moved);
+      } catch {
+        continue; // another process took it over first: creating ours fails below unless it let go again
       }
-      rmSync(lock, { force: true });
+      const now = pidIn(moved);
+      if (!stale(now)) {
+        // A live lock replaced the stale one before the move: put it back, unless a newer one is there already.
+        // ponytail: a third process can create a lock in the instant this one is moved away; a lock directory would close that.
+        try {
+          linkSync(moved, lock);
+        } catch {}
+        rmSync(moved, { force: true });
+        throw busy(now);
+      }
+      rmSync(moved, { force: true });
     }
   }
   let held = true;

@@ -565,6 +565,18 @@ describe("createSequence", () => {
     expect(readdirSync(createSequence(makePageStub().page, root, "cap").dir)).toEqual([]);
   });
 
+  it("records what snap and snapPage were given at the call, so a change to the object while the shot waits does not reach it", async () => {
+    const { page } = makePageStub();
+    const seq = createSequence(page, root, "cap");
+    for (const take of [seq.snap, seq.snapPage]) {
+      const options = { label: { text: "Hero" } } as unknown as SnapOptions;
+      const pending = take(options);
+      (options as unknown as { label: { text: string } }).label.text = "changed";
+      await pending;
+    }
+    expect(seq.shots.map((s) => s.given)).toEqual([{ label: { text: "Hero" } }, { label: { text: "Hero" } }]);
+  });
+
   it("takes one shot at a time: a second snap before the first resolved throws", async () => {
     const { page } = makePageStub();
     const seq = createSequence(page, root, "cap");

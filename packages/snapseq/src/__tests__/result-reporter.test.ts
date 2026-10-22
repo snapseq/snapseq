@@ -1,9 +1,24 @@
 import type { FullResult, Suite, TestCase, TestResult } from "@playwright/test/reporter";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import ResultReporter from "../orchestration/result-reporter.js";
 
-const test = (id: string, device: string): TestCase =>
-  ({ id, parent: { project: () => ({ name: device }) }, annotations: [] }) as unknown as TestCase;
+// The pipe as a kernel may take it: three bytes a write at most.
+const pipe = vi.hoisted(() => ({ written: [] as { fd: number; bytes: string }[] }));
+vi.mock("node:fs", async (original) => ({
+  ...(await original<typeof import("node:fs")>()),
+  writeSync: (fd: number, data: Buffer) => {
+    const bytes = data.subarray(0, 3);
+    pipe.written.push({ fd, bytes: bytes.toString() });
+    return bytes.length;
+  },
+}));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  pipe.written.length = 0;
+});
+
+const test = (id: string, device: string, retries = 0): TestCase =>
+  ({ id, parent: { project: () => ({ name: device }) }, annotations: [], retries }) as unknown as TestCase;
 
 const USED = { type: "snapseq", description: "usedSeq" };
 const capture = { sequence: "home", device: "desktop", shots: [] };
@@ -29,12 +44,12 @@ describe("ResultReporter", () => {
   it("answers for every planned test, as not run until it ends, and prints nothing", () => {
     const { r, doc } = run([test("a", "desktop"), test("b", "mobile")]);
     expect(r.printsToStdio()).toBe(false);
-    const empty = { status: "not run", retry: 0, usedSeq: false, skipReason: null, error: null, capture: null };
+    const empty = { status: "not run", retry: 0, retries: 0, usedSeq: false, skipReason: null, error: null, capture: null };
     expect(doc("failed")).toEqual({ version: 1, status: "failed", errors: [], tests: [{ device: "desktop", ...empty }, { device: "mobile", ...empty }] });
   });
 
   it("carries a passed test's capture, a skip's reason, a failure's first error and every run error", () => {
-    const [a, b, c] = [test("a", "desktop"), test("b", "mobile"), test("c", "tablet")];
+    const [a, b, c] = [test("a", "desktop"), test("b", "mobile"), test("c", "tablet", 1)];
     const { r, doc } = run([a, b, c]);
     r.onTestEnd(a, result("passed", { annotations: [USED], attachments: [attachment(JSON.stringify(capture))] }));
     r.onTestEnd(b, result("skipped", { annotations: [{ type: "skip", description: "desktop only" }] }));
@@ -46,9 +61,9 @@ describe("ResultReporter", () => {
       status: "passed",
       errors: ["global", "thrown value"],
       tests: [
-        { device: "desktop", status: "passed", retry: 0, usedSeq: true, skipReason: null, error: null, capture },
-        { device: "mobile", status: "skipped", retry: 0, usedSeq: false, skipReason: "desktop only", error: null, capture: null },
-        { device: "tablet", status: "failed", retry: 1, usedSeq: true, skipReason: null, error: "boom", capture: null },
+        { device: "desktop", status: "passed", retry: 0, retries: 0, usedSeq: true, skipReason: null, error: null, capture },
+        { device: "mobile", status: "skipped", retry: 0, retries: 0, usedSeq: false, skipReason: "desktop only", error: null, capture: null },
+        { device: "tablet", status: "failed", retry: 1, retries: 1, usedSeq: true, skipReason: null, error: "boom", capture: null },
       ],
     });
   });
@@ -65,5 +80,22 @@ describe("ResultReporter", () => {
     expect(entries[0]!.error).toBe("snapseq: no snapseq-capture attachments on a passed test, expected one");
     expect(entries[1]!.error).toBe("snapseq: 2 snapseq-capture attachments on a passed test, expected one");
     expect(entries[2]!.error).toMatch(/^snapseq: the snapseq-capture attachment is not JSON: /);
+  });
+
+  it("reports the retries a test was given, so a pass at attempt 0 still shows them", () => {
+    const { r, doc } = run([test("a", "mobile", 1)]);
+    r.onTestEnd(test("a", "mobile", 1), result("passed", { annotations: [USED], attachments: [attachment(JSON.stringify(capture))] }));
+    expect(doc().tests[0]).toMatchObject({ status: "passed", retry: 0, retries: 1 });
+  });
+
+  it("writes the whole document to the fd SNAPSEQ_RESULT_FD names, however little each write takes, and nothing without it", () => {
+    const end = () => new ResultReporter().onEnd({ status: "passed" } as FullResult);
+    end();
+    expect(pipe.written).toEqual([]); // an ordinary run: whatever fd 3 it inherited is not the parent's
+    vi.stubEnv("SNAPSEQ_RESULT_FD", "3");
+    end();
+    expect(new Set(pipe.written.map((w) => w.fd))).toEqual(new Set([3]));
+    expect(pipe.written.length).toBeGreaterThan(1);
+    expect(JSON.parse(pipe.written.map((w) => w.bytes).join(""))).toEqual({ version: 1, status: "passed", errors: [], tests: [] });
   });
 });

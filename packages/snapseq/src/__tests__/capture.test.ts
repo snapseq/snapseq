@@ -1,6 +1,6 @@
 import type { TestInfo } from "@playwright/test";
 import { describe, expect, it, vi } from "vitest";
-import { attachCapture, captureOf, snapshot } from "../orchestration/capture.js";
+import { attachCapture, snapshot } from "../orchestration/capture.js";
 import type { Shot, SnapOptions } from "../sequence.js";
 
 const part = { sequence: "campaign/pricing", device: "desktop", env: "uat", host: "https://uat.example.com", dir: "/abs/out/r/campaign/pricing/desktop" };
@@ -49,11 +49,29 @@ describe("snapshot", () => {
     expect(copy.clip?.x).toBe(0); // deep: a later change to the caller's object does not reach it
     expect(snapshot(undefined)).toEqual({});
   });
+
+  it("leaves out a reference back to an object it is inside, and keeps one that only repeats", () => {
+    const shared = { ok: true };
+    const options = { label: { text: "Hero" }, list: [shared, shared] } as Record<string, unknown>;
+    (options.label as Record<string, unknown>).self = options.label;
+    (options.list as unknown[]).push(options.list);
+    expect(snapshot(options as SnapOptions)).toEqual({ label: { text: "Hero" }, list: [{ ok: true }, { ok: true }] });
+  });
 });
 
-describe("captureOf", () => {
-  it("builds the capture field by field: the options the sequence gave, the format as the file is", () => {
-    const capture = captureOf(part, [shot(), shot({ index: 2, name: "02.jpg", path: `${part.dir}/02.jpg`, format: { type: "jpeg", quality: 70 }, given: {}, notes: [] })]);
+/** attachCapture with a stand-in testInfo; resolves to the body it attached, parsed. */
+async function attached(shots: Shot[]) {
+  const attach = vi.fn(async (_name: string, _options: { contentType: string; body: string }) => {});
+  await attachCapture({ attach } as unknown as TestInfo, part, shots);
+  expect(attach).toHaveBeenCalledTimes(1);
+  const [name, options] = attach.mock.calls[0]!;
+  expect([name, options.contentType]).toEqual(["snapseq-capture", "application/json"]);
+  return JSON.parse(options.body) as unknown;
+}
+
+describe("attachCapture", () => {
+  it("builds the capture field by field: the options the sequence gave, the format as the file is", async () => {
+    const capture = await attached([shot(), shot({ index: 2, name: "02.jpg", path: `${part.dir}/02.jpg`, format: { type: "jpeg", quality: 70 }, given: {}, notes: [] })]);
     expect(capture).toStrictEqual({
       ...part,
       shots: [
@@ -80,16 +98,11 @@ describe("captureOf", () => {
       ],
     });
   });
-});
 
-describe("attachCapture", () => {
-  it("attaches the capture as JSON, and fails the sequence over 1 MiB", async () => {
+  it("fails the sequence over 1 MiB, attaching nothing", async () => {
     const attach = vi.fn(async () => {});
-    const testInfo = { attach } as unknown as TestInfo;
-    await attachCapture(testInfo, part, [shot()]);
-    expect(attach).toHaveBeenCalledWith("snapseq-capture", { contentType: "application/json", body: JSON.stringify(captureOf(part, [shot()])) });
     const big = shot({ given: { label: "x".repeat(1024 * 1024) } as SnapOptions });
-    await expect(attachCapture(testInfo, part, [big])).rejects.toThrow("snapseq: capture metadata over 1 MiB");
-    expect(attach).toHaveBeenCalledTimes(1);
+    await expect(attachCapture({ attach } as unknown as TestInfo, part, [big])).rejects.toThrow("snapseq: capture metadata over 1 MiB");
+    expect(attach).not.toHaveBeenCalled();
   });
 });

@@ -7,6 +7,8 @@ import type { Orchestration, ResolvedSnapseqConfig } from "./types.js";
 export interface Inputs {
   config: ResolvedSnapseqConfig;
   overrides: PlaywrightTestConfig[];
+  /** The config's `defaultEnv` as written, before a default is filled in. */
+  defaultEnv?: string;
 }
 
 /**

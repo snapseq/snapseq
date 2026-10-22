@@ -80,7 +80,7 @@ function metadataOf(testInfo: TestInfo): SnapseqMetadata {
 const SEQUENCE_FILE = /\.seq\.[cm]?[jt]s$/;
 
 /**
- * `snapseq/nested/pricing.seq.ts` → `nested/pricing`. A titled test or a
+ * `snapseq/nested/pricing.seq.ts` → `nested/pricing`, with `/` on every platform. A titled test or a
  * `describe` block appends its titles, so two "hero" tests in different
  * describes never share (and wipe) one directory.
  */
@@ -93,7 +93,7 @@ export function sequenceId(testInfo: TestInfo): string {
     realpathSync(testInfo.file),
   ).replace(SEQUENCE_FILE, "");
   const titles = testInfo.titlePath.slice(1); // [0] is the file
-  return titles.length === 1 && titles[0] === DEFAULT_TITLE ? rel : join(rel, ...titles);
+  return (titles.length === 1 && titles[0] === DEFAULT_TITLE ? rel : join(rel, ...titles)).split(sep).join("/");
 }
 
 const list = (dir: string): string[] => {
@@ -157,7 +157,8 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
     const id = sequenceId(testInfo);
     // Before the wipe: in an orchestration run the parent asked for this id on this host, and caches what it gets under them.
     const declared = meta.orchestration?.sequence;
-    if (declared !== undefined && id !== declared) {
+    // NFC: macOS may hand Playwright the file's name decomposed, where the parent has the id as typed.
+    if (declared !== undefined && id.normalize("NFC") !== declared.normalize("NFC")) {
       throw new Error(`snapseq: this file runs as "${declared}"; a describe title or a second test changes the id to "${id}"`);
     }
     if (declared !== undefined && baseURL !== meta.host) {
@@ -203,12 +204,17 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
       const message = cause instanceof Error ? cause.message : String(cause);
       throw new Error(`snapseq: stabilize threw in begin: ${message}`, { cause });
     }
-    await use(seq);
-    ended.abort();
-    // What the orchestration parent reads back: the shots as data, never the files; complete only when no shot is left running.
+    try {
+      await use(seq);
+    } finally {
+      ended.abort();
+    }
     if (testInfo.status === "passed") {
       if (seq.inFlight) throw new Error("snapseq: a shot was still being taken when the sequence ended; await each snap");
-      await attachCapture(testInfo, { sequence: id, device: testInfo.project.name, env: meta.env, host: meta.host, dir: seq.dir }, seq.shots);
+      // What the orchestration parent reads back, under the id it asked for: the shots as data, never the files.
+      if (declared !== undefined) {
+        await attachCapture(testInfo, { sequence: declared, device: testInfo.project.name, env: meta.env, host: meta.host, dir: seq.dir }, seq.shots);
+      }
     }
     // The page as it was when the sequence died, beside the shots it did take.
     // A step, like a shot, so the terminal view learns where it died: the page

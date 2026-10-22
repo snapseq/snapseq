@@ -305,6 +305,38 @@ describe("replay", () => {
   });
 });
 
+describe("an ordinary run", () => {
+  it("named by SNAPSEQ_RUN, takes the run's lock and drops its cache as --run does", async () => {
+    const dir = makeApp(tmp(), { "snapseq.config.ts": config(), "snapseq/w.seq.ts": WIDGET });
+    const runs = join(dir, "node_modules/.cache/snapseq/runs");
+    mkdirSync(runs, { recursive: true });
+    writeFileSync(join(runs, "run1.lock"), String(process.pid)); // the helper names every run run1
+    const busy = await snapseq(dir, ["--list"]);
+    expect(busy.status).toBe(1);
+    expect(busy.out).toContain(`snapseq: another snapseq (pid ${process.pid}) is writing this run`);
+    rmSync(join(runs, "run1.lock"));
+    writeFileSync(join(runs, "run1.json"), "{}");
+    const r = await snapseq(dir, ["--list"]);
+    expect(r.status, r.out).toBe(0);
+    expect(existsSync(join(runs, "run1.json"))).toBe(false);
+    expect(existsSync(join(runs, "run1.lock"))).toBe(false);
+  });
+
+  it("attaches no capture, so options over the orchestration's 1 MiB limit still pass", async () => {
+    const dir = makeApp(tmp(), {
+      "snapseq.config.ts": config(),
+      "snapseq/big.seq.ts": `import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/blank");
+  await seq.snap({ style: "/*" + "x".repeat(1024 * 1024) + "*/" });
+});`,
+    });
+    const r = await snapseq(dir, []);
+    expect(r.status, r.out).toBe(0);
+    expect(existsSync(join(dir, "screenshots/run1/big/d1/01.png"))).toBe(true);
+  });
+});
+
 describe("Playwright beside the config", () => {
   it("is the app's own, found from a monorepo root that has none", async () => {
     const root = tmp();

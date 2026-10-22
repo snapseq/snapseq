@@ -81,7 +81,7 @@ describe("defineConfig with an orchestration request", () => {
     }
   });
 
-  it("lets the run's devices win over a configured project of the same name, then merges the run's Playwright overrides", () => {
+  it("puts the run's devices over a configured project of the same name, keeping what they do not set, then merges the run's Playwright overrides", () => {
     request({
       snapseq: { devices: { "300": { viewport: { width: 300, height: 250 } }, desktop: DESKTOP } },
       deviceOrder: ["desktop", "300"],
@@ -89,7 +89,7 @@ describe("defineConfig with an orchestration request", () => {
     });
     const c = defineConfig({ envs }, { projects: [{ name: "desktop", use: { viewport: { width: 1, height: 1 }, locale: "de" } }] });
     expect(projects(c).map((p) => p.name)).toEqual(["desktop", "300"]); // deviceOrder, not key order
-    expect(projects(c)[0]?.use).toEqual(DESKTOP); // replaced, locale and all
+    expect(projects(c)[0]?.use).toEqual({ ...DESKTOP, locale: "de" }); // the run's viewport, the configured locale
     expect(projects(c)[1]?.use).toEqual({ viewport: { width: 300, height: 250 }, locale: "fr" });
     expect(c.timeout).toBe(5_000);
   });
@@ -112,6 +112,17 @@ describe("defineConfig with an orchestration request", () => {
     }
     expect(() => defineConfig({ envs }, { projects: [{ name: "desktop" }] }, { outputDir: "test-results" })).not.toThrow();
     expect(defineConfig({ envs }).outputDir).toBe("node_modules/.cache/snapseq/playwright");
+  });
+
+  it("throws on an outputDir inside the screenshots folder or holding it, naming both", () => {
+    request({ snapseq: { devices: { desktop: DESKTOP }, screenshotsDir: "shots" } });
+    const shots = join(dir, "shots");
+    expect(() => defineConfig({ envs }, { outputDir: "shots/run1" })).toThrow(`outputDir "shots/run1" overlaps the screenshots folder ${shots};`);
+    request({ snapseq: { devices: { desktop: DESKTOP }, screenshotsDir: "shots" }, playwright: [{ projects: [{ name: "desktop", outputDir: shots }] }] });
+    expect(() => defineConfig({ envs })).toThrow(`outputDir "${shots}" in project "desktop" overlaps the screenshots folder ${shots};`);
+    expect(() => defineConfig({ envs }, { outputDir: "." })).toThrow("would let Playwright empty"); // holds the cache, and the screenshots
+    request();
+    expect(() => defineConfig({ envs }, { outputDir: "shots/run1" })).not.toThrow(); // the screenshots are in screenshots/ here
   });
 
   it("refuses a deviceOrder that is not exactly the devices", () => {
@@ -150,6 +161,7 @@ describe("defineConfig with an orchestration request", () => {
         stabilize: {},
       },
       overrides: [override],
+      defaultEnv: "uat", // as written, for the parent's check of a run's own envs
     });
   });
 });

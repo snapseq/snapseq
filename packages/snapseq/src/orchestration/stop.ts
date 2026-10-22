@@ -25,16 +25,16 @@ export async function stopChild(child: Child): Promise<void> {
   await child.closed;
 }
 
-/** Ctrl-C and errors nothing caught go to these instead of Node's default exit; returns the undo. */
+const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+/** Ctrl-C, a kill or a closed terminal, and errors nothing caught go to these instead of Node's default exit; returns the undo. */
 export function trap(onInterrupt: () => void, onError: (error: unknown) => void): () => void {
-  const interrupt = (): void => onInterrupt();
-  const error = (e: unknown): void => onError(e);
-  process.on("SIGINT", interrupt);
-  process.on("unhandledRejection", error);
-  process.on("uncaughtException", error);
+  for (const signal of SIGNALS) process.on(signal, onInterrupt);
+  process.on("unhandledRejection", onError);
+  process.on("uncaughtException", onError);
   return () => {
-    process.off("SIGINT", interrupt);
-    process.off("unhandledRejection", error);
-    process.off("uncaughtException", error);
+    for (const signal of SIGNALS) process.off(signal, onInterrupt);
+    process.off("unhandledRejection", onError);
+    process.off("uncaughtException", onError);
   };
 }

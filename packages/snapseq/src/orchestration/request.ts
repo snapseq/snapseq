@@ -2,7 +2,7 @@
 // SNAPSEQ_OVERRIDES_FILE; `defineConfig` applies it. The format is the parent's and this file's contract.
 import { defineConfig as definePlaywrightConfig, type PlaywrightTestConfig } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DeviceConfig, SnapseqConfig } from "../define.js";
 
@@ -49,37 +49,47 @@ const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const CACHE = join("node_modules", ".cache", "snapseq");
 
-// Playwright empties outputDir before a run, so it must neither hold nor sit inside the parent's run cache or requests.
-// ponytail: a relative outputDir is compared with the cache's relative spelling, an absolute one with the folders beside
-// the request file; a relative one that climbs out ("../x") is not resolved, as the config's folder is not known here.
-function assertOutputDir(dir: string | undefined, where: string): void {
+const within = (outer: string, inner: string): boolean => {
+  const rest = relative(outer, inner);
+  return !rest.startsWith("..") && !isAbsolute(rest);
+};
+const overlap = (a: string, b: string): boolean => within(a, b) || within(b, a);
+
+// Playwright empties outputDir before a run, so it must neither hold nor sit inside the parent's run cache, its requests
+// or the screenshots. Resolved as Playwright resolves it, against the config's folder: the parent writes the request in
+// <config folder>/node_modules/.cache/snapseq/requests.
+function assertOutputDir(dir: string | undefined, where: string, screenshotsDir: string): void {
   if (dir === undefined) return;
   const requests = dirname(process.env.SNAPSEQ_OVERRIDES_FILE ?? "");
-  const guarded = isAbsolute(dir) ? [join(dirname(requests), "runs"), requests] : [join(CACHE, "runs"), join(CACHE, "requests")];
-  const within = (outer: string, inner: string) => {
-    const rest = relative(outer, inner);
-    return !rest.startsWith("..") && !isAbsolute(rest);
-  };
-  if (guarded.some((folder) => within(dir, folder) || within(folder, dir))) {
+  const configDir = resolve(requests, "..", "..", "..", "..");
+  const output = resolve(configDir, dir);
+  if ([join(dirname(requests), "runs"), requests].some((folder) => overlap(output, folder))) {
     throw new Error(`snapseq: outputDir "${dir}"${where} would let Playwright empty the orchestration's ${CACHE}/runs or /requests; point it elsewhere`);
+  }
+  const screenshots = resolve(configDir, screenshotsDir);
+  if (overlap(output, screenshots)) {
+    throw new Error(`snapseq: outputDir "${dir}"${where} overlaps the screenshots folder ${screenshots}; Playwright empties its outputDir before a run, point it elsewhere`);
   }
 }
 
 /**
- * The request over a config already merged with the consumer's overrides: the run's devices replace the projects (a
- * run's viewport beats a configured project override), the run's Playwright overrides merge next, and last, so nothing
- * above can undo them, the file, the projects (exactly the devices, in `deviceOrder`), one attempt per test, an
- * outputDir clear of the run cache, and the result reporter.
+ * The request over a config already merged with the consumer's overrides: the run's devices go over the configured
+ * projects of their names (a run's viewport beats a configured project override, a configured locale stays), the run's
+ * Playwright overrides merge next, and last, so nothing above can undo them, the file, the projects (exactly the
+ * devices, in `deviceOrder`), one attempt per test, an outputDir clear of the run cache and the screenshots, and the
+ * result reporter.
  */
-export function applyRequest(config: PlaywrightTestConfig, request: Request, sequencesDir: string): PlaywrightTestConfig {
+export function applyRequest(config: PlaywrightTestConfig, request: Request, sequencesDir: string, screenshotsDir: string): PlaywrightTestConfig {
   const names = request.deviceOrder;
   const devices = request.snapseq.devices ?? {};
   const keys = Object.keys(devices);
   if (names.length !== keys.length || !keys.every((key) => names.includes(key))) {
     throw new Error(`snapseq: the request's deviceOrder (${names.join(", ")}) must list exactly its devices (${keys.join(", ")})`);
   }
+  // Over the consumer's own project of that name: the run's device wins where they differ, the rest of the project stays.
+  const configured = (name: string) => config.projects?.find((p) => p.name === name);
   const merged = definePlaywrightConfig(
-    { ...config, projects: names.map((name) => ({ name, use: devices[name] })) },
+    { ...config, projects: names.map((name) => ({ ...configured(name), name, use: { ...configured(name)?.use, ...devices[name] } })) },
     ...request.playwright,
   );
   // At the top level and on every project. testDir stays the sequences folder, so a nested id keeps its folders.
@@ -100,7 +110,7 @@ export function applyRequest(config: PlaywrightTestConfig, request: Request, seq
         `snapseq: an orchestration run shoots each part once: retries must be 0 and repeatEach 1, got retries ${retries} and repeatEach ${repeatEach}${where}`,
       );
     }
-    assertOutputDir(at.outputDir, where);
+    assertOutputDir(at.outputDir, where, screenshotsDir);
   }
   for (const project of projects) {
     for (const other of [...(project.dependencies ?? []), ...(project.teardown ? [project.teardown] : [])]) {

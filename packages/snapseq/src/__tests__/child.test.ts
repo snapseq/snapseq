@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 // An orchestration child as the parent spawns it: the BUILT package, a request file, the real Playwright CLI, fd 3 a pipe.
 const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -28,6 +28,12 @@ test.describe("hero", () => sequence(async ({ seq }) => void seq.dir));`,
 import { test } from "@playwright/test";
 test.use({ baseURL: "http://127.0.0.1:1" });
 sequence(async ({ seq }) => void seq.dir);`,
+  // Decomposed, as macOS may store a name: the parent asks for it composed.
+  ["caf\u0065\u0301"]: `import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/pricing");
+  await seq.snap();
+});`,
   dangling: `import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
   await page.goto("/pricing");
@@ -63,10 +69,9 @@ afterAll(async () => {
 });
 
 /** One child for `sequence` on these devices; resolves to its exit code, its output and the document from fd 3. */
-function child(sequence: string, devices: Record<string, object>, deviceOrder = Object.keys(devices)) {
+function child(sequence: string, devices: Record<string, object>, deviceOrder = Object.keys(devices), file = join(app, "snapseq", `${sequence}.seq.ts`)) {
   const request = join(app, "node_modules", ".cache", "snapseq", "requests", `${sequence.replace(/\//g, "-")}.json`);
   mkdirSync(dirname(request), { recursive: true });
-  const file = join(app, "snapseq", `${sequence}.seq.ts`);
   const body = { version: 1, sequence, file, snapseq: { devices }, deviceOrder, playwright: [], terminal: { labelWidth: 0 } };
   writeFileSync(request, JSON.stringify(body));
   const env: Record<string, string> = {};
@@ -74,7 +79,7 @@ function child(sequence: string, devices: Record<string, object>, deviceOrder = 
   return new Promise<{ status: number | null; out: string; doc: { status: string; errors: string[]; tests: Record<string, unknown>[] } }>((ok) => {
     const proc = spawn(process.execPath, [PW_CLI, "test", "-c", join(app, "snapseq.config.ts")], {
       cwd: app,
-      env: { ...env, SNAPSEQ_OVERRIDES_FILE: request, SNAPSEQ_RUN: "r1", SNAPSEQ_OPEN: "0" },
+      env: { ...env, SNAPSEQ_OVERRIDES_FILE: request, SNAPSEQ_RUN: "r1", SNAPSEQ_OPEN: "0", SNAPSEQ_RESULT_FD: "3" },
       stdio: ["ignore", "pipe", "pipe", "pipe"],
     });
     let out = "";
@@ -97,6 +102,7 @@ describe("an orchestration child", () => {
       device,
       status: "passed",
       retry: 0,
+      retries: 0,
       usedSeq: true,
       skipReason: null,
       error: null,
@@ -131,6 +137,12 @@ describe("an orchestration child", () => {
     ]);
   });
 
+  it("runs a file the disk names decomposed as the composed id the parent asked for, and reports it under that id", async () => {
+    const r = await child("caf\u00e9", { d: {} }, ["d"], join(app, "snapseq", "caf\u0065\u0301.seq.ts"));
+    expect(r.status, r.out).toBe(0);
+    expect(r.doc.tests).toEqual([expect.objectContaining({ status: "passed", error: null, capture: expect.objectContaining({ sequence: "caf\u00e9" }) })]);
+  });
+
   it("refuses a context whose baseURL is not the run's host", async () => {
     const r = await child("elsewhere", { d: {} });
     expect(r.status).toBe(1);
@@ -145,5 +157,25 @@ describe("an orchestration child", () => {
     expect(r.doc.tests).toEqual([
       expect.objectContaining({ status: "failed", capture: null, error: expect.stringContaining("snapseq: a shot was still being taken when the sequence ended") }),
     ]);
+  });
+});
+
+describe("sequenceId", () => {
+  it("joins with / on Windows too, so the id matches the one the parent asked for", async () => {
+    const path = await import("node:path");
+    vi.doMock("node:path", () => ({ ...path.win32, default: path.win32 }));
+    vi.doMock("node:fs", async () => ({ ...(await vi.importActual<object>("node:fs")), realpathSync: (p: string) => p }));
+    vi.resetModules();
+    try {
+      const { sequenceId } = await import("../fixtures.js");
+      const info = (titlePath: string[]) =>
+        ({ project: { testDir: "C:\\app\\snapseq" }, file: "C:\\app\\snapseq\\campaign\\pricing.seq.ts", titlePath }) as never;
+      expect(sequenceId(info(["campaign\\pricing.seq.ts", "sequence"]))).toBe("campaign/pricing");
+      expect(sequenceId(info(["campaign\\pricing.seq.ts", "hero", "sequence"]))).toBe("campaign/pricing/hero/sequence");
+    } finally {
+      vi.doUnmock("node:path");
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    }
   });
 });

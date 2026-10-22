@@ -1,12 +1,14 @@
 // The child's answer to the orchestration parent: one JSON document on fd 3 at the end of the run, and nothing else.
 // defineConfig appends it last in an orchestration run; it prints nothing, so the terminal stays the other reporters'.
-import { fstatSync, writeSync } from "node:fs";
+import { writeSync } from "node:fs";
 import type { FullResult, Reporter, Suite, TestCase, TestError, TestResult } from "@playwright/test/reporter";
 
 interface Entry {
   device: string;
   status: TestResult["status"] | "not run";
   retry: number;
+  /** The retries the test was given, `test.describe.configure({ retries })` included: a pass at attempt 0 does not show them. */
+  retries: number;
   usedSeq: boolean;
   skipReason: string | null;
   error: string | null;
@@ -15,14 +17,11 @@ interface Entry {
 
 const message = (error: TestError | undefined): string | null => error?.message ?? error?.value ?? null;
 
-// The pipe the parent opened as the child's fd 3; an ordinary run has none, and gets nothing.
+// The pipe the parent opened, named by SNAPSEQ_RESULT_FD; an ordinary run sets none, and gets nothing, whatever fd 3 it inherited.
 function toParent(text: string): void {
-  try {
-    fstatSync(3);
-  } catch {
-    return;
-  }
-  for (let rest = Buffer.from(text); rest.length > 0; ) rest = rest.subarray(writeSync(3, rest));
+  const fd = Number(process.env.SNAPSEQ_RESULT_FD);
+  if (!Number.isInteger(fd) || fd < 3) return;
+  for (let rest = Buffer.from(text); rest.length > 0; ) rest = rest.subarray(writeSync(fd, rest));
 }
 
 export default class ResultReporter implements Reporter {
@@ -43,7 +42,7 @@ export default class ResultReporter implements Reporter {
   onBegin(_config: unknown, suite: Suite): void {
     for (const test of suite.allTests()) {
       const device = test.parent.project()?.name ?? "";
-      this.tests.set(test.id, { device, status: "not run", retry: 0, usedSeq: false, skipReason: null, error: null, capture: null });
+      this.tests.set(test.id, { device, status: "not run", retry: 0, retries: test.retries, usedSeq: false, skipReason: null, error: null, capture: null });
     }
   }
 
