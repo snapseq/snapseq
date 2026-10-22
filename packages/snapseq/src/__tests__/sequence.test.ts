@@ -2,9 +2,16 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SequenceContext } from "../fixtures.js";
-import type { Plugin } from "../plugin.js";
 import { createSequence, type Sequence, type SnapOptions } from "../sequence.js";
+
+type Steps = NonNullable<NonNullable<Parameters<typeof createSequence>[3]>["stabilize"]>;
+// A stand-in for stabilize: the steps given, the others doing nothing.
+const steps = (given: Partial<Steps>): Steps => ({
+  beforeSnap: async () => {},
+  afterGrow: async () => {},
+  afterRestore: async () => {},
+  ...given,
+});
 
 // Each listed shot as one line: name, URL, then its notes.
 const lines = (seq: Sequence) => seq.shots.map((s) => `${s.name}  ${s.url}${s.notes.length > 0 ? `  ${s.notes.join(", ")}` : ""}`);
@@ -237,8 +244,7 @@ describe("createSequence", () => {
         return serve(fn, arg);
       });
       let grows = 0;
-      const plugins: Plugin[] = [{ name: "a", afterGrow: async () => void grows++ }];
-      await createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as SequenceContext }).snapPage();
+      await createSequence(page, root, "cap", { stabilize: steps({ afterGrow: async () => void grows++ }) }).snapPage();
       return { heights: viewports.map((v) => v.height), grows };
     };
     expect(await run(700, 700)).toEqual({ heights: [900, 700, 300], grows: 2 }); // grown, grown again to the content, restored
@@ -258,10 +264,8 @@ describe("createSequence", () => {
       if (src.includes("querySelectorAll")) return ""; // no scroller to note instead
       return true;
     });
-    const plugins: Plugin[] = [
-      { name: "s", beforeSnap: async (shot) => void shot.notes.push("cannot read x.css: its viewport units stay live") },
-    ];
-    const seq = createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as SequenceContext });
+    const stabilize = steps({ beforeSnap: async (shot) => void shot.notes.push("cannot read x.css: its viewport units stay live") });
+    const seq = createSequence(page, root, "cap", { stabilize });
     await expect(seq.snapPage()).rejects.toThrow(
       "Use snap({ fullPage: true }) for this page. Notes: cannot read x.css: its viewport units stay live",
     );
@@ -310,34 +314,30 @@ describe("createSequence", () => {
     expect(lines(seq)).toEqual(["01.png  http://x/p  the page scrolls inside <main.content> not the document: scrollable content may be omitted"]);
   });
 
-  describe("plugins", () => {
-    const ctx = { device: "d1" } as SequenceContext;
-
-    it("passes what a beforeSnap hook put in the options to the screenshot, but never its path or type", async () => {
+  describe("stabilize steps", () => {
+    it("passes what beforeSnap put in the options to the screenshot, but never its path or type, and keeps what the sequence gave", async () => {
       const { page } = makePageStub();
-      const plugins: Plugin[] = [
-        {
-          name: "mask",
-          beforeSnap: async (shot) => {
-            const options = shot.options as Record<string, unknown>;
-            options.mask = ["x"];
-            options.path = "evil";
-            options.type = "jpeg";
-          },
+      const stabilize = steps({
+        beforeSnap: async (shot) => {
+          const options = shot.options as Record<string, unknown>;
+          options.mask = ["x"];
+          options.path = "evil";
+          options.type = "jpeg";
         },
-      ];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      });
+      const seq = createSequence(page, root, "cap", { stabilize });
       await seq.snap({ label: "Hero" } as SnapOptions);
       const call = page.screenshot.mock.calls[0]?.[0];
       expect(call).toEqual({ label: "Hero", mask: ["x"], path: join(seq.dir, "01.png") });
       expect(call.type).toBeUndefined(); // the config's: unset, so PNG
       expect(seq.shots[0]?.options).toEqual({ label: "Hero", mask: ["x"], path: "evil", type: "jpeg" });
+      expect(seq.shots[0]?.given).toEqual({ label: "Hero" });
     });
 
     it("waits for the document, then runs beforeSnap hooks: before the readiness waits, and before snapPage reads and grows the viewport", async () => {
       const { page, events } = makePageStub();
-      const plugins: Plugin[] = [{ name: "a", beforeSnap: async (shot) => void events.push(`beforeSnap written=${existsSync(shot.path)}`) }];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      const stabilize = steps({ beforeSnap: async (shot) => void events.push(`beforeSnap written=${existsSync(shot.path)}`) });
+      const seq = createSequence(page, root, "cap", { stabilize });
       await seq.snapPage();
       // The scale factor is read once per sequence; then the scroll position and the height.
       expect(events.slice(0, 7)).toEqual([
@@ -361,8 +361,8 @@ describe("createSequence", () => {
       page.evaluate.mockImplementation(async (fn: unknown, arg?: unknown) =>
         String(fn).includes("documentElement.scrollHeight") && events.includes("setViewportSize 900") ? (events.push("height"), 1000) : serve(fn, arg),
       );
-      const plugins: Plugin[] = [{ name: "a", afterGrow: async (shot) => void events.push(`afterGrow ${shot.name}`) }];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      const stabilize = steps({ afterGrow: async (shot) => void events.push(`afterGrow ${shot.name}`) });
+      const seq = createSequence(page, root, "cap", { stabilize });
       await seq.snapPage();
       const resizes = events.flatMap((e, i) => (e.startsWith("setViewportSize") ? [events.slice(i, i + 3)] : []));
       expect(resizes).toEqual([
@@ -377,16 +377,13 @@ describe("createSequence", () => {
 
     it("runs afterRestore hooks once per snapPage, once the viewport and the scroll position are back, and never for snap", async () => {
       const { page, events } = makePageStub(900);
-      const plugins: Plugin[] = [
-        {
-          name: "a",
-          afterRestore: async (shot) => {
-            const size = page.viewportSize(); // the device's again
-            events.push(`afterRestore ${shot.name} ${size.height}`);
-          },
+      const stabilize = steps({
+        afterRestore: async (shot) => {
+          const size = page.viewportSize(); // the device's again
+          events.push(`afterRestore ${shot.name} ${size.height}`);
         },
-      ];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      });
+      const seq = createSequence(page, root, "cap", { stabilize });
       await seq.snapPage();
       expect(events.slice(-5)).toEqual(["setViewportSize 300", "scroll", "scrollTo 1500", "viewportSize", "afterRestore 01.png 300"]);
       expect(events.filter((e) => e.startsWith("afterRestore"))).toHaveLength(1);
@@ -405,65 +402,37 @@ describe("createSequence", () => {
         return true;
       });
       const heights: number[] = [];
-      const plugins: Plugin[] = [
-        {
-          name: "a",
-          afterRestore: async () => {
-            heights.push(page.viewportSize().height);
-            throw new Error("late"); // swallowed: the refusal is the error
-          },
+      const stabilize = steps({
+        afterRestore: async () => {
+          heights.push(page.viewportSize().height);
+          throw new Error("late"); // swallowed: the refusal is the error
         },
-      ];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      });
+      const seq = createSequence(page, root, "cap", { stabilize });
       await expect(seq.snapPage()).rejects.toThrow("snap({ fullPage: true })");
       expect(heights).toEqual([300]);
       expect(events.filter((e) => e === "screenshot")).toEqual([]);
     });
 
-    it("fails the sequence on an afterRestore that throws after a shot that was taken, naming the plugin and the shot", async () => {
+    it("fails the sequence on an afterRestore that throws after a shot that was taken, naming stabilize and the shot", async () => {
       const { page } = makePageStub();
-      const plugins: Plugin[] = [{ name: "a", afterRestore: async () => { throw new Error("late"); } }];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
-      await expect(seq.snapPage()).rejects.toThrow('snapseq: plugin "a" threw in afterRestore on 01.png: late');
+      const stabilize = steps({ afterRestore: async () => { throw new Error("late"); } });
+      const seq = createSequence(page, root, "cap", { stabilize });
+      await expect(seq.snapPage()).rejects.toThrow("snapseq: stabilize threw in afterRestore on 01.png: late");
       expect(lines(seq)).toEqual(["01.png  http://x/p"]); // the shot itself was listed
+      const grow = steps({ afterGrow: async () => { throw new Error("x"); } });
+      await expect(createSequence(makePageStub().page, root, "cap2", { stabilize: grow }).snapPage()).rejects.toThrow("snapseq: stabilize threw in afterGrow on 01.png: x");
     });
 
-    it("runs every plugin's afterRestore even when an earlier one throws, then throws the first error; other hooks stop at the first throw", async () => {
-      const { page } = makePageStub();
-      const ran: string[] = [];
-      const plugins: Plugin[] = [
-        { name: "a", afterRestore: async () => { ran.push("a"); throw new Error("first"); } },
-        { name: "b", afterRestore: async () => { ran.push("b"); throw new Error("second"); } },
-        { name: "c", afterRestore: async () => void ran.push("c") },
-      ];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
-      await expect(seq.snapPage()).rejects.toThrow('snapseq: plugin "a" threw in afterRestore on 01.png: first');
-      expect(ran).toEqual(["a", "b", "c"]);
-      const stops: string[] = [];
-      const grow: Plugin[] = [
-        { name: "a", afterGrow: async () => { stops.push("a"); throw new Error("x"); } },
-        { name: "b", afterGrow: async () => void stops.push("b") },
-      ];
-      await expect(createSequence(makePageStub().page, root, "cap2", { plugins: grow, ctx }).snapPage()).rejects.toThrow('plugin "a" threw in afterGrow');
-      expect(stops).toEqual(["a"]); // an afterGrow throw stops at the first plugin
-    });
-
-    it("keeps a fullPage that a beforeSnap hook set off a snapPage screenshot; snap passes it on", async () => {
+    it("keeps a fullPage that beforeSnap set off a snapPage screenshot; snap passes it on", async () => {
       const { page, calls } = makePageStub();
-      const seen: unknown[] = [];
-      const plugins: Plugin[] = [
-        {
-          name: "full",
-          beforeSnap: async (shot) => void (shot.options.fullPage = true),
-          afterSnap: async (shot) => void seen.push(shot.options.fullPage),
-        },
-      ];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
+      const stabilize = steps({ beforeSnap: async (shot) => void (shot.options.fullPage = true) });
+      const seq = createSequence(page, root, "cap", { stabilize });
       await seq.snapPage();
       await seq.snap();
       expect(calls.map((c) => c.fullPage)).toEqual([false, true]);
       expect("fullPage" in page.screenshot.mock.calls[0]?.[0]).toBe(false);
-      expect(seen).toEqual([undefined, true]); // dropped from the snapPage shot, kept on snap's
+      expect(seq.shots.map((s) => s.options.fullPage)).toEqual([undefined, true]); // dropped from the snapPage shot, kept on snap's
     });
 
     it("titles and lists a shot with the URL at screenshot time, after a beforeSnap hook navigated", async () => {
@@ -472,8 +441,7 @@ describe("createSequence", () => {
       const seen: string[] = [];
       const seq = createSequence(page, root, "cap", {
         wrap: (title, shoot) => (titles.push(title), shoot()),
-        plugins: [{ name: "nav", beforeSnap: async (shot) => { seen.push(shot.url); page.url = () => "http://x/later"; } }],
-        ctx,
+        stabilize: steps({ beforeSnap: async (shot) => { seen.push(shot.url); page.url = () => "http://x/later"; } }),
       });
       await seq.snap();
       expect(seen).toEqual(["http://x/p"]);
@@ -481,7 +449,7 @@ describe("createSequence", () => {
       expect(lines(seq)).toEqual(["01.png  http://x/later"]);
     });
 
-    it("hands beforeSnap no notes and afterSnap the readiness notes", async () => {
+    it("hands beforeSnap no notes, and lists the shot with the readiness notes", async () => {
       const { page } = makePageStub();
       vi.spyOn(console, "warn").mockImplementation(() => {});
       page.evaluate.mockImplementation(async (fn: unknown) => {
@@ -491,71 +459,26 @@ describe("createSequence", () => {
         return !src.includes("MutationObserver"); // the DOM never went quiet
       });
       const seen: string[][] = [];
-      const plugins: Plugin[] = [
-        {
-          name: "n",
-          beforeSnap: async (shot) => void seen.push([...shot.notes]),
-          afterSnap: async (shot) => void seen.push([...shot.notes]),
-        },
-      ];
-      await createSequence(page, root, "cap", { plugins, ctx }).snap();
-      expect(seen).toEqual([[], ["DOM still changing after 3 s"]]);
+      const seq = createSequence(page, root, "cap", { stabilize: steps({ beforeSnap: async (shot) => void seen.push([...shot.notes]) }) });
+      await seq.snap();
+      expect(seen).toEqual([[]]);
+      expect(seq.shots[0]?.notes).toEqual(["DOM still changing after 3 s"]);
     });
 
-    it("fails the shot when a beforeSnap hook throws, naming the plugin and the file, before any screenshot; the number is given back", async () => {
+    it("fails the shot when beforeSnap throws, naming stabilize and the file, before any screenshot; the number is given back", async () => {
       const { page } = makePageStub();
       const kaput = new Error("kaput");
       let thrown = false;
       const seq = createSequence(page, root, "cap", {
-        plugins: [{ name: "boom", beforeSnap: async () => { if (!thrown) { thrown = true; throw kaput; } } }],
-        ctx,
+        stabilize: steps({ beforeSnap: async () => { if (!thrown) { thrown = true; throw kaput; } } }),
       });
       await expect(seq.snap()).rejects.toMatchObject({
-        message: 'snapseq: plugin "boom" threw in beforeSnap on 01.png: kaput',
+        message: "snapseq: stabilize threw in beforeSnap on 01.png: kaput",
         cause: kaput,
       });
       expect(page.screenshot).not.toHaveBeenCalled();
       await seq.snap();
       expect(lines(seq)).toEqual(["01.png  http://x/p"]);
-    });
-
-    it("runs afterSnap hooks in listing order, after the file is written and before the shot is listed", async () => {
-      const { page } = makePageStub();
-      const events: string[] = [];
-      const listed = () => seq.shots.map((s) => s.name).join(",");
-      const plugins: Plugin[] = [
-        {
-          name: "a",
-          afterSnap: async (shot, c) => {
-            await new Promise((r) => setTimeout(r, 10)); // b must wait for this
-            events.push(`a ${shot.name} written=${existsSync(shot.path)} ctx=${c === ctx} listed=${JSON.stringify(listed())}`);
-          },
-        },
-        { name: "b", afterSnap: async (shot) => void events.push(`b ${shot.name}`) },
-      ];
-      const seq = createSequence(page, root, "cap", { plugins, ctx });
-      await seq.snap();
-      await seq.snapPage();
-      expect(events).toEqual([
-        'a 01.png written=true ctx=true listed=""',
-        "b 01.png",
-        'a 02.png written=true ctx=true listed="01.png"',
-        "b 02.png",
-      ]);
-      expect(listed()).toBe("01.png,02.png");
-    });
-
-    it("fails the shot when an afterSnap hook throws, naming the plugin and the file, and does not list it", async () => {
-      const { page } = makePageStub();
-      const kaput = new Error("kaput");
-      const seq = createSequence(page, root, "cap", {
-        plugins: [{ name: "boom", afterSnap: async () => { throw kaput; } }],
-        ctx,
-      });
-      await expect(seq.snap()).rejects.toThrow(new Error('snapseq: plugin "boom" threw in afterSnap on 01.png: kaput'));
-      await expect(seq.snap()).rejects.toMatchObject({ cause: kaput });
-      expect(existsSync(join(seq.dir, "01.png"))).toBe(true);
-      expect(seq.shots).toEqual([]);
     });
 
     it("lists every shot with its name, path, url, index, options, notes and format", async () => {
@@ -570,6 +493,7 @@ describe("createSequence", () => {
         url: "http://x/p",
         index: n,
         options,
+        given: options,
         notes: [],
         format,
         deviceScaleFactor: 2,
@@ -634,18 +558,10 @@ describe("createSequence", () => {
     expect(lines(seq)).toEqual(["01.png  http://x/p"]);
   });
 
-  it("wipes a directory a hook wrote into its own on a rerun", async () => {
-    const plugins: Plugin[] = [
-      {
-        name: "thumbs",
-        afterSnap: async (shot) => {
-          mkdirSync(join(root, "cap", "thumbnails"), { recursive: true });
-          writeFileSync(join(root, "cap", "thumbnails", shot.name), "thumb");
-        },
-      },
-    ];
-    await createSequence(makePageStub().page, root, "cap", { plugins }).snap();
-    expect(existsSync(join(root, "cap", "thumbnails", "01.png"))).toBe(true);
+  it("wipes a directory written into its own on a rerun", async () => {
+    await createSequence(makePageStub().page, root, "cap").snap();
+    mkdirSync(join(root, "cap", "thumbnails"));
+    writeFileSync(join(root, "cap", "thumbnails", "01.png"), "thumb");
     expect(readdirSync(createSequence(makePageStub().page, root, "cap").dir)).toEqual([]);
   });
 
@@ -659,32 +575,29 @@ describe("createSequence", () => {
     expect(seq.shots.map((s) => s.name)).toEqual(["01.png", "02.png"]);
   });
 
-  it("does not list a shot whose hook resolved after the sequence ended", async () => {
+  it("does not list a shot whose screenshot resolved after the sequence ended", async () => {
     const { page } = makePageStub();
     const ended = new AbortController();
     let release!: () => void;
-    const seq = createSequence(page, root, "cap", {
-      signal: ended.signal,
-      plugins: [{ name: "slow", afterSnap: () => new Promise<void>((r) => (release = r)) }],
-    });
+    page.screenshot.mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
+    const seq = createSequence(page, root, "cap", { signal: ended.signal });
     const late = seq.snap();
-    await new Promise((r) => setTimeout(r, 20)); // the hook is pending
+    await new Promise((r) => setTimeout(r, 20)); // the screenshot is pending
     ended.abort();
     release();
     await expect(late).rejects.toThrow("the sequence ended before 01.png was listed");
     expect(seq.shots).toHaveLength(0);
   });
 
-  it("hands a hook its own copy of format and notes", async () => {
+  it("hands beforeSnap its own copy of the format", async () => {
     const { page } = makePageStub();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const seq = createSequence(page, root, "cap", {
-      plugins: [{ name: "mut", afterSnap: async (shot) => { shot.format.type = "jpeg"; shot.notes.push("x\ninjected"); } }],
+      stabilize: steps({ beforeSnap: async (shot) => void (shot.format.type = "jpeg") }),
     });
     await seq.snap();
     await seq.snap();
     expect(readdirSync(seq.dir).sort()).toEqual(["01.png", "02.png"]);
-    expect(warn).not.toHaveBeenCalled(); // the pushed note never reached the terminal line
+    expect(page.screenshot.mock.calls.map((c: [{ type?: string }]) => c[0].type)).toEqual([undefined, undefined]);
   });
 
   it("takes the scale factor from the context's option, and bounds what the page says when it is unset", async () => {
@@ -704,8 +617,7 @@ describe("createSequence", () => {
   it("reads the device scale factor once per sequence and hands it to every shot, beforeSnap included", async () => {
     const { page } = makePageStub();
     const seen: number[] = [];
-    const plugins: Plugin[] = [{ name: "d", beforeSnap: async (shot) => void seen.push(shot.deviceScaleFactor) }];
-    const seq = createSequence(page, root, "cap", { plugins, ctx: { device: "d1" } as SequenceContext });
+    const seq = createSequence(page, root, "cap", { stabilize: steps({ beforeSnap: async (shot) => void seen.push(shot.deviceScaleFactor) }) });
     await seq.snap();
     await seq.snapPage();
     expect(seen).toEqual([2, 2]);

@@ -18,8 +18,9 @@ import {
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { SnapseqMetadata } from "./define.js";
-import type { Plugin } from "./plugin.js";
+import { attachCapture } from "./orchestration/capture.js";
 import { createSequence, type Sequence } from "./sequence.js";
+import { stabilize } from "./stabilize.js";
 
 /** The bag handed to helpers that need more than `page`. Also available as the `ctx` fixture. */
 export interface SequenceContext {
@@ -41,8 +42,6 @@ export interface SequenceFixtures {
   ctx: SequenceContext;
   /** Auto fixture: the env's `replay` routes, set up before the sequence runs. */
   replay: void;
-  /** Option: the config's `plugins`, set by `defineConfig` as `use.snapseq`. */
-  snapseq: { plugins: Plugin[] };
 }
 
 interface WorkerFixtures {
@@ -144,11 +143,11 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
     await use(testInfo.project.name);
   },
 
-  snapseq: [{ plugins: [] }, { option: true }],
-
   // Not auto: a sequence skipped by a file-level skipIf must get no directory,
-  // and a sequence that never touches `seq` has no sequence and no plugin hooks.
-  seq: async ({ page, snapseq, deviceScaleFactor }, use, testInfo) => {
+  // and a sequence that never touches `seq` has no sequence and no stabilize steps.
+  seq: async ({ page, deviceScaleFactor, baseURL }, use, testInfo) => {
+    // First: an orchestration parent tells a sequence that never used `seq` from one that failed in it.
+    testInfo.annotations.push({ type: "snapseq", description: "usedSeq" });
     if (testInfo.repeatEachIndex > 0 || testInfo.retry > 0) {
       throw new Error(
         "snapseq: --repeat-each and retries are not supported; a second run would overwrite the first run's screenshots",
@@ -156,6 +155,14 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
     }
     const meta = metadataOf(testInfo);
     const id = sequenceId(testInfo);
+    // Before the wipe: in an orchestration run the parent asked for this id on this host, and caches what it gets under them.
+    const declared = meta.orchestration?.sequence;
+    if (declared !== undefined && id !== declared) {
+      throw new Error(`snapseq: this file runs as "${declared}"; a describe title or a second test changes the id to "${id}"`);
+    }
+    if (declared !== undefined && baseURL !== meta.host) {
+      throw new Error(`snapseq: the context's baseURL "${baseURL}" is not this run's host "${meta.host}"; a use.baseURL or test.use({ baseURL }) changed it`);
+    }
     const inside = nestedSequence(testInfo.project.testDir, id, testInfo.project.name);
     if (inside) {
       throw new Error(`snapseq: refusing to wipe ${join(meta.run, id, testInfo.project.name)}: ${inside} writes inside it; rename one of the sequences`);
@@ -174,8 +181,7 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
     const started = performance.now(); // monotonic, like Playwright's own clock
     const idle = testInfo.timeout;
     const ended = new AbortController();
-    // The hooks' context, built here: the ctx fixture depends on seq. seq is bound below.
-    const ctx = { page, env: meta.env, host: meta.host, device: testInfo.project.name } as SequenceContext;
+    const stabilizer = meta.stabilize === false ? undefined : stabilize(meta.stabilize);
     const seq = createSequence(page, root, join(meta.run, id, testInfo.project.name), {
       wrap: (title, shoot) =>
         test.step(title, async () => {
@@ -186,49 +192,24 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
         }),
       numbering: meta.numbering,
       format: meta.format,
-      plugins: snapseq.plugins,
-      ctx,
+      stabilize: stabilizer,
       signal: ended.signal,
       deviceScaleFactor,
     });
-    ctx.seq = seq;
-    // Before the body: what a plugin sets up on the page is there for its first line.
-    for (const plugin of snapseq.plugins) {
-      try {
-        await plugin.begin?.(ctx);
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        throw new Error(`snapseq: plugin "${plugin.name}" threw in begin: ${message}`, { cause });
-      }
+    // Before the body: what stabilize sets up on the page is there for its first line.
+    try {
+      await stabilizer?.begin(page);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(`snapseq: stabilize threw in begin: ${message}`, { cause });
     }
     await use(seq);
     ended.abort();
-    // A done or failed hook gets the sequence timeout. Playwright's own budget for
-    // this teardown grows with every renewal above, and a hung PDF would get it all.
-    const bounded = <T>(work: Promise<T>): Promise<T> => {
-      if (idle <= 0) return work;
-      let timer: NodeJS.Timeout | undefined;
-      const limit = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`took longer than ${idle} ms`)), idle);
-      });
-      return Promise.race([work, limit]).finally(() => clearTimeout(timer));
-    };
-    // Each plugin's done or failed hook in a step named after the plugin.
-    const after = async (kind: "done" | "failed") => {
-      for (const plugin of snapseq.plugins) {
-        const run = plugin[kind];
-        if (!run) continue;
-        await test.step(plugin.name, async () => {
-          try {
-            await bounded(run.call(plugin, seq.shots, ctx));
-          } catch (cause) {
-            const message = cause instanceof Error ? cause.message : String(cause);
-            throw new Error(`snapseq: plugin "${plugin.name}" threw in ${kind}: ${message}`, { cause });
-          }
-        });
-      }
-    };
-    if (testInfo.status === "passed") await after("done");
+    // What the orchestration parent reads back: the shots as data, never the files; complete only when no shot is left running.
+    if (testInfo.status === "passed") {
+      if (seq.inFlight) throw new Error("snapseq: a shot was still being taken when the sequence ended; await each snap");
+      await attachCapture(testInfo, { sequence: id, device: testInfo.project.name, env: meta.env, host: meta.host, dir: seq.dir }, seq.shots);
+    }
     // The page as it was when the sequence died, beside the shots it did take.
     // A step, like a shot, so the terminal view learns where it died: the page
     // the teardown found, which is not always the last shot's.
@@ -259,8 +240,6 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
           await page.screenshot({ path: join(seq.dir, "failed.png"), timeout: 5_000 });
         })
         .catch(() => {});
-      // Not swallowed like failed.png: a failed hook that throws says so.
-      await after("failed");
     }
   },
 

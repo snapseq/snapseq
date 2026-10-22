@@ -1,6 +1,8 @@
-import type { Route } from "@playwright/test";
-import { addPersistentStyle, type Plugin } from "snapseq";
+import type { Page, Route } from "@playwright/test";
+import { addPersistentStyle } from "./dom.js";
+import type { Shot } from "./sequence.js";
 
+/** The config's `stabilize`: each step has its own switch. `stabilize: false` turns them all off. */
 export interface StabilizeOptions {
   /** Freeze viewport-height units to px at the shot's viewport, so `snapPage` can grow the viewport without the layout following it. Default true. */
   viewportUnits?: boolean;
@@ -16,13 +18,6 @@ export interface StabilizeOptions {
   scrollEvent?: boolean;
   /** For `snapPage`: a `position: fixed` element keeps the top it had at the device viewport, instead of following its `bottom` inset to the end of the grown page (a promo drawer, a chat bubble, a cookie banner). Default true. */
   floating?: boolean;
-}
-
-declare module "snapseq" {
-  interface SnapOptions {
-    /** `"keep"`: leave the pointer where the sequence put it for this shot. Needs `@snapseq/stabilize` in `plugins`. */
-    hover?: "keep";
-  }
 }
 
 // snapseq's disableTransitions without its `animation: none`, which would hold a reveal at its base state (a bar
@@ -136,7 +131,7 @@ const findLinks = () => {
 
 // Fetches each of those again as a CORS request, through a clone beside the original; the
 // original goes once the clone loaded, and stays when it did not (a 500, a timeout).
-// The plugin's route supplies the header the server did not.
+// The route in beforeSnap supplies the header the server did not.
 const swapLinks = async () => {
   const host = window as unknown as { __snapseqRefetch?: HTMLLinkElement[] };
   const links = (host.__snapseqRefetch ?? []).filter((link) => link.isConnected); // the page may have removed one since findLinks
@@ -385,7 +380,7 @@ const fixedElements = (mode: string) => {
   const shows = (el: HTMLElement) => el.checkVisibility({ visibilityProperty: true, opacityProperty: true });
   const onScreen = (r: DOMRect) => r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
   // What the page sets on the element itself. Different at the grown viewport: the page placed it (a menu under its trigger,
-  // a tray it moved by class), and the plugin leaves it where the page put it.
+  // a tray it moved by class), and stabilize leaves it where the page put it.
   const signature = (el: HTMLElement) => [el.style.cssText, getComputedStyle(el).transform, el.getAttribute("class")].join("\n");
 
   // Each side goes back only while it still holds what was written, value and priority: a page that wrote its own since keeps
@@ -476,6 +471,9 @@ const shown = (href: string) => {
   }
 };
 
+/** The page steps of `stabilize`: what the fixture and the sequence call at each point of a shot. */
+export type Stabilizer = ReturnType<typeof stabilize>;
+
 /**
  * Makes `snapPage` work on pages with viewport-height units, and holds the page
  * still for each shot: pointer off the content, motion stopped. Each step has its own switch.
@@ -488,14 +486,15 @@ export function stabilize({
   scroll = false,
   scrollEvent = true,
   floating = true,
-}: StabilizeOptions = {}): Plugin {
+}: StabilizeOptions = {}) {
   return {
-    name: "stabilize",
-    async begin({ page }) {
+    /** The page exists and the sequence body has not run. */
+    async begin(page: Page): Promise<void> {
       if (reducedMotion) await page.emulateMedia({ reducedMotion: "reduce" });
       if (motion) await addPersistentStyle(page, NO_TRANSITIONS);
     },
-    async beforeSnap(shot, { page }) {
+    /** At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. */
+    async beforeSnap(shot: Shot, page: Page): Promise<void> {
       // A pin left behind goes first, before the freeze meets it: afterRestore takes it off, so this is for a restore that itself failed.
       if (floating) await page.evaluate(fixedElements, "release");
       // The pointer stays where the last click left it, and whatever moved under it (a card, a menu) is drawn in
@@ -564,7 +563,7 @@ export function stabilize({
     // .inView) may start an animation, which grows the page while it runs: once the DOM is quiet it is finished, so
     // snapPage measures the page at its end state. freezeUnits does not run again: it would freeze at the grown viewport.
     // The fixed elements go back to their top last, once the page has settled, from the baseline beforeSnap took.
-    async afterGrow(_shot, { page }) {
+    async afterGrow(_shot: Shot, page: Page): Promise<void> {
       if (scrollEvent) await page.evaluate(fireScroll);
       if (floating || motion) await page.evaluate(quiet);
       if (motion) await page.evaluate(stopMotion);
@@ -573,7 +572,7 @@ export function stabilize({
     // The viewport and the scroll position are back, the shot taken or failed: the page's own insets come back, then the page
     // hears the scroll event for its own viewport, so what the sequence does next finds it as it was (a tray the grow hid shows
     // again). If the restore itself failed this does not run, and the next shot's beforeSnap releases the pin.
-    async afterRestore(_shot, { page }) {
+    async afterRestore(_shot: Shot, page: Page): Promise<void> {
       // The page may have navigated by now (a timer): that is not the shot's failure.
       if (floating) await page.evaluate(fixedElements, "release").catch(() => undefined);
       if (scrollEvent) await page.evaluate(fireScroll).catch(() => undefined);

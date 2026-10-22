@@ -1,20 +1,54 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import type { Page, PageScreenshotOptions } from "@playwright/test";
-import type { SequenceContext } from "./fixtures.js";
-import type { Plugin, Shot } from "./plugin.js";
+import { snapshot } from "./orchestration/capture.js";
+import type { Stabilizer } from "./stabilize.js";
 
 /**
  * Playwright's screenshot options minus what the sequence owns: the numbered
  * path, and the type and quality from the config's `format`. An interface, so
- * a plugin can add its own keys: `declare module "snapseq" { interface SnapOptions { label?: string } }`.
+ * a step can add its own keys: `declare module "snapseq" { interface SnapOptions { label?: string } }`.
  * Playwright ignores the keys it does not know, so they reach the screenshot harmlessly.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface SnapOptions extends Omit<PageScreenshotOptions, "path" | "type" | "quality"> {}
+export interface SnapOptions extends Omit<PageScreenshotOptions, "path" | "type" | "quality"> {
+  /** `"keep"`: leave the pointer where the sequence put it for this shot, when `stabilize` would move it off the page. */
+  hover?: "keep";
+}
 
 /** Playwright's screenshot type and quality, as the config's `format`; Playwright validates them at the first shot. */
 export type ShotFormat = Pick<PageScreenshotOptions, "type" | "quality">;
+
+/**
+ * One screenshot of the sequence: still to be taken in `beforeSnap`, written once
+ * listed. `name`, `path`, `index` and `format` belong to the sequence.
+ */
+export interface Shot {
+  /** File name, e.g. `01.png`. */
+  name: string;
+  /** Absolute path of the file. */
+  path: string;
+  /** The page URL at screenshot time; in `beforeSnap`, the URL when the snap started. */
+  url: string;
+  /** Position in the sequence, from 1. */
+  index: number;
+  /** What the sequence passed to `snap` or `snapPage`, as the screenshot takes it: `stabilize` may set `animations`. */
+  options: SnapOptions;
+  /** What the sequence passed to `snap` or `snapPage`, as JSON when the shot opened (`mask` left out): what the capture records. */
+  given: SnapOptions;
+  /**
+   * The shot's notes, printed with it in the terminal: what `beforeSnap` pushed, then the readiness caps
+   * that ran out, e.g. `2 images still loading after 5 s (first: …)`. Each is cleaned (control, format and line-separator
+   * characters to spaces, trimmed, at most 200 characters) and listed once.
+   */
+  notes: string[];
+  /** The config's `format`: Playwright's screenshot `type` and `quality`. `{}` is PNG. */
+  format: ShotFormat;
+  /**
+   * Once taken, the file's pixels per CSS pixel: e.g. `2` on a 2x phone, `1` for a shot with `scale: "css"`.
+   * In `beforeSnap` it is the device option's ratio, the page's as a fallback.
+   */
+  deviceScaleFactor: number;
+}
 
 export interface Sequence {
   /**
@@ -37,7 +71,7 @@ export interface Sequence {
   snapPage(options?: Omit<SnapOptions, "fullPage">): Promise<string>;
   /** Directory the screenshots are written to. */
   readonly dir: string;
-  /** Every shot listed so far, in order: each one's plugin `afterSnap` hooks passed. */
+  /** Every shot listed so far, in order. */
   readonly shots: readonly Shot[];
 }
 
@@ -345,8 +379,7 @@ async function ready(page: Page, notes: string[], all: boolean, clip?: SnapOptio
 
 /**
  * Numbered screenshots (`01.png`, `02.png`, …; as wide as `numbering`, in
- * `format`) in `root/dir`, listed in `shots` once every
- * plugin's `afterSnap` hook passed. The directory is wiped on
+ * `format`) in `root/dir`, listed in `shots` once written. The directory is wiped on
  * creation so a run never mixes with the previous run's files; it must lie
  * inside `root`.
  */
@@ -358,8 +391,7 @@ export function createSequence(
     wrap = (_title, shoot) => shoot(),
     numbering = "00",
     format = {},
-    plugins = [],
-    ctx,
+    stabilize,
     signal,
     deviceScaleFactor,
   }: {
@@ -368,15 +400,14 @@ export function createSequence(
     wrap?: (title: string, shoot: () => Promise<void>) => Promise<void>;
     numbering?: string;
     format?: ShotFormat;
-    plugins?: readonly Plugin[];
-    // What the hooks get; the fixture always passes it.
-    ctx?: SequenceContext;
+    // The config's `stabilize`, unless it is false; its begin step is the fixture's.
+    stabilize?: Pick<Stabilizer, "beforeSnap" | "afterGrow" | "afterRestore">;
     // Aborted when the sequence ends: a shot still in flight then is not listed.
     signal?: AbortSignal;
     // The context's deviceScaleFactor option; the fixture passes it.
     deviceScaleFactor?: number;
   } = {},
-): Sequence {
+): Sequence & { readonly inFlight: boolean } {
   const full = join(root, dir);
   // Wiped recursively, so it has to be the run's own: a run name or device
   // with ".." in it would otherwise take something else with it.
@@ -402,36 +433,30 @@ export function createSequence(
     }
     const index = counter + 1;
     const name = `${String(index).padStart(numbering.length, "0")}.${ext}`;
-    return { name, path: join(full, name), url: page.url(), index, options: { ...options }, notes: [], format: { ...format }, deviceScaleFactor: ratio };
+    return { name, path: join(full, name), url: page.url(), index, options: { ...options }, given: snapshot(options), notes: [], format: { ...format }, deviceScaleFactor: ratio };
   };
-  const hooks = async (kind: "beforeSnap" | "afterGrow" | "afterSnap" | "afterRestore", shot: Shot): Promise<void> => {
-    let first: Error | undefined;
-    for (const plugin of plugins) {
-      try {
-        await plugin[kind]?.(shot, ctx as SequenceContext);
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        first ??= new Error(`snapseq: plugin "${plugin.name}" threw in ${kind} on ${shot.name}: ${message}`, { cause });
-        // A cleanup hook runs for every plugin, whatever an earlier one did; the others stop at the first throw.
-        if (kind !== "afterRestore") break;
-      }
+  // A throw names stabilize and the shot, so the reader knows which switch to look at.
+  const hook = async (kind: "beforeSnap" | "afterGrow" | "afterRestore", shot: Shot): Promise<void> => {
+    try {
+      await stabilize?.[kind](shot, page);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(`snapseq: stabilize threw in ${kind} on ${shot.name}: ${message}`, { cause });
     }
-    if (first) throw first;
   };
   const take = async (shot: Shot, readiness: string[]): Promise<string> => {
     // Claimed this late so a shot refused before its screenshot (snapPage's height check) gives its number back.
     counter = shot.index;
-    // Locals: an afterSnap hook that edits the shot must not reach the step or the list.
     const { name, path } = shot;
-    shot.url = page.url(); // a beforeSnap hook may have navigated
+    shot.url = page.url(); // beforeSnap may have navigated
     const url = shot.url;
-    // What the beforeSnap hooks pushed, then the readiness notes.
+    // What beforeSnap pushed, then the readiness notes.
     const notes = clean([...shot.notes, ...readiness]);
     shot.notes = [...notes];
     await wrap(`${name}  ${url}`, async () => {
-      // A beforeSnap hook may have set scale: "css", which makes the file 1x.
+      // A shot with scale: "css" is 1x.
       shot.deviceScaleFactor = shot.options.scale === "css" ? 1 : ratio!; // set in open()
-      // The config's type and quality (unset is PNG) and the numbered path win over anything a hook put in the options.
+      // The config's type and quality (unset is PNG) and the numbered path win over anything in the options.
       try {
         await page.screenshot({ ...shot.options, type: format.type, quality: format.quality, path });
       } catch (cause) {
@@ -439,8 +464,6 @@ export function createSequence(
         const message = cause instanceof Error ? cause.message : String(cause);
         throw new Error(`${message}; readiness: ${notes.length > 0 ? notes.join(", ") : "ok"}`, { cause });
       }
-      // Inside the step, so the shot counts only once its hooks passed.
-      await hooks("afterSnap", shot);
       if (signal?.aborted) throw new Error(`snapseq: the sequence ended before ${name} was listed`);
       shots.push(shot);
       // Worker stderr reaches every reporter; the list reporter prints it under the step.
@@ -470,7 +493,7 @@ export function createSequence(
   return {
     snap: (options) => one(async () => {
       const shot = await open(options);
-      await hooks("beforeSnap", shot);
+      await hook("beforeSnap", shot);
       const notes: string[] = [];
       await ready(page, notes, !!shot.options.fullPage, shot.options.clip);
       return take(shot, notes);
@@ -478,7 +501,7 @@ export function createSequence(
     snapPage: (options) => one(async () => {
       // Before the viewport is read and grown, so what a hook changed is settled and measured.
       const shot = await open(options);
-      await hooks("beforeSnap", shot);
+      await hook("beforeSnap", shot);
       delete shot.options.fullPage; // the grown viewport is the full page already
       const viewport = page.viewportSize();
       if (!viewport) throw new Error("snapPage: the page has no viewport size");
@@ -498,12 +521,12 @@ export function createSequence(
           }, scroll)
           .catch(() => undefined);
         // Taken or failed: the page goes back to its viewport state. In the catch path below a throw is swallowed with the restore's.
-        await hooks("afterRestore", shot);
+        await hook("afterRestore", shot);
       };
       // The afterGrow hooks run at the grown viewport, before the readiness wait that follows.
       const grow = async (height: number) => {
         await page.setViewportSize({ width: viewport.width, height });
-        await hooks("afterGrow", shot);
+        await hook("afterGrow", shot);
       };
       let height = await documentHeight(page);
       // One screen (64 px of slack for margins and a bar) whose content scrolls inside an element: a taller
@@ -577,5 +600,9 @@ export function createSequence(
     }),
     dir: full,
     shots,
+    // For the fixture: a shot the body left running (a snap not awaited) when it ended.
+    get inFlight() {
+      return busy;
+    },
   };
 }
