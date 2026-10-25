@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { type RunCache, loadCache, lockRun, reusable, saveCache } from "../orchestration/cache.js";
 import { describeFilters, matches } from "../orchestration/run.js";
-import { parseFlags } from "../orchestration/main.js";
+import { parseFlags, splitName } from "../orchestration/main.js";
 import { callSite, target } from "../orchestration/run.js";
 import { spawnChild } from "../orchestration/spawn.js";
 import { partLine } from "../orchestration/run.js";
@@ -143,6 +143,26 @@ describe("parseFlags", () => {
 
   it("hands everything from a `--` on to Playwright as given, snapseq's own flags included", () => {
     expect(parseFlags(["--run", "r", "--", "--run", "x"]).rest).toEqual(["--", "--run", "x"]);
+  });
+});
+
+describe("splitName", () => {
+  it.each([
+    [["-o", "cll", "--run", "r1"], "cll", ["--run", "r1"]],
+    [["--orchestration", "wm/proof"], "wm/proof", []],
+    [["--orchestration=cll", "-c", "x"], "cll", ["-c", "x"]],
+    [["-o"], "", []],
+    [["-o", "--run", "r1"], "", ["--run", "r1"]],
+    [["--orchestration="], "", []],
+    [["--orchestration"], "", []],
+  ])("reads %j as the name %j, first on the line", (argv, name, rest) => {
+    expect(splitName(argv)).toEqual({ name, rest });
+  });
+
+  it("leaves a -o anywhere else, and every argument that is not one, as it was", () => {
+    for (const argv of [[], ["cll"], ["--grep", "-o", "--list"], ["--", "-o", "cll"], ["x.orchestration.ts", "-o", "cll"], ["-oc"], ["--orchestrations"]]) {
+      expect(splitName(argv)).toEqual({ rest: argv });
+    }
   });
 });
 

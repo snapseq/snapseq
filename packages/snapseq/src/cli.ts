@@ -2,13 +2,13 @@
 // Thin front for `playwright test`: translates snapseq's own flags, finds the
 // config, then runs the consumer's Playwright CLI in-process so exit codes and
 // Ctrl-C stay Playwright's. Everything else passes through untouched.
-// An *.orchestration.ts argument hands the whole command to orchestration/main.ts instead.
+// An *.orchestration.ts argument, or -o <name> as the first one, hands the whole command to orchestration/main.ts instead.
 import { existsSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { lockRun, runCacheFile } from "./orchestration/cache.js";
-import { ORCHESTRATION_FILE, main, messageOf, parseFlags } from "./orchestration/main.js";
+import { ORCHESTRATION_FILE, main, messageOf, parseFlags, splitName } from "./orchestration/main.js";
 import { assertDirName } from "./orchestration/validate.js";
 
 const CONFIG_FILES = ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
@@ -17,6 +17,7 @@ const CONFIG_FILES = ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
 
 const USAGE = `snapseq [filter...] [options]
 snapseq <file>.orchestration.ts [--run <name> [sequence...] [--device <name>]] [options]
+snapseq -o <name> [--run <name> [sequence...] [--device <name>]] [options]
 
   --env <name>       env from snapseq.config (same as SNAPSEQ_ENV); without --host, drops an inherited SNAPSEQ_HOST
   --host <url>       override that env's host (same as SNAPSEQ_HOST)
@@ -24,12 +25,13 @@ snapseq <file>.orchestration.ts [--run <name> [sequence...] [--device <name>]] [
   --run <name>       the run's folder in the screenshots dir (same as SNAPSEQ_RUN; default: the time it started)
   --record           fetch the env's replay responses live and save them (same as SNAPSEQ_RECORD=1)
   -c, --config <p>   config file or its folder (default: ./snapseq.config.{ts,js,...})
+  -o <name>          the orchestration <sequences dir>/<name>.orchestration.ts, as -o cll or -o wm/proof; first argument only (also --orchestration)
 
 Every other flag goes to \`playwright test\`: --headed, --ui, --debug,
 --trace on, --reporter json, --max-failures 0, ...
 Everything after -- goes to Playwright as given.
 
-With an orchestration file, each run() in it shoots one sequence, then its own
+With an orchestration (a file, or -o <name>), each run() in it shoots one sequence, then its own
 steps run. Given --run naming an earlier run, sequence filters and --device
 reshoot the matching parts and reuse the rest. Every child takes --headed,
 --debug, --trace, --timeout, --max-failures and --record.
@@ -84,7 +86,7 @@ function playwrightCli(config: string): string {
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
   process.stdout.write(USAGE);
-} else if (argv.some((arg) => !arg.startsWith("-") && ORCHESTRATION_FILE.test(arg))) {
+} else if (splitName(argv).name !== undefined || argv.some((arg) => !arg.startsWith("-") && ORCHESTRATION_FILE.test(arg))) {
   try {
     const code = await main(argv, { findConfig, playwrightCli });
     process.stdout.write("", () => process.exit(code));

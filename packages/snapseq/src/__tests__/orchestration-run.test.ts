@@ -74,13 +74,11 @@ interface Call {
 /** The devices a child was asked for, in order. */
 const devicesOf = (call: Call): string[] => call.request.devices.map(([device]) => device);
 
-/** Writes `body` as the orchestration's function body (its first line is line 2 of `name`) and runs it. */
-async function orchestrate(dir: string, body: string, args: string[] = [], name = "spring") {
-  const file = join(dir, `snapseq/${name}.orchestration.ts`);
-  writeFileSync(file, `export default async ({ run, config, dir }: any) => {\n${body}\n};\n`);
+/** main() with `argv`, in this process: its exit code, what it printed and the calls the fake child logged. */
+async function invoke(dir: string, argv: string[]) {
   let out = "";
-  const code = await main([file, "-c", join(dir, "snapseq.config.ts"), ...args], {
-    findConfig: (given) => given!,
+  const code = await main(argv, {
+    findConfig: (given) => given ?? join(dir, "snapseq.config.ts"),
     playwrightCli: () => FAKE,
     stdout: { write: (s: string) => (out += s) },
     now: () => 0,
@@ -88,7 +86,25 @@ async function orchestrate(dir: string, body: string, args: string[] = [], name 
   const log = join(dir, "calls.jsonl");
   const calls: Call[] = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
   rmSync(log, { force: true });
-  return { code, out, calls, file };
+  return { code, out, calls };
+}
+
+const write = (file: string, text = ""): void => {
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, text);
+};
+
+/** Writes `body` as the function body of snapseq/`name`.orchestration.ts (its first line is line 2) and returns the file. */
+function script(dir: string, body: string, name = "spring"): string {
+  const file = join(dir, `snapseq/${name}.orchestration.ts`);
+  write(file, `export default async ({ run, config, dir }: any) => {\n${body}\n};\n`);
+  return file;
+}
+
+/** Writes `body` as the orchestration's function body and runs the file. */
+async function orchestrate(dir: string, body: string, args: string[] = [], name = "spring") {
+  const file = script(dir, body, name);
+  return { ...(await invoke(dir, [file, "-c", join(dir, "snapseq.config.ts"), ...args])), file };
 }
 
 /** The fake as the project's own `@playwright/test/cli`, where the built bin looks for it. */
@@ -529,5 +545,158 @@ describe("arguments", () => {
     await expect(orchestrate(dir, `await run("${LAUNCH}");`, ["--run", "r1"])).rejects.toThrow(
       "loads a snapseq other than the one running this orchestration",
     );
+  });
+});
+
+// `-o <name>` runs snapseq/<name>.orchestration.ts as if its path had been given.
+describe("an orchestration by name", () => {
+  const one = `await run("${LAUNCH}", { devices: ["desktop"] });`;
+  const cfg = (dir: string): string => join(dir, "snapseq.config.ts");
+
+  it.each([
+    ["-o", ["-o", "spring"]],
+    ["--orchestration", ["--orchestration", "spring"]],
+    ["--orchestration=", ["--orchestration=spring"]],
+  ])("runs the one file %s names, as its path would", async (_, lead) => {
+    const dir = project();
+    const file = script(dir, one);
+    const r = await invoke(dir, [...lead, "-c", cfg(dir), "--run", "r1"]);
+    expect(r.code, r.out).toBe(0);
+    expect(r.calls).toHaveLength(1);
+    expect(r.calls[0]!.argv).toEqual(["test", "-c", cfg(dir)]);
+    expect(r.calls[0]!.request).toMatchObject({ sequence: LAUNCH, devices: [["desktop", expect.anything()]] });
+    expect(r.out).toContain("  snapseq  spring.orchestration.ts  r1\n");
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it("finds a nested name, and the hint names it with -o as its own token, quoted when it needs it", async () => {
+    const dir = project();
+    script(dir, one, "wm/proof");
+    script(dir, one, "my run");
+    const nested = await invoke(dir, ["-o", "wm/proof", "-c", cfg(dir), "--run", "r1"]);
+    expect(nested.code, nested.out).toBe(0);
+    expect(nested.out).toContain("  snapseq  proof.orchestration.ts  r1\n");
+    expect(nested.out).toContain(`  reshoot one part: snapseq -o wm/proof -c ${cfg(dir)} --run r1 <sequence> --device <device>\n`);
+    const spaced = await invoke(dir, ["-o", "my run", "--run", "r2"]);
+    expect(spaced.out).toContain("  reshoot one part: snapseq -o 'my run' --run r2 <sequence> --device <device>\n");
+  });
+
+  it("hints a name that starts with - as --orchestration=<name>, which -o could not take", async () => {
+    const dir = project();
+    script(dir, one, "-draft");
+    const r = await invoke(dir, ["--orchestration=-draft", "-c", cfg(dir), "--run", "r1"]);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain(`  reshoot one part: snapseq --orchestration=-draft -c ${cfg(dir)} --run r1 <sequence> --device <device>\n`);
+  });
+
+  it("repairs a run as after a file: filters and --device reshoot the parts, the cache gives the rest", async () => {
+    const dir = project();
+    script(dir, `(globalThis as any).result = [...(await run("${LAUNCH}")), ...(await run("${OFFER}"))];`);
+    const full = await invoke(dir, ["-o", "spring", "-c", cfg(dir), "--run", "r1"]);
+    expect(full.code, full.out).toBe(0);
+    const r = await invoke(dir, ["-o", "spring", "-c", cfg(dir), "--run", "r1", "12346", "--device", "mobile"]);
+    expect(r.code, r.out).toBe(0);
+    expect(r.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[OFFER, ["mobile"]]]);
+    expect(summary(g.result)).toEqual([`${LAUNCH}/desktop reused`, `${LAUNCH}/mobile reused`, `${OFFER}/desktop reused`, `${OFFER}/mobile`]);
+    expect(r.out).not.toContain("reshoot one part");
+  });
+
+  const list = "orchestrations: spring, wm/proof";
+  const outside = 'an orchestration name is a path in snapseq/ without .orchestration.ts, like "cll" or "wm/proof"';
+  it.each([
+    ["an unknown name, listing the names found", ["-o", "zzz"], `snapseq: no snapseq/zzz.orchestration.ts; ${list}`],
+    ["-o as the last token", ["-o"], `snapseq: -o needs an orchestration name; ${list}`],
+    ["-o before a flag", ["-o", "--run", "r1"], `snapseq: -o needs an orchestration name; ${list}`],
+    ["--orchestration with no name", ["--orchestration="], `snapseq: -o needs an orchestration name; ${list}`],
+    ["-o before --list, which an orchestration refuses", ["-o", "--list"], `snapseq: -o needs an orchestration name; ${list}`],
+    ["-o before a --run with no value", ["-o", "--run"], `snapseq: -o needs an orchestration name; ${list}`],
+    ["-o before a filter flag with no --run", ["-o", "--device", "desktop"], `snapseq: -o needs an orchestration name; ${list}`],
+    ["a name that leaves the folder", ["-o", "../spring"], `${outside}; got "../spring"`],
+    ["an absolute name", ["-o", "/etc/spring"], `${outside}; got "/etc/spring"`],
+  ])("refuses %s", async (_, argv, message) => {
+    const dir = project();
+    script(dir, one);
+    script(dir, one, "wm/proof");
+    write(join(dir, "snapseq/node_modules/x.orchestration.ts")); // not listed, as for sequences
+    await expect(invoke(dir, argv)).rejects.toThrow(message);
+    expect(existsSync(join(dir, "calls.jsonl"))).toBe(false);
+  });
+
+  it("lists (none) when the folder has no orchestrations, and the ones in the config -c names", async () => {
+    const dir = project();
+    await expect(invoke(dir, ["-o", "spring"])).rejects.toThrow("snapseq: no snapseq/spring.orchestration.ts; orchestrations: (none)");
+    const other = project();
+    script(other, one, "other");
+    await expect(invoke(dir, ["-o", "-c", cfg(other)])).rejects.toThrow("snapseq: -o needs an orchestration name; orchestrations: other");
+    await expect(invoke(dir, ["-o", "--list", `--config=${cfg(other)}`])).rejects.toThrow("snapseq: -o needs an orchestration name; orchestrations: other");
+  });
+
+  it("refuses two files for one name, naming both", async () => {
+    const dir = project();
+    script(dir, one);
+    write(join(dir, "snapseq/spring.orchestration.js"));
+    await expect(invoke(dir, ["-o", "spring"])).rejects.toThrow(
+      "snapseq: one orchestration, 2 files: snapseq/spring.orchestration.js, snapseq/spring.orchestration.ts; keep one",
+    );
+  });
+
+  it("is one orchestration at a time, and a -o anywhere but first is refused as it was", async () => {
+    const dir = project();
+    const file = script(dir, one);
+    await expect(invoke(dir, ["-o", "spring", "other.orchestration.ts"])).rejects.toThrow(
+      "snapseq: one orchestration at a time, got -o spring and other.orchestration.ts",
+    );
+    await expect(invoke(dir, ["--orchestration=spring", file])).rejects.toThrow("snapseq: one orchestration at a time, got -o spring and");
+    await expect(invoke(dir, [file, "-o", "spring"])).rejects.toThrow("snapseq: -o does not work with an orchestration file; each child takes");
+  });
+});
+
+// The built bin decides between Playwright and an orchestration from the first arguments alone.
+describe("the command line", () => {
+  /** The project's `@playwright/test/cli` as a stub that logs what it was given, one JSON line per start. */
+  function plainPlaywright(dir: string): string {
+    const pkg = join(dir, "node_modules/@playwright/test");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@playwright/test", type: "module" }));
+    writeFileSync(join(pkg, "cli.js"), `import { appendFileSync } from "node:fs";\nappendFileSync("argv.jsonl", JSON.stringify(process.argv.slice(2)) + "\\n");\n`);
+    return dir;
+  }
+  const given = (dir: string): string[][] =>
+    existsSync(join(dir, "argv.jsonl")) ? readFileSync(join(dir, "argv.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+
+  it.each([
+    ["no arguments", []],
+    ["a bare filter", ["cll"]],
+    ["a bare filter with a slash", ["cll/"]],
+    ["-o after a `--`", ["--", "-o"]],
+    ["-o anywhere but first", ["--grep", "-o", "--list", "--pass-with-no-tests"]],
+  ])("sends %s to Playwright as given", async (_, args) => {
+    const dir = plainPlaywright(project());
+    const { status, out } = await bin(dir, args).closed;
+    expect(status, out).toBe(0);
+    expect(given(dir)).toEqual([["test", "-c", "snapseq.config.ts", ...args]]);
+  });
+
+  it("prints the usage for -h, with -o in it, without starting anything", async () => {
+    const dir = plainPlaywright(project());
+    const { status, out } = await bin(dir, ["-h"]).closed;
+    expect(status).toBe(0);
+    expect(out).toContain("snapseq -o <name> [--run <name> [sequence...] [--device <name>]] [options]");
+    expect(out).toContain("  -o <name>  ");
+    expect(given(dir)).toEqual([]);
+  });
+
+  it("runs -o <name> as an orchestration, and stops a lone -o with the names", async () => {
+    const dir = fakePlaywright(project());
+    script(dir, `await run("${LAUNCH}", { devices: ["desktop"] });`);
+    const r = await bin(dir, ["-o", "spring", "-c", dir, "--run", "r1"]).closed;
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("  snapseq  spring.orchestration.ts  r1\n");
+    expect(r.out).toContain(`reshoot one part: snapseq -o spring -c ${dir} --run r1 <sequence> --device <device>\n`);
+    for (const args of [["-o"], ["-o", "--list"], ["-o", "--run"], ["-o", "--device", "desktop"]]) {
+      const lone = await bin(dir, args).closed;
+      expect(lone.status, lone.out).toBe(1);
+      expect(lone.out).toContain("snapseq: -o needs an orchestration name; orchestrations: spring");
+    }
   });
 });

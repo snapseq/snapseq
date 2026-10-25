@@ -350,7 +350,7 @@ describe("an orchestration that goes wrong", () => {
   });
 
   it("runs a file the disk names decomposed as the composed id the orchestration asked for", async () => {
-    const r = await snapseq(project, ["snapseq/cafe.orchestration.ts", "--run", "cafe"], { CI: "" });
+    const r = await snapseq(project, ["-o", "cafe", "--run", "cafe"], { CI: "" });
     expect(r.status, r.out).toBe(0);
     expect(statSync(join(project, "screenshots", "cafe", "caf\u0065\u0301", "desktop", "01.png")).size).toBeGreaterThan(0);
   });
