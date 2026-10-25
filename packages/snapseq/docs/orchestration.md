@@ -70,8 +70,8 @@ export default defineOrchestration(async ({ run, config, dir }) => {
 Run the whole proof, then shoot one part of it again:
 
 ```bash
-pnpm snapseq snapseq/spring.orchestration.ts --run review-1
-pnpm snapseq snapseq/spring.orchestration.ts --run review-1 12346 --device mobile
+pnpm snapseq -o spring --run review-1
+pnpm snapseq -o spring --run review-1 12346 --device mobile
 ```
 
 The second command shoots `12346-spring-offer` on `mobile`, takes the other five
@@ -101,8 +101,9 @@ screenshots/review-1/
 ## The file
 
 A file is an orchestration when its name ends in `.orchestration.ts` (or `.js`,
-`.mts`, `.cts`, `.mjs`, `.cjs`). It can live anywhere. `snapseq/` is fine: only
-`*.seq.*` files there are sequences. Its default export is the function that
+`.mts`, `.cts`, `.mjs`, `.cjs`). It can live anywhere you give its path; to start
+it by name (`-o spring`) it lives in the config's sequences folder. `snapseq/` is
+fine: only `*.seq.*` files there are sequences. Its default export is the function that
 `defineOrchestration` returns. The function is `async` and gets `{ run, config, dir }`;
 what it returns is ignored.
 
@@ -303,10 +304,17 @@ Steps print nothing. A step that throws ends the run (see [Errors](#errors)). A
 ## Running it
 
 ```bash
+pnpm snapseq -o <name> [--run <name> [sequence...] [--device <name>]] [options]
 pnpm snapseq <file>.orchestration.ts [--run <name> [sequence...] [--device <name>]] [options]
 ```
 
-Any argument that names an orchestration file switches snapseq to this mode. The
+`-o <name>` (also `--orchestration <name>` and `--orchestration=<name>`) runs the
+orchestration in the config's `sequencesDir` that the name points at: `-o spring` is
+`snapseq/spring.orchestration.ts`, `-o wm/proof` is `snapseq/wm/proof.orchestration.ts`.
+It is the same as giving the file, which works as it did. `-o` counts only as the
+first argument, and the name is a path inside the sequences folder: no absolute path, no `..`.
+
+Either way, the argument switches snapseq to this mode. The
 run's folder is named by `--run`, else `SNAPSEQ_RUN`, else the time the run started.
 The flags it takes, and the ones it refuses, are in [Running](running.md#orchestration-runs).
 
@@ -320,10 +328,10 @@ One part of a run is wrong: a page changed, a shot was caught mid-animation. Nam
 the run and say which parts to shoot again:
 
 ```bash
-pnpm snapseq snapseq/spring.orchestration.ts --run review-1 12346 --device mobile
+pnpm snapseq -o spring --run review-1 12346 --device mobile
 ```
 
-- Words after the file are sequence filters. A part matches when its sequence id
+- Words after the file, or after `-o <name>`, are sequence filters. A part matches when its sequence id
   contains one of them as plain text, not a regular expression and not a path.
 - `--device <name>` is an exact device name, and may be repeated.
 - A part is a sequence on a device. It matches when it passes both filters; a
@@ -353,6 +361,7 @@ Things to know:
 - Two snapseq processes cannot write one run: the second stops with
   `snapseq: another snapseq (pid N) is writing this run`.
 - The reshoot hint prints after a full run that passed. It does not print after a repair.
+  It repeats how the run started: `-o spring` for a run started by name, the file's path for a run started by file.
 
 ## What the terminal shows
 
@@ -371,7 +380,7 @@ the shot it is on and its URL, the server wait, the error line
   ✔ 12347-spring-reminder / tablet         2 shots  1.5s
 
   6 passed  12 shots  22s  screenshots/review-1
-  reshoot one part: snapseq snapseq/spring.orchestration.ts --run review-1 <sequence> --device <device>
+  reshoot one part: snapseq -o spring --run review-1 <sequence> --device <device>
 ```
 
 - The heading names the file and the run.
@@ -457,7 +466,15 @@ Before the file runs, the command itself refuses what cannot work, with a messag
 starts `snapseq:`: a filter without `--run`, a filter whose `--run` names no folder, a
 flag the mode refuses, a file that does not exist, two orchestration files, a file with no
 default export, a config that is not from `defineConfig` in 0.7 or newer, a config whose
-`snapseq` the command cannot talk to (install one version for both).
+`snapseq` the command cannot talk to (install one version for both). `-o` has its own:
+
+| Message starts with | Cause |
+| ------------------- | ----- |
+| `snapseq: -o needs an orchestration name; orchestrations: …` | `-o` was the last argument, or a flag came after it. The message lists the names in the sequences folder, or `(none)`. |
+| `snapseq: no snapseq/x.orchestration.ts; orchestrations: …` | No file for the name. The message lists the names it found, sorted. |
+| `snapseq: one orchestration, N files: …; keep one` | The name matches `.orchestration.ts` and `.orchestration.js`, say. |
+| `snapseq: an orchestration name is a path in snapseq/ …` | An absolute name, or one with `..`. |
+| `snapseq: one orchestration at a time, got -o x and y.orchestration.ts` | `-o` and an orchestration file together. |
 
 ## Limits
 

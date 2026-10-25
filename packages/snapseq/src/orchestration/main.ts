@@ -1,15 +1,16 @@
-// `snapseq <file>.orchestration.ts …`: parses its own flags, loads the config and the file, runs the function
-// with run(), and turns how it ended into the last lines and an exit code: 0; 1 for a script error, a missing
-// `await` or no filter match; 130 for Ctrl-C.
+// `snapseq <file>.orchestration.ts …` or `snapseq -o <name> …`: parses its own flags, loads the config and the file,
+// runs the function with run(), and turns how it ended into the last lines and an exit code: 0; 1 for a script error,
+// a missing `await` or no filter match; 130 for Ctrl-C.
 import { existsSync, statSync } from "node:fs";
-import { basename, dirname, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import type { Jiti } from "jiti";
 import { openRun } from "../open.js";
 import { ORDER, type OutStream, shotCount } from "../reporter.js";
+import { sequenceFiles, sequenceIds } from "../sequence-id.js";
 import { lockRun, runCacheFile } from "./cache.js";
 import { type Filters, type Target, createRunner, describeFilters, filtering } from "./run.js";
 import type { Orchestration, ResolvedSnapseqConfig } from "./types.js";
-import { assertDirName, isHttpUrl, runStamp } from "./validate.js";
+import { assertDirName, isDirName, isHttpUrl, runStamp } from "./validate.js";
 
 export const ORCHESTRATION_FILE = /\.orchestration\.[cm]?[jt]s$/;
 
@@ -37,7 +38,8 @@ export interface Options {
 }
 
 interface Args {
-  file: string;
+  /** The file given; none when `-o <name>` names it. */
+  file?: string;
   config?: string;
   run?: string;
   env?: string;
@@ -106,7 +108,30 @@ export function parseFlags(argv: readonly string[]): {
   return flags;
 }
 
-function parseArgs(argv: readonly string[]): Args {
+/**
+ * `-o <name>`, `--orchestration <name>` or `--orchestration=<name>`, only as the first argument: anywhere else the token
+ * means what it did before. `name` is "" when none came, a lone flag or a flag-looking next token; `rest` is what follows.
+ */
+export function splitName(argv: readonly string[]): { name?: string; rest: readonly string[] } {
+  const [first = "", next] = argv;
+  if (first.startsWith("--orchestration=")) return { name: first.slice("--orchestration=".length), rest: argv.slice(1) };
+  if (first !== "-o" && first !== "--orchestration") return { rest: argv };
+  const given = next !== undefined && !next.startsWith("-");
+  return { name: given ? next : "", rest: argv.slice(given ? 2 : 1) };
+}
+
+/** The config `-c <p>`, `--config <p>` or `--config=<p>` names, the last one, whatever else is wrong with `argv`. */
+function configGiven(argv: readonly string[]): string | undefined {
+  let config: string | undefined;
+  for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
+    const arg = argv[i]!;
+    if (arg === "-c" || arg === "--config") config = argv[++i];
+    else if (arg.startsWith("--config=")) config = arg.slice("--config=".length);
+  }
+  return config;
+}
+
+function parseArgs(argv: readonly string[], name: string | undefined): Args {
   const { rest, devices, ...flags } = parseFlags(argv);
   let file: string | undefined;
   const sequences: string[] = [];
@@ -115,7 +140,8 @@ function parseArgs(argv: readonly string[]): Args {
     const arg = rest[i]!;
     if (!arg.startsWith("-")) {
       if (!ORCHESTRATION_FILE.test(arg)) sequences.push(arg);
-      else if (file === undefined) file = arg;
+      else if (file === undefined && name === undefined) file = arg;
+      else if (file === undefined) throw new Error(`snapseq: one orchestration at a time, got -o ${name} and ${arg}`);
       else throw new Error(`snapseq: one orchestration file at a time, got ${file} and ${arg}`);
       continue;
     }
@@ -133,7 +159,7 @@ function parseArgs(argv: readonly string[]): Args {
       );
     }
   }
-  if (file === undefined) throw new Error("snapseq: no *.orchestration.ts file given");
+  if (file === undefined && name === undefined) throw new Error("snapseq: no *.orchestration.ts file given");
   return { ...flags, file, filters: { sequences, devices }, pass };
 }
 
@@ -166,6 +192,20 @@ async function loadConfig(file: string): Promise<{ jiti: Jiti; inputs: Inputs }>
     throw new Error(`snapseq: ${file} loads a snapseq other than the one running this orchestration; install one version for the config and the command`);
   }
   return { jiti, inputs };
+}
+
+/** The one file `-o <name>` names, absolute: its path in the sequences folder without `.orchestration.ts`. */
+function namedFile(name: string, configDir: string, sequencesDir: string): string {
+  const dir = resolve(configDir, sequencesDir);
+  const names = () => `orchestrations: ${sequenceIds(dir, ORCHESTRATION_FILE).join(", ") || "(none)"}`;
+  if (name === "") throw new Error(`snapseq: -o needs an orchestration name; ${names()}`);
+  if (isAbsolute(name) || !name.split("/").every(isDirName)) {
+    throw new Error(`snapseq: an orchestration name is a path in ${sequencesDir}/ without .orchestration.ts, like "cll" or "wm/proof"; got ${JSON.stringify(name)}`);
+  }
+  const files = sequenceFiles(dir, name, ORCHESTRATION_FILE);
+  if (files.length === 0) throw new Error(`snapseq: no ${sequencesDir}/${name}.orchestration.ts; ${names()}`);
+  if (files.length > 1) throw new Error(`snapseq: one orchestration, ${files.length} files: ${files.map((f) => relative(configDir, f)).join(", ")}; keep one`);
+  return files[0]!;
 }
 
 /** `file` absolute: jiti reads a relative `snapseq/spring.orchestration.ts` as a package's subpath. */
@@ -210,16 +250,22 @@ function footer(out: OutStream, tally: Readonly<Record<string, number>>, shots: 
 
 const quote = (s: string): string => (/^[\w./@%+=:,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
-/** After a full run, once: how to reshoot one part and rebuild the rest from the run's cache. */
-function hint(out: OutStream, file: string, config: string | undefined, run: string): void {
+/**
+ * After a full run, once: how to reshoot one part and rebuild the rest from the run's cache. The file as given, or
+ * `-o <name>`; a name that starts with `-` only reads as a name after `--orchestration=`.
+ */
+function hint(out: OutStream, file: string, name: string | undefined, config: string | undefined, run: string): void {
+  const how = name === undefined ? quote(file) : name.startsWith("-") ? `--orchestration=${quote(name)}` : `-o ${quote(name)}`;
   const c = config === undefined ? "" : ` -c ${quote(config)}`;
-  out.write(`  reshoot one part: snapseq ${quote(file)}${c} --run ${quote(run)} <sequence> --device <device>\n`);
+  out.write(`  reshoot one part: snapseq ${how}${c} --run ${quote(run)} <sequence> --device <device>\n`);
 }
 
 export async function main(argv: readonly string[], options: Options): Promise<number> {
   const out = options.stdout ?? process.stdout;
   const now = options.now ?? Date.now;
-  const args = parseArgs(argv);
+  const { name, rest } = splitName(argv);
+  // A bare `-o` is answered with the names whatever follows it, so only the config is read from the rest.
+  const args: Args = name === "" ? { config: configGiven(rest), filters: { sequences: [], devices: [] }, pass: [] } : parseArgs(rest, name);
   if (filtering(args.filters) && args.run === undefined) {
     throw new Error("snapseq: a filter reshoots parts of an earlier run; name that run with --run <name>");
   }
@@ -242,12 +288,13 @@ export async function main(argv: readonly string[], options: Options): Promise<n
   delete process.env.SNAPSEQ_REQUEST_FILE;
   const { jiti, inputs } = await loadConfig(configFile);
   const { config } = inputs;
+  const file = args.file ?? namedFile(name ?? "", configDir, config.sequencesDir);
   const dir = resolve(configDir, config.screenshotsDir, run);
   const runDir = relative(process.cwd(), dir) || ".";
   if (filtering(args.filters) && !existsSync(dir)) {
     throw new Error(`snapseq: no run "${run}" at ${runDir}; a filter reshoots parts of an earlier run`);
   }
-  const fn = await loadOrchestration(jiti, resolve(args.file));
+  const fn = await loadOrchestration(jiti, resolve(file));
   const cacheFile = runCacheFile(configDir, run);
   const release = lockRun(cacheFile);
   // One way to end, whichever comes first: the script settling, Ctrl-C, or an error nothing caught.
@@ -270,7 +317,7 @@ export async function main(argv: readonly string[], options: Options): Promise<n
       command,
       out,
     });
-    out.write(`  snapseq  ${basename(args.file)}  ${run}\n\n`);
+    out.write(`  snapseq  ${basename(file)}  ${run}\n\n`);
     const script = Promise.resolve()
       .then(() => fn({ run: runner.run, config, dir }))
       .then(
@@ -298,7 +345,7 @@ export async function main(argv: readonly string[], options: Options): Promise<n
     if (message === undefined) out.write("\n");
     else out.write(`\n  failed  ${message}\n`);
     footer(out, runner.state.tally, runner.state.shots, now() - start, runDir);
-    if (code === 0 && !filtering(args.filters)) hint(out, args.file, args.config, run);
+    if (code === 0 && !filtering(args.filters)) hint(out, file, name, args.config, run);
     openRun(out, dir);
     return code;
   } finally {

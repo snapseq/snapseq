@@ -9,7 +9,8 @@ pnpm snapseq --host http://localhost:4000 # or SNAPSEQ_HOST=…
 pnpm snapseq --run review-1               # name the run dir instead of the timestamp (or SNAPSEQ_RUN=review-1)
 pnpm snapseq --headed                     # also --ui, --debug, --trace on, --reporter json
 pnpm snapseq --help
-pnpm snapseq snapseq/spring.orchestration.ts --run review-1   # an orchestration file: see below
+pnpm snapseq -o spring --run review-1     # an orchestration, by name: see below
+pnpm snapseq snapseq/spring.orchestration.ts --run review-1   # or by its file
 ```
 
 From a monorepo root: `pnpm --filter <app> exec snapseq pricing --device desktop`.
@@ -83,8 +84,16 @@ filter: the file says which sequences run, on which devices, and what is done to
 the shots. [Orchestration](orchestration.md) covers the file, the terminal and
 the exit codes.
 
+Give the file, or its name: `-o spring` runs `snapseq/spring.orchestration.ts`, `-o wm/proof` runs
+`snapseq/wm/proof.orchestration.ts`. The name is the file's path in the config's
+`sequencesDir` without `.orchestration.ts`, with `/` on every platform. Everything after
+`-o <name>` reads as it does after a file. `-o` is snapseq's only as the first argument;
+anywhere else a plain run hands it to Playwright, which rejects it, and after an
+orchestration file it is refused.
+
 | Flag                | Effect in an orchestration run                                                                      |
 | ------------------- | --------------------------------------------------------------------------------------------------- |
+| `-o <name>`, `--orchestration <name>` | First argument only. Runs `<sequencesDir>/<name>.orchestration.ts`. `--orchestration=<name>` works too. |
 | `--run <name>`      | The run folder. With words or `--device` after it, a repair: see [Repairs](orchestration.md#repairs). |
 | `[sequence...]`     | Needs `--run`. Shoot again the parts whose sequence id contains the text. Plain text, not a regular expression. |
 | `--device <name>`   | Needs `--run`. Shoot again the parts on that device. Exact name, repeatable.                        |
