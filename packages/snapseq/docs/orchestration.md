@@ -22,11 +22,15 @@ import { defineConfig } from "snapseq";
 
 export default defineConfig({
   envs: {
-    dev: { host: "http://localhost:3000" },
+    dev: { host: "http://localhost:3000", webServer: "pnpm dev" },
     uat: { host: "https://uat.example.com" },
   },
 });
 ```
+
+With nothing answering at `host`, each `run()` that shoots on `dev` starts `pnpm dev`
+and stops it after. Start the server yourself first to keep one up for the whole run
+([Dev server](config.md#dev-server)).
 
 ```ts
 // snapseq/12345-spring-launch.seq.ts
@@ -42,6 +46,12 @@ sequence(async ({ page, seq }) => {
 `label` is typed once the package's types are in your TypeScript program: the
 [Use](https://github.com/snapseq/snapseq/tree/main/packages/label#use) section of
 the label README says how. The other two sequences are files of the same kind.
+
+The steps are packages of their own. In the app that has snapseq:
+
+```bash
+pnpm add -D @snapseq/label @snapseq/pdf
+```
 
 ```ts
 // snapseq/spring.orchestration.ts
@@ -59,7 +69,7 @@ export default defineOrchestration(async ({ run, config, dir }) => {
     })),
   ];
 
-  const labelled = await label(raw, { theme: "dark", scale: (dsf) => dsf / 2 });
+  const labelled = await label(raw, { theme: "dark" });
 
   for (const device of new Set(labelled.map((c) => c.device))) {
     await pdf(labelled.filter((c) => c.device === device), join(dir, `${device}.pdf`));
@@ -348,14 +358,15 @@ all the captures, the reused ones included, and writes its files again.
 
 The cache is `node_modules/.cache/snapseq/runs/<run>.json`, beside the config. A
 capture comes out of it only if the config, the sequences folder, the sequence
-file and the screenshots folder are the ones it was taken with, and every shot is
-still a file. Otherwise the part is shot, and the terminal says so before it starts
+file and the screenshots folder are at the paths it was taken with (links resolved),
+and every shot is still a file. Otherwise the part is shot, and the terminal says so before it starts
 (`building, no capture yet`). It does not count as a match.
 
 Things to know:
 
-- The cache does not remember options. If you change what `run()` is given for a
-  part, shoot that part again with a filter.
+- The cache does not remember options, and does not look inside files. If you change
+  what `run()` is given for a part, or edit its sequence file or the config, shoot that
+  part again with a filter.
 - A filter without `--run`, or with a `--run` that names no folder, stops snapseq
   before the file runs. Every sequence word that matched no part fails the run with
   `no part matched "zzz"`, and under it what the word may have meant, even when another word matched. That is after the file and its steps have run, over the
@@ -500,7 +511,7 @@ default export, a config that is not from `defineConfig` in 0.7 or newer, a conf
   already answers at its host. Start the server yourself and keep it running for the
   length of the orchestration.
 - Options and Playwright overrides are JSON. Page setup that needs a function belongs
-  in the sequence or in a Playwright fixture.
+  in the sequence, as a function of yours that it awaits first.
 - A capture's metadata (paths, URLs, options) is capped at 1 MiB; over it the sequence
   fails with `capture metadata over 1 MiB`.
 - `maxFailures` is 1 in each child: after a device fails, the call's other devices
