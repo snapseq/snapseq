@@ -1,4 +1,5 @@
-import { copyFile, mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { copyFile, mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import sharp from "sharp";
 import type { Capture, CaptureShot } from "snapseq";
@@ -97,7 +98,16 @@ export async function label(captures: readonly Capture[], options: LabelOptions 
     const shots: CaptureShot[] = [];
     for (const shot of capture.shots) {
       const path = join(dir, shot.name);
-      await labelShot(shot, path, options);
+      // Written beside it, then renamed: a write cut short leaves its own file, never half an image under the name.
+      // A name of its own, not the shot's plus a suffix: a shot's name may already be near the file system's limit.
+      const tmp = join(dir, `${randomUUID()}.tmp`);
+      try {
+        await labelShot(shot, tmp, options);
+        await rename(tmp, path);
+      } catch (err) {
+        await rm(tmp, { force: true });
+        throw err;
+      }
       shots.push({ ...shot, path });
     }
     labelled.push({ ...capture, dir, shots });

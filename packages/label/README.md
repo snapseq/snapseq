@@ -100,7 +100,10 @@ A shot without a label is copied byte for byte.
   is not a finite number above 0, or is under 1/48 so the strip would be
   under 1 px, makes `label` throw.
 - Shots are labelled one at a time. A failure stops the step; files already
-  written stay in `labelled/`.
+  written stay in `labelled/`. Each file is written beside its name and then
+  renamed into place, so one cut short (a failure, Ctrl-C) leaves the file that
+  was there before, never half an image. A run killed outright can leave a
+  `<id>.tmp` in `labelled/`.
 - A JPEG is decoded and encoded again at the shot's own quality.
 - The text is drawn with a system font that fontconfig can find. A system with
   no fonts installed draws each character as a box, so install one there, e.g.
