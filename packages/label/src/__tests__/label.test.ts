@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import sharp from "sharp";
 import type { Capture, CaptureShot, SnapOptions } from "snapseq";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { label, type LabelOptions } from "../index.js";
 
 type ShotFormat = CaptureShot["format"];
@@ -144,6 +144,33 @@ describe("label", () => {
     const path = await source(dir, "01.png");
     mkdirSync(join(dir, "labelled"));
     writeFileSync(join(dir, "labelled", "01.png"), "stale");
+    const seen = await look(await run(path, "0.0 Home"));
+    expect([seen.width, seen.height]).toEqual([200, 124]);
+  });
+
+  // As an encode interrupted halfway would leave it: part of a file, under the name it was writing.
+  it("keeps the labelled file it had when writing a new one fails partway, and leaves no partial file", async () => {
+    const dir = tmp();
+    const path = await source(dir, "01.png");
+    const first = await run(path, "0.0 Home");
+    const before = readFileSync(first);
+    const toFile = vi.spyOn(sharp.prototype, "toFile").mockImplementation(async (file: unknown) => {
+      writeFileSync(String(file), before.subarray(0, 10));
+      throw new Error("encode failed");
+    });
+    try {
+      await expect(run(path, "0.1 Home")).rejects.toThrow("encode failed");
+    } finally {
+      toFile.mockRestore();
+    }
+    expect(readFileSync(first).equals(before)).toBe(true);
+    expect(readdirSync(join(dir, "labelled"))).toEqual(["01.png"]);
+  });
+
+  // numbering: "0".repeat(220) names a shot 224 bytes long; the file it is written through must fit beside it.
+  it("labels a shot whose name is near the file system's limit", async () => {
+    const dir = tmp();
+    const path = await source(dir, `${"0".repeat(219)}1.png`);
     const seen = await look(await run(path, "0.0 Home"));
     expect([seen.width, seen.height]).toEqual([200, 124]);
   });
