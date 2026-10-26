@@ -48,7 +48,7 @@ body { margin: 0 }
 #fb { min-height: var(--x, 100vh) }
 #inset { position: fixed; inset: 0 0 10vh; width: 10px; background: #f0f }
 #q::before { content: "100vh" }
-#u { background: url("/100vh.png") }
+#u { background: url("/a(1)/100vh.png") }
 @media (min-width: 100px) { #media { height: 50vh } }
 .a { & .b { height: 50vh } }
 #vmin { height: 10vmin }
@@ -288,17 +288,23 @@ body { margin: 0 }
 new IntersectionObserver((entries, o) => entries.forEach((e) => e.isIntersecting && (e.target.classList.add("inView"), o.disconnect()))).observe(document.getElementById("chart"));
 </script></body></html>`;
 
-// A section that opens, max-height 0 to 600 px over 2 s, once the page end is in view: only the grown viewport shows
-// it, and the page is 600 px taller once it is open. 1500 + 600 + 20 = 2120 px tall then, the green end last.
+// Two sections that open, max-height 0 to 600 px over 2 s, once the page end is in view, the second in an open shadow
+// root (document.getAnimations() does not list its animation): only the grown viewport shows them, and the page is
+// 1200 px taller once they are open. 1500 + 600 + 600 + 20 = 2720 px tall then, the green end last.
+const OPEN_SECTION = `@keyframes open { from { max-height: 0 } to { max-height: 600px } }
+.more { max-height: 0; overflow: hidden }
+.more.inView { animation: open 2s forwards }
+.more > div { height: 600px }`;
 const OPEN_PAGE = `<!doctype html><html><head><style>
 body { margin: 0 }
-@keyframes open { from { max-height: 0 } to { max-height: 600px } }
-#more { max-height: 0; overflow: hidden; background: rgb(0, 128, 255) }
-#more.inView { animation: open 2s forwards }
-#more > div { height: 600px }
+${OPEN_SECTION}
+#more { background: rgb(0, 128, 255) }
 #end { height: 20px; background: rgb(0, 160, 0) }
-</style></head><body><div style="height:1500px"></div><section id="more"><div></div></section><div id="end"></div><script>
-new IntersectionObserver((entries, o) => entries.forEach((e) => e.isIntersecting && (document.getElementById("more").classList.add("inView"), o.disconnect()))).observe(document.getElementById("end"));
+</style></head><body><div style="height:1500px"></div><section id="more" class="more"><div></div></section><div id="host"></div><div id="end"></div><script>
+const shadow = document.getElementById("host").attachShadow({ mode: "open" });
+shadow.innerHTML = \`<style>${OPEN_SECTION} .more { background: rgb(255, 0, 128) }</style><section class="more"><div></div></section>\`;
+const sections = [document.getElementById("more"), shadow.querySelector(".more")];
+new IntersectionObserver((entries, o) => entries.forEach((e) => e.isIntersecting && (sections.forEach((s) => s.classList.add("inView")), o.disconnect()))).observe(document.getElementById("end"));
 </script></body></html>`;
 
 // A fixed bar at the bottom that hides once the page end is in view, by a scroll handler on the document; one on the
@@ -630,7 +636,24 @@ sequence(async ({ page, seq }) => {
 });
 `,
   late: shoot("/late"),
-  keep: shoot("/keep"),
+  // Counts the fetched responses stabilize lets go of: each one's body stays in memory until disposed or the context closes.
+  keep: `
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  const proto = Object.getPrototypeOf(await page.request.get("/keep"));
+  const dispose = proto.dispose;
+  let disposed = 0;
+  proto.dispose = function (...args: unknown[]) {
+    disposed++;
+    return dispose.apply(this, args);
+  };
+  await page.goto("/keep");
+  await seq.snapPage();
+  writeFileSync(join(seq.dir, "disposed.txt"), String(disposed));
+});
+`,
   sheets: `
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
@@ -1186,8 +1209,8 @@ describe("what the freeze keeps and what it reaches", () => {
   it("leaves quoted text and url() alone, keeps !important, and turns custom properties and shorthands into px", () => {
     const { facts, rects } = probe(r.dir);
     expect(facts?.before).toBe('"100vh"');
-    expect(facts?.background).toContain("/100vh.png");
-    expect(app.hits.slice(appBefore)).toContain("/100vh.png"); // requested as written
+    expect(facts?.background).toContain("/a(1)/100vh.png"); // a ")" inside the quotes ends nothing
+    expect(app.hits.slice(appBefore)).toContain("/a(1)/100vh.png"); // requested as written
     expect(facts?.priority).toBe("important");
     expect(facts?.priValue).toBe("720px");
     expect(facts?.custom).toBe("360px");
@@ -1210,6 +1233,7 @@ describe("what the freeze keeps and what it reaches", () => {
     expect(probe(r.dir).rects.xo?.height).toBe(720);
     const hits = cdn.hits.slice(cdnBefore);
     expect(hits.filter((u) => u.startsWith("/style.css"))).toHaveLength(2);
+    expect(readFileSync(join(r.dir, "disposed.txt"), "utf8")).toBe("1"); // the refetched body, freed once served
     expect(hits.some((u) => u.startsWith("/img.png"))).toBe(true);
     expect(app.hits.some((u) => u.startsWith("/img.png"))).toBe(false);
   });
@@ -1422,13 +1446,14 @@ describe("motion after snapPage grows the viewport", () => {
   });
 
   // A height animation that runs on while snapPage measures would leave the shot cut off, or refused.
-  it("finishes a height animation the grow started before snapPage measures, so the page end is in the shot", async () => {
+  it("finishes a height animation the grow started before snapPage measures, in a shadow root too, so the page end is in the shot", async () => {
     const r = await run("open");
     expect(r.status, r.out).toBe(0);
-    expect(pngSize(join(r.dir, "01.png"))).toEqual([1280, 2120]);
+    expect(pngSize(join(r.dir, "01.png"))).toEqual([1280, 2720]);
     const img = await image(join(r.dir, "01.png"));
     expect(img.at(640, 1800)).toEqual([0, 128, 255]); // the section, open
-    expect(img.at(640, 2119)).toEqual([0, 160, 0]); // the end
+    expect(img.at(640, 2400)).toEqual([255, 0, 128]); // the one in the shadow root, open
+    expect(img.at(640, 2719)).toEqual([0, 160, 0]); // the end
   });
 });
 

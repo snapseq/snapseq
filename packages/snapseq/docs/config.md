@@ -181,7 +181,7 @@ export default defineConfig({
 | `viewportUnits` | on      | Freezes `vh` and the other viewport-height units to px, so `snapPage` works on a `100vh` page.        |
 | `floating`      | on      | In `snapPage`, a fixed element keeps the top it had on the first screen.                              |
 | `scrollEvent`   | on      | In `snapPage`, a scroll event after the viewport grows and again once it is restored.                 |
-| `motion`        | on      | Transitions off; animations finished, or cancelled, before each shot.                                 |
+| `motion`        | on      | Transitions off; animations finished, or cancelled, before each shot, in open shadow roots too.       |
 | `hover`         | on      | The pointer leaves the content before each shot.                                                      |
 | `scroll`        | off     | A scroll pass before a native full page, so lazy content loads.                                       |
 | `reducedMotion` | off     | Emulates `prefers-reduced-motion: reduce`.                                                            |
