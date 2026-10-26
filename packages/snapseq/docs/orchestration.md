@@ -429,7 +429,7 @@ Before any child starts, nothing is shot. Each message follows `<sequence>: `, e
 
 | Message starts with | Cause |
 | ------------------- | ----- |
-| `unknown option "device"; options take …` | A key `run()` does not take. The list names the ones it does. |
+| `unknown option "device"; options take …` | A key `run()` does not take. The list names the ones it does; a Playwright key such as `use` goes in the argument after the options ([Playwright overrides](#playwright-overrides)). |
 | `options must be an object` | `options` is not a plain object. |
 | `a sequence id names a file in snapseq/ …` | The id is not a name, or is a path out of the folder. |
 | `no snapseq/<id>.seq.ts; sequences: …` | No such file. The message lists the ids it found. |
@@ -463,7 +463,7 @@ After the child ran, with its output still on your terminal above the error:
 | `<sequence> ran 2 tests; one sequence per file` | A test besides the file's `sequence()`. Two `sequence()` calls stop at load with `duplicate test title "sequence"`. |
 | `<sequence>: …` | An error outside any test, such as a dev server that never came up. The text is the error's first line. |
 | `<sequence>: could not start the child: …` | The operating system refused to start the child (the Node executable is missing or cannot run). The text is its error. |
-| `<sequence>: child exited before reporting; see the output above` | The child died or never started its tests, e.g. a config error; its own message is above. A `retries` or `repeatEach` an override sets, or an env the run cannot resolve, is refused there when the child loads its config; a `baseURL` when the sequence starts, as `failed on <device>` with `the context's baseURL … is not this run's host` above. |
+| `<sequence>: child exited before reporting (exit 1); see the output above` | The child died or never started its tests, e.g. a config error; its own message is above. `(killed by SIGKILL)` when a signal ended it, with nothing of its own to say. `child's report is not a result document` when what it sent does not parse, and `child's report is over 8 MiB, so it was not read` when it sent more than that. A `retries` or `repeatEach` an override sets, or an env the run cannot resolve, is refused there when the child loads its config; a `baseURL` when the sequence starts, as `failed on <device>` with `the context's baseURL … is not this run's host` above. |
 | `<sequence>: child ended with 1 after reporting passed …` | The child's exit disagrees with its report. |
 | `<sequence>: was interrupted …` | The child was stopped. |
 

@@ -284,9 +284,12 @@ describe("a call that does not resolve", () => {
     ["a skip, with its reason", { devices: { mobile: { status: "skipped", skipReason: "desktop only" } } }, `${LAUNCH} was skipped on mobile: "desktop only" ${site}`],
     ["a test that never used seq", { devices: { mobile: { capture: false } } }, `${LAUNCH} never used seq on mobile ${site}`],
     ["two tests in the file", { tests: 2 }, `${LAUNCH} ran 2 tests; one sequence per file ${site}`],
-    ["a child that died before reporting", { report: "none", exit: 1 }, `${LAUNCH}: child exited before reporting; see the output above ${site}`],
-    ["a zero exit without a report", { report: "none", exit: 0 }, `${LAUNCH}: child exited before reporting; see the output above ${site}`],
-    ["a report that is not JSON", { report: "garbage" }, `${LAUNCH}: child exited before reporting; see the output above ${site}`],
+    ["a child that died before reporting", { report: "none", exit: 1 }, `${LAUNCH}: child exited before reporting (exit 1); see the output above ${site}`],
+    ["a zero exit without a report", { report: "none", exit: 0 }, `${LAUNCH}: child exited before reporting (exit 0); see the output above ${site}`],
+    ["a child killed before reporting", { report: "none", kill: "SIGKILL" }, `${LAUNCH}: child exited before reporting (killed by SIGKILL); see the output above ${site}`],
+    ["a report that is not JSON", { report: "garbage" }, `${LAUNCH}: child's report is not a result document (exit 0); see the output above ${site}`],
+    // Even when what came first parses: a report over the cap is never read.
+    ["a report over the cap", { report: "huge" }, `${LAUNCH}: child's report is over 8 MiB, so it was not read (exit 0) ${site}`],
     [
       "an error outside any test",
       { devices: { desktop: { status: "not run" }, mobile: { status: "not run" } }, errors: ["Error: Timed out waiting 120000ms from config.webServer.\n  at x"] },

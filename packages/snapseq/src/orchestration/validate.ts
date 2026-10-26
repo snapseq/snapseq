@@ -88,7 +88,7 @@ export function checkRun(sequence: unknown, options: unknown, playwright: readon
   const { config, configDir } = ctx;
   if (!isPlainObject(options)) return fail(`options must be an object, like { devices: ["desktop"] }`);
   for (const key of Object.keys(options)) {
-    if (!KEYS.includes(key)) fail(`unknown option "${key}"; options take ${KEYS.join(", ")}`);
+    if (!KEYS.includes(key)) fail(`unknown option "${key}"; options take ${KEYS.join(", ")}; Playwright overrides go after the options: run(sequence, options, { use: … })`);
   }
   const problem = notJson(options, "options") ?? playwright.map((p, i) => notJson(p, `playwright[${i}]`)).find(Boolean);
   if (problem) fail(`${problem}; options and Playwright overrides reach the child as JSON`);
