@@ -87,8 +87,9 @@ export interface Sequence {
    * document height, so sticky and fixed elements rest in flow and anything
    * that reacts to its slot coming into view (a tray that lands) gets to; the
    * page gets ready; one shot; the viewport and the scroll position are
-   * restored. A layout that follows the viewport height (`vh` units, a loader
-   * at the page end) grows with every resize and is refused: use
+   * restored. `stabilize`, on by default, freezes `vh` units first. A layout
+   * that still follows the viewport height (`vh` units it did not freeze, a
+   * loader at the page end) grows with every resize and is refused: use
    * `snap({ fullPage: true })` for those.
    */
   snapPage(options?: Omit<SnapOptions, "fullPage">): Promise<string>;

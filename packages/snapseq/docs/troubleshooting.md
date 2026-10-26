@@ -1,15 +1,20 @@
 # Troubleshooting
 
-Symptom, cause, fix. Error text is quoted as the terminal prints it.
+Symptom, cause, fix. Error text is quoted as the terminal prints it. What an
+orchestration file prints when it stops is in [Orchestration](orchestration.md#errors).
 
 ## Injected styles do nothing
 
 **Symptom.** Animations still run after `disableTransitions`, or
-`addPersistentStyle` / `page.addStyleTag` throws. With `stabilize` on, every
-sequence on that site fails before its body with `snapseq: stabilize threw in begin: …`.
+`addPersistentStyle` / `page.addStyleTag` throws on a page of the site. With
+`stabilize` on, transitions run between shots on that site, and the browser console
+logs a `style-src` violation. Each shot still ends the ones running when it is taken.
 **Cause.** The site's `Content-Security-Policy` has a strict `style-src`, which
-rejects an injected `<style>` element. `stabilize`'s `motion` step injects the same
-element in every sequence.
+rejects an injected `<style>` element. `addPersistentStyle` throws on a page already
+on the site; the copy it adds to each later page is dropped without an error.
+`stabilize`'s `motion` step calls it before the sequence body. The page is blank
+there, so on the site its copy is only dropped; a page something already took to the
+site fails the sequence before its body with `snapseq: stabilize threw in begin: …`.
 **Fix.** `use: { bypassCSP: true }` for that site, on the env or composed over
 the config ([Config](config.md#overriding-playwright-options)). Or turn the step off
 with `stabilize: { motion: false }` ([Config](config.md#stabilize)).

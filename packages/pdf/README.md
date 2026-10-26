@@ -20,7 +20,9 @@ pnpm add -D @snapseq/pdf
 ## Use
 
 Inside an orchestration file, hand it the captures `run()` gave you and the path
-of the file to write. It resolves to that path.
+of the file to write. It resolves to that path. A relative path is from the
+working directory snapseq was started in, not the run folder: `join(dir, "spring.pdf")`
+puts the file in the run folder.
 
 ```ts
 // snapseq/spring.orchestration.ts

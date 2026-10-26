@@ -45,7 +45,7 @@ export default defineOrchestration(async ({ run }) => {
     ...(await run("12346-spring-offer", { env: "uat" })),
   ];
 
-  const labelled = await label(raw, { theme: "dark", scale: (dsf) => dsf / 2 });   // <capture.dir>/labelled/01.png …
+  const labelled = await label(raw, { theme: "dark" });   // <capture.dir>/labelled/01.png …
 });
 ```
 
@@ -57,16 +57,18 @@ its own (`theme`, `background`, `color`). A shot's style wins over the step's.
 
 `label` is typed once the package's types are in your TypeScript program. The
 orchestration file's import does that when it and the sequences share a
-`tsconfig.json`; otherwise add `/// <reference types="@snapseq/label" />` to
-the sequence file.
+`tsconfig.json` and a module format; otherwise add
+`/// <reference types="@snapseq/label" />` to the sequence file. An `.mts`
+orchestration's import does not type a `.cts` sequence, or the other way round:
+each format reads its own copy of snapseq's types.
 
 ## Options
 
 ```ts
-label(captures)                              // white strip, black text
-label(captures, { theme: "dark" })           // black strip, white text
-label(captures, { scale: true })             // the strip follows the device scale factor
-label(captures, { scale: (dsf) => dsf / 2 }) // the strip's scale from the factor
+label(captures)                                           // white strip, black text
+label(captures, { theme: "dark" })                        // black strip, white text
+label(captures, { scale: true })                          // the strip follows the device scale factor
+label(captures, { scale: (dsf) => Math.max(1, dsf / 2) }) // the strip's scale from the factor
 ```
 
 `background` and `color` win over the theme. They must be colors librsvg
@@ -96,7 +98,8 @@ A shot without a label is copied byte for byte.
 - Without `scale`, the strip is 24 px of the file at any device scale factor,
   so on a 2x shot it reads as 12 CSS px. `scale: true` makes it follow the
   factor: 48 px on a 2x shot, 96 px on a 4x one. A function maps the factor to
-  the scale instead, e.g. `scale: (dsf) => Math.max(1, dsf / 2)`. A scale that
+  the scale instead, e.g. `scale: (dsf) => Math.max(1, dsf / 2)`; without the
+  `Math.max`, a 1x shot gets 6 px text. A scale that
   is not a finite number above 0, or is under 1/48 so the strip would be
   under 1 px, makes `label` throw.
 - Shots are labelled one at a time. A failure stops the step; files already
