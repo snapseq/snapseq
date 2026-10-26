@@ -42,6 +42,9 @@ which snapseq refuses with `snapseq: campaign/pricing.md is not a sequence file;
 quote a glob so the shell leaves it`, and for a file inside `sequencesDir` the glob
 over ids to quote, like `: 'campaign/*'`. A sequence file does work as its id, and
 only its own, so tab completion does: `pnpm snapseq snapseq/campaign/pricing.seq.ts`.
+Spelled in another case than the disk's (macOS finds `snapseq/Campaign/pricing.seq.ts`
+too), it selects no id and stops snapseq as below. A link named like a sequence file
+to a file that is no sequence file is refused as any other file.
 
 Every word must select at least one sequence. One that does not stops snapseq
 with exit 1 before Playwright starts, with or without a terminal, and says what

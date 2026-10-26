@@ -196,6 +196,11 @@ describe("filter words", () => {
     expect(selectSequences(["cafe\u0301/a"], [], ["caf\u00e9/a"]).ids).toEqual(["cafe\u0301/a"]);
   });
 
+  it("names an exact id the listing does not have as a miss, so it never selects nothing quietly", () => {
+    expect(selectSequences(["a", "b"], [], ["A"])).toEqual({ ids: [], misses: ["A"] });
+    expect(selectSequences(["a", "b"], ["b"], ["node_modules/x"])).toEqual({ ids: ["b"], misses: ["node_modules/x"] });
+  });
+
   it("names the words that select nothing, once each", () => {
     expect(selectSequences(IDS, ["cll", "ira", "cll", "zzz"])).toEqual({ ids: ["ira"], misses: ["cll", "zzz"] });
   });

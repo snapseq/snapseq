@@ -108,16 +108,25 @@ async function selectFiles(config: string, tokens: string[]): Promise<string[]> 
   // A word that names a sequence file selects its id as it is, whatever glob its name spells.
   const exact: string[] = [];
   const globs: string[] = [];
+  // A file word's miss is its id; the message names the word as typed.
+  const typed = new Map<string, string>();
   for (const i of words) {
     const path = fileWord(tokens[i]!, dir);
     if (path === undefined) globs.push(tokens[i]!);
-    else exact.push(sequenceId(dir, path, [DEFAULT_TITLE]));
+    else {
+      const id = sequenceId(dir, path, [DEFAULT_TITLE]);
+      exact.push(id);
+      typed.set(id, tokens[i]!);
+    }
   }
   const { ids: selected, misses } = selectSequences(ids, globs, exact);
   if (misses.length > 0) {
     throw new Error(
       misses
-        .flatMap((word) => [`snapseq: no sequence matches ${JSON.stringify(word)}`, ...missHints(dir, ids, word).map((line) => `  ${line}`)])
+        .flatMap((miss) => [
+          `snapseq: no sequence matches ${JSON.stringify(typed.get(miss) ?? miss)}`,
+          ...missHints(dir, ids, miss).map((line) => `  ${line}`),
+        ])
         .join("\n"),
     );
   }
