@@ -1,13 +1,16 @@
 import {
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
 import { connect, type AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AUTH, FONT, PKG, makeProject, playwright, pngSize, snapseq, startServer } from "./helpers";
@@ -157,7 +160,7 @@ describe("snapseq via the Playwright CLI", () => {
 
   it("--env without --host drops an inherited SNAPSEQ_HOST, so the run goes to that env's host", async () => {
     const before = server.hits.length;
-    const r = await snapseq(project, ["a\\.seq", "--device", "d1", "--env", "dev"], { SNAPSEQ_HOST: "http://127.0.0.1:1" });
+    const r = await snapseq(project, ["a", "--device", "d1", "--env", "dev"], { SNAPSEQ_HOST: "http://127.0.0.1:1" });
     expect(r.status, r.out).toBe(0);
     expect(server.hits.slice(before).map((h) => h.url)).toContain("/a?env=dev&device=d1");
   });
@@ -261,7 +264,7 @@ describe("snapseq bin", () => {
   it("translates --env, --host and --device, and finds the config in cwd", async () => {
     const before = server.hits.length;
     const r = await snapseq(project, [
-      "a\\.seq",
+      "a",
       "--device",
       "d1",
       "--env",
@@ -275,9 +278,34 @@ describe("snapseq bin", () => {
   });
 
   it("passes unknown flags through to playwright test", async () => {
-    const r = await snapseq(project, ["a\\.seq", "--device=d1", "--list"]);
+    const r = await snapseq(project, ["a", "--device=d1", "--list"]);
     expect(r.status).toBe(0);
     expect(r.out).toContain("Total: 1 test in 1 file");
+  });
+
+  // The words are globs over sequence ids, not Playwright's regexes over paths: the quotes keep a shell from expanding them.
+  it("selects sequences by a quoted glob over their ids, and one that selects nothing stops before anything runs", async () => {
+    const top = await snapseq(project, ["*", "--device=d1", "--list"]);
+    expect(top.status, top.out).toBe(0);
+    expect(top.out).toContain("Total: 2 tests in 2 files"); // a and c, not nested/b
+    const none = await snapseq(project, ["b"]);
+    expect(none.status).toBe(1);
+    expect(none.out).toContain('snapseq: no sequence matches "b"\n  did you mean nested/b?');
+    expect(none.out).not.toContain("Running");
+  });
+
+  it("runs the files a glob selects, in a project reached through a symlink", async () => {
+    // Playwright filters the paths it walks from the config's own spelling, symlinks unresolved; the literal must match that.
+    const root = mkdtempSync(join(tmpdir(), "snapseq-link-"));
+    dirs.push(root);
+    symlinkSync(project, join(root, "alias"));
+    const before = server.hits.length;
+    const r = await snapseq(project, ["-c", join(root, "alias", "snapseq.config.ts"), "nested/*", "--device", "d1"], {}, root);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("1 passed");
+    const urls = server.hits.slice(before).map((h) => h.url);
+    expect(urls).toContain("/b");
+    expect(urls.filter((u) => u.startsWith("/a") || u.startsWith("/c"))).toEqual([]);
   });
 
   it("prints its own usage for --help", async () => {

@@ -1,10 +1,13 @@
 // What names a sequence: its file, the id the screenshots folder and the orchestration use, the listing of a sequences
 // folder, and the terminal row.
-import { type Dirent, readdirSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { type Dirent, readdirSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 
 /** A sequence file: `pricing.seq.ts`, or `.mts`, `.cts`, `.js`, `.mjs`, `.cjs`. */
 export const SEQUENCE_FILE = /\.seq\.[cm]?[jt]s$/;
+
+/** An orchestration file: `spring.orchestration.ts`, or `.mts`, `.cts`, `.js`, `.mjs`, `.cjs`. */
+export const ORCHESTRATION_FILE = /\.orchestration\.[cm]?[jt]s$/;
 
 /** The title `sequence()` gives its test: the file's one sequence, which adds nothing to the id. */
 export const DEFAULT_TITLE = "sequence";
@@ -73,11 +76,88 @@ export function sequenceIds(dir: string, pattern = SEQUENCE_FILE): string[] {
   return [...new Set(sequences(dir, pattern).map((s) => s.id))].sort();
 }
 
-/** The files of `id` under `dir` as the disk spells them: ids compared NFC, as macOS may keep names decomposed. */
-export function sequenceFiles(dir: string, id: string, pattern = SEQUENCE_FILE): string[] {
+/** The files of `id` (or of every one of several) under `dir` as the disk spells them: ids compared NFC, as macOS may keep names decomposed. */
+export function sequenceFiles(dir: string, id: string | readonly string[], pattern = SEQUENCE_FILE): string[] {
+  const wanted = new Set((typeof id === "string" ? [id] : id).map((i) => i.normalize("NFC")));
   return sequences(dir, pattern)
-    .filter((s) => s.id.normalize("NFC") === id.normalize("NFC"))
+    .filter((s) => wanted.has(s.id.normalize("NFC")))
     .map((s) => join(dir, s.file));
+}
+
+// Filter words: what `snapseq cll/dosing`, `snapseq 'cll/*'` and a repair's `--run r1 'cll/*'` all select by.
+
+/** What makes a word a glob; one without is an id, compared as it is. */
+const GLOB = /[*?[\]{}()!+@]/;
+
+const nfc = (s: string): string => s.normalize("NFC");
+
+/**
+ * Whether `word` selects `id`: the id itself, or when the word has a glob character a glob over the whole id (`cll/*`
+ * the sequences in cll/, `wm/**` everything under wm/ nested too, `*` the top-level ones). Case matters on every
+ * platform. Both are NFC, as macOS hands names over decomposed. `!` negates nothing: Node reads `!(cll)/**` as every
+ * sequence outside cll/, so a word that starts with one is no glob and matches no id.
+ */
+export function matchSequence(id: string, word: string): boolean {
+  return nfc(id) === nfc(word) || (!word.startsWith("!") && GLOB.test(word) && posix.matchesGlob(nfc(id), nfc(word)));
+}
+
+/**
+ * The ids any word selects, plus the `exact` ones as they are (a sequence file's id, whatever characters it has), in
+ * `ids`' order, and the words that select none.
+ */
+export function selectSequences(
+  ids: readonly string[],
+  words: readonly string[],
+  exact: readonly string[] = [],
+): { ids: string[]; misses: string[] } {
+  const found = new Set(exact.map(nfc));
+  const misses = new Set<string>();
+  for (const word of words) {
+    const hits = ids.filter((id) => matchSequence(id, word));
+    if (hits.length === 0) misses.add(word);
+    for (const id of hits) found.add(nfc(id));
+  }
+  return { ids: ids.filter((id) => found.has(nfc(id))), misses: [...misses] };
+}
+
+const count = (n: number): string => `${n} sequence${n === 1 ? "" : "s"}`;
+
+/**
+ * What to tell someone whose `word` selected nothing among `ids` (the sequences in `dir`): that it is a folder or an
+ * orchestration, that only the case differs, the ids it may have meant, else every id. A substring is guessed only for a
+ * word that is no folder or case slip.
+ */
+export function missHints(dir: string, ids: readonly string[], word: string): string[] {
+  const w = nfc(word);
+  const under = ids.filter((id) => nfc(id).startsWith(`${w}/`));
+  const inside = under.filter((id) => !nfc(id).slice(w.length + 1).includes("/"));
+  const named = ids.filter((id) => nfc(id).split("/").pop() === w);
+  const cased = ids.filter((id) => matchSequence(nfc(id).toLowerCase(), w.toLowerCase()));
+  const near = cased.length > 0 ? [] : named.length > 0 ? named : under.length > 0 ? [] : ids.filter((id) => nfc(id).toLowerCase().includes(w.toLowerCase()));
+  const lines = [
+    ...(under.length === 0 ? [] : [`${word} is a folder: ${inside.length > 0 ? `'${word}/*' selects its ${count(inside.length)}` : `'${word}/**' selects its ${count(under.length)}`}`]),
+    ...(sequenceFiles(dir, word, ORCHESTRATION_FILE).length === 0 ? [] : [`${word} is an orchestration: snapseq -o ${word}`]),
+    ...(cased.length === 0 ? [] : [`case matters: it would select ${cased.slice(0, 5).join(", ")}`]),
+    ...(near.length === 0 ? [] : [`did you mean ${near.slice(0, 5).join(", ")}?${named.length > 0 ? ` '**/${word}' selects every ${word}` : ""}`]),
+  ];
+  return lines.length > 0 ? lines : [`sequences: ${ids.join(", ") || "(none)"}`];
+}
+
+/**
+ * A word that names a file is not a glob but what a shell made of one, or tab completion: a sequence file (of `dir`, or
+ * of any folder with `anywhere`, where a run() may point elsewhere) comes back as its canonical path, any other file is
+ * an error. A word that names no file comes back undefined.
+ */
+export function fileWord(word: string, dir: string, anywhere = false): string | undefined {
+  const given = resolve(word);
+  if (!statSync(given, { throwIfNoEntry: false })?.isFile()) return undefined;
+  const file = canonical(given);
+  const inside = within(canonical(dir), file);
+  if (SEQUENCE_FILE.test(given) && (anywhere || inside)) return file;
+  // The glob over ids that would have selected its neighbours, only where it is a folder of the sequences.
+  const folder = relative(canonical(dir), dirname(file)).split(sep).join("/");
+  const glob = inside ? `: '${folder === "" ? "*" : `${folder}/*`}'` : "";
+  throw new Error(`snapseq: ${word} is not a sequence file; quote a glob so the shell leaves it${glob}`);
 }
 
 /**

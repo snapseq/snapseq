@@ -213,6 +213,27 @@ screenshots dir.
 and `-c` was not given, or, in an orchestration run, `-c` names a folder without one.
 **Fix.** Run from the app's directory, or pass `-c <path>`.
 
+## `snapseq: no sequence matches "…"`
+
+**Cause.** A filter word selected no sequence id. A word is an id (`cll/dosing`)
+or a glob over ids (`'cll/*'`), matched against the whole id and case-sensitively;
+`cll` alone is not the folder's sequences, and `dosing` is not a substring. The
+lines under the message say what it may have meant: a folder, an orchestration, ids
+that differ only in case, ids that end in or contain the word, else every id.
+**Fix.** Use the id or the glob the message suggests, or `snapseq` alone for
+everything. A regular expression or `file:42` goes after `--`.
+See [Running](running.md#running).
+
+## `snapseq: … is not a sequence file; quote a glob so the shell leaves it`
+
+**Cause.** The word names a file that exists, other than a sequence file in
+`sequencesDir` (in a repair, other than any sequence file). Usually an unquoted glob
+that your shell expanded into file names before snapseq saw it, because the working
+directory holds a matching folder. For a file inside `sequencesDir` the message ends
+with the glob over ids to quote.
+**Fix.** Quote the glob: `pnpm snapseq 'cll/*'`. (Stock zsh also stops with `no
+matches found` for an unquoted glob that matches nothing.)
+
 ## `snapseq: <flag> requires a value`
 
 **Cause.** A flag that takes a value (`--env`, `--host`, `--device`, `--run`, `-c`,
@@ -227,8 +248,9 @@ empty, `--env "$ENV"`: an empty `--env` or `--host` means unset.
 variable (`--record=$FLAG`). The flag refuses it, since a bare `--record`
 records; an empty `SNAPSEQ_RECORD` means unset.
 **Fix.** `--record` to record, `--record=0` to replay, or leave the flag out.
-`--record 0` with a space is not the same: it records, and `0` goes to
-Playwright as a file filter.
+`--record 0` with a space is not the same: it records, and `0` is read as a
+sequence word, so the run stops with `snapseq: no sequence matches "0"` unless a
+sequence is named `0`, and then it records that one.
 
 ## `snapseq: numbering must be zeros, like "00", not "…"`
 
