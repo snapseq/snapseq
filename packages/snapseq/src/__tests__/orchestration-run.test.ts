@@ -370,6 +370,73 @@ await run("${LAUNCH}", { devices: ["mobile", "desktop"] });`,
     expect(r.calls).toHaveLength(1);
   });
 
+  // nested/pricing on desktop is <run>/nested/pricing/desktop; nested from another folder on a device named pricing is
+  // <run>/nested/pricing, which its child would wipe, the first capture's shots with it.
+  it("refuses a part whose folder holds or sits in the folder of a part it already captured, before its child starts", async () => {
+    const dir = project();
+    write(join(dir, "other/nested.seq.ts"));
+    const r = await orchestrate(
+      dir,
+      `await run("nested/pricing", { devices: ["desktop"] });
+await run("nested", { sequencesDir: "other", devices: { pricing: {} } });`,
+      ["--run", "r1"],
+    );
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`failed  nested/pricing: its folder holds the shots of nested/pricing/desktop, which this orchestration captured (spring.orchestration.ts:3)`);
+    expect(r.calls).toHaveLength(1);
+  });
+
+  // As the children refuse it within one folder: a device named like a shot would wipe that shot.
+  it("refuses the other order too: a part whose folder sits in a captured part's folder", async () => {
+    const dir = project();
+    write(join(dir, "other/nested.seq.ts"));
+    const r = await orchestrate(
+      dir,
+      `await run("nested", { sequencesDir: "other", devices: { pricing: {} } });
+await run("nested/pricing", { devices: ["desktop"] });`,
+      ["--run", "r1"],
+    );
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("failed  nested/pricing/desktop: its folder is inside the shots of nested/pricing, which this orchestration captured");
+    expect(r.calls).toHaveLength(1);
+  });
+
+  // home/d2 a link to home/d1: the child's wipe of home/d2 only unlinks it.
+  it("does not follow a part's own folder when it is a link", async () => {
+    const dir = project();
+    write(join(dir, "snapseq/home.seq.ts"));
+    write(join(dir, "snapseq/home/d1.seq.ts"));
+    const r = await orchestrate(
+      dir,
+      `await run("home/d1", { devices: { d1: {} } });
+const { symlinkSync } = await import("node:fs");
+symlinkSync(${JSON.stringify(join(dir, "screenshots/r1/home/d1"))}, ${JSON.stringify(join(dir, "screenshots/r1/home/d2"))});
+await run("home", { devices: { d2: {} } });`,
+      ["--run", "r1"],
+    );
+    expect(r.code, r.out).toBe(0);
+    expect(r.calls).toHaveLength(2);
+  });
+
+  // A link in the run folder points the first part's shots elsewhere; the second's wipe still goes through the link.
+  it("compares the folders as written too, not only where their links lead", async () => {
+    const dir = project();
+    write(join(dir, "snapseq/nested/pricing/link.seq.ts"));
+    write(join(dir, "other/nested.seq.ts"));
+    mkdirSync(join(dir, "screenshots/r1/archive"), { recursive: true });
+    mkdirSync(join(dir, "screenshots/r1/nested/pricing"), { recursive: true });
+    symlinkSync(join(dir, "screenshots/r1/archive"), join(dir, "screenshots/r1/nested/pricing/link"));
+    const r = await orchestrate(
+      dir,
+      `await run("nested/pricing/link", { devices: ["desktop"] });
+await run("nested", { sequencesDir: "other", devices: { pricing: {} } });`,
+      ["--run", "r1"],
+    );
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("failed  nested/pricing: its folder holds the shots of nested/pricing/link/desktop");
+    expect(r.calls).toHaveLength(1);
+  });
+
   it("refuses bad options before any child starts, with the call site", async () => {
     const dir = project();
     const r = await orchestrate(dir, `await run("${LAUNCH}", { devices: ["tablet"] });`, ["--run", "r1"]);

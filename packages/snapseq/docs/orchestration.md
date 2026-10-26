@@ -449,6 +449,7 @@ Before any child starts, nothing is shot. Each message follows `<sequence>: `, e
 | `options.screenshotsDir must be a folder …` | An empty or non-string path. |
 | `options.sequencesDir must be a folder …` | An empty or non-string path. |
 | `<sequence>/<device> already captured by this orchestration` | A part can be captured once. |
+| `<sequence>/<device>: its folder holds the shots of …, which this orchestration captured` | The part's folder holds, or `is inside`, the folder of a part this orchestration already captured, and its child would wipe it first. Ids from two `sequencesDir`s can meet like that: `nested/pricing` on `desktop` and `nested` on a device named `pricing`, in either order, as within one folder the sequences refuse it themselves. |
 | `run("x") while "y" is running; await it first` | Two calls at once. |
 | `run("x") after the orchestration stopped` | A call that came after Ctrl-C or an error ended the run. |
 

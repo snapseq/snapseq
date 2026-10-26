@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PlaywrightTestConfig } from "@playwright/test";
 import { formatRow, marks, shotCount, type OutStream } from "../reporter.js";
-import { canonical, matchSequence, rowLabel, sequenceIds } from "../sequence-id.js";
+import { DEFAULT_TITLE, canonical, matchSequence, rowLabel, sequenceId, sequenceIds, within } from "../sequence-id.js";
 import { type CachedCapture, type Origin, cacheDir, isFile, loadCache, reusable, saveCache } from "./cache.js";
 import type { Entry, Report } from "./result-reporter.js";
 import type { Request } from "./request.js";
@@ -88,6 +88,9 @@ export function throwSite(stack: string | undefined): string | undefined {
   const first = frames(stack)[0];
   return first && !first[0].startsWith(OWN) ? callSite(stack) : undefined;
 }
+
+/** A folder with the links above it followed: the wipe of a link at the folder's own name only unlinks it. */
+const resolved = (dir: string): string => join(canonical(dirname(dir)), basename(dir));
 
 /** A stack's frames that name a file by its absolute path, innermost first, as [file, line]; Node's own are left out. */
 function frames(stack: string | undefined): [string, string][] {
@@ -224,8 +227,8 @@ export function createRunner(s: Session) {
   const cache = loadCache(s.cacheFile);
   /** The ids in the sequences folder, read once, so rows line up across children. */
   const ids = sequenceIds(resolve(configDir, s.config.sequencesDir));
-  /** `<sequence>/<device>` this orchestration already got back from a run(), reused ones included. */
-  const claims = new Set<string>();
+  /** `<sequence>/<device>` this orchestration already got back from a run(), reused ones included, and its folder: as written and resolved. */
+  const claims = new Map<string, [string, string]>();
   /** The fingerprints of a failed call's accepted captures, for its retry; the captures are in the run's cache. */
   const held = new Map<string, string>();
   const state = {
@@ -271,13 +274,27 @@ export function createRunner(s: Session) {
     }
     // Composed, as the file lookup and the fixture compare ids: two spellings of one id are one part.
     const keyOf = (device: string): string => `${sequence.normalize("NFC")}/${device}`;
+    const screenshotsDir = resolve(configDir, options.screenshotsDir ?? s.config.screenshotsDir);
+    // The id as the disk spells the file, as the child names its folder: a Linux file system keeps two spellings apart.
+    const id = sequenceId(checked.sequencesDir, checked.file, [DEFAULT_TITLE]);
+    const dirOf = (device: string): string => join(screenshotsDir, s.run, id, device);
     for (const device of checked.deviceOrder) {
-      if (claims.has(keyOf(device))) throw new Error(`${keyOf(device)} already captured by this orchestration${where}`);
+      const key = keyOf(device);
+      if (claims.has(key)) throw new Error(`${key} already captured by this orchestration${where}`);
+      // A child wipes its folder first: one that holds another part's shots would take them with it, and one inside
+      // them may be named like a shot; the children refuse both within one folder. Ids from two sequencesDirs can meet
+      // there (nested/pricing on desktop, nested on a device named pricing). As written, as the wipe goes through a
+      // link in the path, and resolved, as two spellings can be one folder.
+      const mine = dirOf(device);
+      const real = resolved(mine);
+      for (const [other, [theirs, theirsReal]] of claims) {
+        const how =
+          within(mine, theirs) || within(real, theirsReal) ? "holds" : within(theirs, mine) || within(theirsReal, real) ? "is inside" : undefined;
+        if (how) throw new Error(`${key}: its folder ${how} the shots of ${other}, which this orchestration captured${where}`);
+      }
     }
     const { env, host, devices: _devices, ...rest } = options;
     const to = target({ env, host }, s.invocation);
-    const screenshotsDir = resolve(configDir, options.screenshotsDir ?? s.config.screenshotsDir);
-    const dirOf = (device: string): string => join(screenshotsDir, s.run, sequence, device);
     const origin: Origin = {
       configFile: canonical(s.configFile),
       sequencesDir: canonical(checked.sequencesDir),
@@ -355,7 +372,7 @@ export function createRunner(s: Session) {
 
     const captures = checked.deviceOrder.map((d) => result.get(d)!);
     for (const c of captures) {
-      claims.add(keyOf(c.device));
+      claims.set(keyOf(c.device), [dirOf(c.device), resolved(dirOf(c.device))]);
       state.shots += c.shots.length;
       if (c.reused) state.tally.reused = (state.tally.reused ?? 0) + 1;
     }
