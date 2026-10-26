@@ -1,5 +1,5 @@
 import type { PlaywrightTestConfig } from "@playwright/test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -126,6 +126,16 @@ describe("defineConfig with an orchestration request", () => {
     expect(() => defineConfig({ envs }, { outputDir: "." })).toThrow("would let Playwright empty"); // holds the cache, and the screenshots
     request();
     expect(() => defineConfig({ envs }, { outputDir: "shots/run1" })).not.toThrow(); // the screenshots are in screenshots/ here
+  });
+
+  it("throws on an outputDir that reaches the screenshots or the run cache through a symlink", () => {
+    request({ snapseq: { screenshotsDir: "shots" } });
+    mkdirSync(join(dir, "shots"));
+    mkdirSync(join(dir, "node_modules/.cache/snapseq/runs"), { recursive: true });
+    symlinkSync(join(dir, "shots"), join(dir, "linked-shots"));
+    symlinkSync(join(dir, "node_modules/.cache/snapseq/runs"), join(dir, "linked-runs"));
+    expect(() => defineConfig({ envs }, { outputDir: "linked-shots/x" })).toThrow('outputDir "linked-shots/x" overlaps the screenshots folder');
+    expect(() => defineConfig({ envs }, { outputDir: "linked-runs" })).toThrow('outputDir "linked-runs" would let Playwright empty');
   });
 
   it("appends the result reporter last and tells the fixtures and the terminal what the parent asked", () => {

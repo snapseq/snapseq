@@ -419,5 +419,5 @@ generated `webServer`, spread the result instead:
 Playwright empties `outputDir` before each run, and the orchestration's run cache
 lives beside it in `node_modules/.cache/snapseq`. An orchestration run refuses an
 `outputDir` override that holds or sits inside `node_modules/.cache/snapseq/runs` or
-`…/requests`, or overlaps the screenshots folder. A plain run checks nothing, so never
+`…/requests`, or overlaps the screenshots folder, by its path or through a symlink. A plain run checks nothing, so never
 point `outputDir` at the screenshots folder.
