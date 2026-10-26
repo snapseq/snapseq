@@ -14,6 +14,21 @@ import type { ResolvedSnapseqConfig } from "../orchestration/types.js";
 import { checkRun } from "../orchestration/validate.js";
 import { canonical, fileWord, matchSequence, missHints, selectSequences } from "../sequence-id.js";
 
+// node:fs as it is, except that while `fail.write` is set writeFileSync is a full disk: the file is created, the bytes fail.
+const fail = vi.hoisted(() => ({ write: false }));
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return {
+    ...fs,
+    writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
+      if (!fail.write) return fs.writeFileSync(...args);
+      const [target, , options] = args;
+      if (typeof target === "string") fs.closeSync(fs.openSync(target, (options as { flag?: string } | undefined)?.flag ?? "w"));
+      throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    },
+  };
+});
+
 const dirs: string[] = [];
 const tmp = (): string => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "snapseq-orch-")));
@@ -377,6 +392,18 @@ describe("lockRun", () => {
       expect(() => lockRun(file)).toThrow(`snapseq: another snapseq is writing this run; its lock is ${lock}`);
       expect(readFileSync(lock, "utf8")).toBe(text);
     }
+  });
+
+  it("removes the lock it created when writing its pid fails, so the run is not busy forever", () => {
+    const file = join(tmp(), "runs", "r1.json");
+    fail.write = true;
+    try {
+      expect(() => lockRun(file)).toThrow("ENOSPC");
+    } finally {
+      fail.write = false;
+    }
+    expect(readdirSync(dirname(file))).toEqual([]);
+    lockRun(file)();
   });
 });
 
