@@ -82,6 +82,7 @@ describe("checkRun", () => {
     ["an id that leaves the folder", "../a", {}, [], 'a sequence id names a file in snapseq/ without .seq.ts, like "12345-spring-launch"; got "../a"'],
     ["two files for one id", "dup", {}, [], "one sequence, 2 files: snapseq/dup.seq.js, snapseq/dup.seq.ts; keep one"],
     ["an unknown option", "a", { device: ["desktop"] }, [], 'unknown option "device"; options take envs, defaultEnv, devices'],
+    ["a Playwright key among the options", "a", { use: { locale: "de-DE" } }, [], 'unknown option "use"; options take envs, defaultEnv, devices, sequencesDir, screenshotsDir, numbering, format, stabilize, env, host; Playwright overrides go after the options: run(sequence, options, { use: … })'],
     ["an unknown device", "a", { devices: ["desktop", "tablet"] }, [], 'unknown device "tablet" at options.devices[1]; devices: desktop, mobile'],
     ["a device twice", "a", { devices: ["desktop", "desktop"] }, [], 'device "desktop" twice in options.devices, at [1]'],
     ["no devices", "a", { devices: [] }, [], "options.devices is empty; pick at least one device"],

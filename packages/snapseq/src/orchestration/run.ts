@@ -168,7 +168,15 @@ function judge(sequence: string, order: readonly string[], closed: Closed, dirOf
   const accepted = new Map<string, CachedCapture>();
   if (closed.error !== undefined) return { accepted, report: undefined, problem: `${sequence}: could not start the child: ${closed.error}` };
   const report = parseReport(closed);
-  if (!report) return { accepted, report, problem: `${sequence}: child exited before reporting; see the output above` };
+  if (!report) {
+    const exit = closed.signal ? `killed by ${closed.signal}` : `exit ${closed.code}`;
+    const why = closed.oversize
+      ? `child's report is over 8 MiB, so it was not read (${exit})`
+      : closed.report === undefined
+        ? `child exited before reporting (${exit}); see the output above`
+        : `child's report is not a result document (${exit}); see the output above`;
+    return { accepted, report, problem: `${sequence}: ${why}` };
+  }
   const failed: string[] = [];
   const notRun: string[] = [];
   const unused: string[] = [];

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-/** Past this the result document is cut short, so it does not parse: it carries paths, never bytes. */
+/** Past this the result document is not read: it carries paths, never bytes. run.ts names it in its message. */
 const MAX_REPORT = 8 * 1024 * 1024;
 
 // Playwright closes its browsers, runs teardown and reports on SIGINT; give it that long before insisting.
@@ -10,8 +10,10 @@ const TERMINATE_WAIT = 5_000;
 export interface Closed {
   code: number | null;
   signal: NodeJS.Signals | null;
-  /** What arrived on fd 3 for the result reporter's document, up to the size limit. */
+  /** What arrived on fd 3 for the result reporter's document; none when it went over the size limit. */
   report?: string;
+  /** More than the size limit arrived: not read, even if what came first parses. */
+  oversize?: true;
   /** Why the child could not be started. */
   error?: string;
 }
@@ -42,7 +44,9 @@ export function spawnChild(argv: readonly string[], env: NodeJS.ProcessEnv): Chi
   const closed = new Promise<Closed>((done) => {
     // Only a failed start settles it here; a later error (a kill that fails) leaves it to the close.
     child.on("error", (err) => spawned || done({ code: null, signal: null, error: err.message }));
-    child.on("close", (code, signal) => done({ code, signal, ...(size > 0 ? { report: Buffer.concat(chunks).toString("utf8") } : {}) }));
+    child.on("close", (code, signal) =>
+      done({ code, signal, ...(size > MAX_REPORT ? { oversize: true } : size > 0 ? { report: Buffer.concat(chunks).toString("utf8") } : {}) }),
+    );
   });
   const within = (ms: number): Promise<boolean> =>
     new Promise((done) => {

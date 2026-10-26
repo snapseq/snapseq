@@ -2,7 +2,8 @@
 // was given to calls.jsonl beside the config, does what scenario.json there says for this sequence, writes the
 // result document to fd 3, as the result reporter does, and exits.
 //
-// scenario.json: { "<sequence>": { exit, report: "none" | "garbage", status, errors, tests,
+// scenario.json: { "<sequence>": { exit, kill: "<signal>", report: "none" | "garbage" | "huge" (the document, then 9 MiB of
+//   spaces), status, errors, tests,
 //   devices: { "<device>": { status, skipReason, error, capture: false | "wrong-dir" | "missing-file" } },
 //   hang: true (wait for a signal), ignoreInt: true } }
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
@@ -59,5 +60,7 @@ if (s.hang) {
   const doc = JSON.stringify({ status: s.status ?? (bad ? "failed" : "passed"), errors: s.errors ?? [], tests });
   if (s.report === "garbage") writeSync(3, "{not json");
   else if (s.report !== "none") writeSync(3, doc);
+  if (s.report === "huge") for (let i = 0; i < 9; i++) writeSync(3, " ".repeat(1024 * 1024));
+  if (s.kill) process.kill(process.pid, s.kill);
   process.exit(s.exit ?? (bad ? 1 : 0));
 }
