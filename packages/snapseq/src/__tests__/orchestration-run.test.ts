@@ -895,11 +895,34 @@ describe("the command line", () => {
     ["words after a `--`", ["--", "cll", "cll/"]],
     ["-o after a `--`", ["--", "-o"]],
     ["-o anywhere but first", ["--grep", "-o", "--list", "--pass-with-no-tests"]],
+    ["an orchestration's name after a `--`", ["--", "x.orchestration.ts"]],
+    ["an orchestration's name as a grep", ["-g", "x.orchestration.ts"]],
+    ["an orchestration's name as a grep in combined flags", ["-xg", "x.orchestration.ts"]],
+    ["an orchestration's name as a project", ["--project", "desktop", "x.orchestration.ts"]],
+    ["an orchestration's name as an optional value", ["--only-changed", "x.orchestration.ts"]],
+    ["--debug as another flag's value", ["--grep", "--debug", "--grep-invert", "x.orchestration.ts"]],
   ])("sends %s to Playwright as given", async (_, args) => {
     const dir = plainPlaywright(project());
     const { status, out } = await bin(dir, args).closed;
     expect(status, out).toBe(0);
     expect(given(dir)).toEqual([["test", "-c", "snapseq.config.ts", ...args]]);
+  });
+
+  it("starts an orchestration after a bare --debug, which an orchestration takes without a value", async () => {
+    const dir = plainPlaywright(project());
+    const { status, out } = await bin(dir, ["--debug", "missing.orchestration.ts"]).closed;
+    expect(status).toBe(1);
+    expect(out).toContain("missing.orchestration.ts");
+    expect(given(dir)).toEqual([]); // not a plain run: Playwright never started
+  });
+
+  it("keeps a plain run whose --run or --host value ends like an orchestration file", async () => {
+    const dir = plainPlaywright(project());
+    for (const args of [["--run", "review.orchestration.ts"], ["--host", "https://example.test/demo.orchestration.ts"]]) {
+      const { status, out } = await bin(dir, args).closed;
+      expect(status, out).toBe(0);
+    }
+    expect(given(dir)).toEqual([["test", "-c", "snapseq.config.ts"], ["test", "-c", "snapseq.config.ts"]]);
   });
 
   describe("with sequence words", () => {

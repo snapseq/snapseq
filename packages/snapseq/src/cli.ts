@@ -61,8 +61,8 @@ const FLAG_VALUES = new Map<string, "one" | "optional" | "many">([
   ["--project", "many"] as const,
 ]);
 
-/** Where the filter words are in `tokens`: not flags, not the values of flags that take them. */
-function wordsAt(tokens: readonly string[]): number[] {
+/** Where the filter words are in `tokens`: not flags, not the values of flags that take them; `bare` flags take none. */
+function wordsAt(tokens: readonly string[], bare: ReadonlySet<string> = new Set()): number[] {
   const at: number[] = [];
   const free = (i: number): boolean => tokens[i] !== undefined && !tokens[i]!.startsWith("-");
   for (let i = 0; i < tokens.length; i++) {
@@ -71,7 +71,7 @@ function wordsAt(tokens: readonly string[]): number[] {
       at.push(i);
       continue;
     }
-    let kind = FLAG_VALUES.get(token);
+    let kind = bare.has(token) ? undefined : FLAG_VALUES.get(token);
     if (token[1] !== "-") {
       // `-xj 2`, `-j2`: as commander reads a single-dash token, the first letter that takes a value takes the rest of the token, else the next one.
       const letters = [...token.slice(1)];
@@ -174,10 +174,23 @@ function playwrightCli(config: string): string {
   }
 }
 
+/**
+ * Whether `argv` starts an orchestration: `-o` first, or an orchestration file among the words before a `--`. Not a
+ * value: snapseq's own flags have taken theirs (`--run x.orchestration.ts`), and Playwright's take theirs as in a plain
+ * run (`-g`, `--project`), except `--debug`, which an orchestration reads bare.
+ */
+function orchestrating(argv: readonly string[]): boolean {
+  if (splitName(argv).name !== undefined) return true;
+  const { rest } = parseFlags(argv);
+  const end = rest.indexOf("--");
+  const tokens = end === -1 ? rest : rest.slice(0, end);
+  return wordsAt(tokens, new Set(["--debug"])).some((i) => ORCHESTRATION_FILE.test(tokens[i]!));
+}
+
 const argv = process.argv.slice(2);
 if (argv.includes("--help") || argv.includes("-h")) {
   process.stdout.write(USAGE);
-} else if (splitName(argv).name !== undefined || argv.some((arg) => !arg.startsWith("-") && ORCHESTRATION_FILE.test(arg))) {
+} else if (orchestrating(argv)) {
   try {
     const code = await main(argv, { findConfig, playwrightCli });
     process.stdout.write("", () => process.exit(code));
