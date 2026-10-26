@@ -71,9 +71,18 @@ const fireScroll = () => document.dispatchEvent(new Event("scroll", { bubbles: t
 
 // Web Animations: a finite one is finished, an infinite one (or one that cannot
 // finish) is cancelled. A finish handler can start another, so go round again.
+// In the document and every open shadow root: document.getAnimations() leaves
+// those out, and the screenshot would finish them after snapPage measured.
 const stopMotion = async () => {
+  // Found again each round: a finish handler can attach a shadow root too.
+  const roots = () => {
+    const found: Array<Document | ShadowRoot> = [document];
+    for (const root of found) for (const el of Array.from(root.querySelectorAll("*"))) if (el.shadowRoot) found.push(el.shadowRoot);
+    return found;
+  };
+  const animations = () => roots().flatMap((root) => root.getAnimations());
   for (let round = 0; round < 5; round++) {
-    for (const animation of document.getAnimations()) {
+    for (const animation of animations()) {
       try {
         if (Number.isFinite(animation.effect?.getComputedTiming().endTime) && animation.playbackRate !== 0) animation.finish();
         else animation.cancel();
@@ -82,13 +91,15 @@ const stopMotion = async () => {
       }
     }
     await new Promise<void>((done) => requestAnimationFrame(() => done()));
-    if (document.getAnimations().every((animation) => animation.playState === "finished")) break;
+    if (animations().every((animation) => animation.playState === "finished")) break;
   }
-  for (const svg of Array.from(document.querySelectorAll("svg"))) {
-    if (!(svg instanceof SVGSVGElement)) continue; // an HTML element named svg has no animations to pause
-    svg.pauseAnimations(); // where it is, like a video: a draw-in that finished stays drawn
+  for (const root of roots()) {
+    for (const svg of Array.from(root.querySelectorAll("svg"))) {
+      if (!(svg instanceof SVGSVGElement)) continue; // an HTML element named svg has no animations to pause
+      svg.pauseAnimations(); // where it is, like a video: a draw-in that finished stays drawn
+    }
+    for (const video of Array.from(root.querySelectorAll("video"))) video.pause();
   }
-  for (const video of Array.from(document.querySelectorAll("video"))) video.pause();
 };
 
 // The links to fetch again, as hrefs without the fragment, which no request URL has: an unreadable,
@@ -184,7 +195,8 @@ const freezeUnits = async () => {
   state.observer?.takeRecords(); // the probe's own mutations; the run below covers everything present
 
   // Quoted strings and url(...) are left alone: split() keeps them at the odd indexes.
-  const protectedText = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|url\([^)]*\))/i;
+  // A quoted url("…") is left to the quote rules: its text may hold a ")".
+  const protectedText = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|url\((?!\s*["'])[^)]*\))/i;
   const viewportUnit = /(?<![\w-])(-?\d*\.?\d+(?:e[+-]?\d+)?)(s|l|d)?v(h|min|max|b)\b/gi;
   const convert = (value: string) =>
     value
@@ -520,11 +532,17 @@ export function stabilize(
             // A redirect is not followed (the body would be served at the old URL, where a relative url() in it
             // resolves wrongly, and the fetch would leave the URL that was routed); it is no 2xx, so it falls back.
             const response = await route.fetch({ maxRedirects: 0, headers: { ...request.headers(), cookie: "" } }).catch(() => undefined);
-            // Not a stylesheet, or no answer: the browser makes its own CORS request, which fails without the header
-            // and leaves the original sheet in place; freezeUnits notes it.
-            if (!response?.ok() || !response.headers()["content-type"]?.toLowerCase().startsWith("text/css")) return route.fallback();
-            served.add(request.url());
-            return route.fulfill({ response, headers: { ...response.headers(), "access-control-allow-origin": "*" } }).catch(() => {});
+            if (!response) return route.fallback();
+            // Its body stays in this process until disposed or the context closes: once served or let go, it goes.
+            try {
+              // Not a stylesheet, or no answer: the browser makes its own CORS request, which fails without the header
+              // and leaves the original sheet in place; freezeUnits notes it.
+              if (!response.ok() || !response.headers()["content-type"]?.toLowerCase().startsWith("text/css")) return await route.fallback();
+              served.add(request.url());
+              await route.fulfill({ response, headers: { ...response.headers(), "access-control-allow-origin": "*" } }).catch(() => {});
+            } finally {
+              await response.dispose().catch(() => {});
+            }
           };
           await page.route(match, serve);
           let timer: ReturnType<typeof setTimeout> | undefined;
