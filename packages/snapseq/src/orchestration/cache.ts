@@ -1,7 +1,7 @@
 // The run cache (node_modules/.cache/snapseq/runs/<run>.json) and its lock: what lets a filtered run reuse
 // the parts it does not reshoot. Outside Playwright's outputDir, which Playwright empties before each run.
 import { randomUUID } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Capture } from "./types.js";
 
@@ -67,7 +67,18 @@ export function lockRun(cacheFile: string): () => void {
     new Error(`snapseq: another snapseq${Number.isInteger(pid) ? ` (pid ${pid})` : ""} is writing this run; its lock is ${lock}`);
   for (let attempt = 0; ; attempt++) {
     try {
-      writeFileSync(lock, String(process.pid), { flag: "wx" });
+      const fd = openSync(lock, "wx");
+      try {
+        writeFileSync(fd, String(process.pid));
+      } catch (err) {
+        // Ours and empty (a disk full, say): left, it would read as busy forever. Nobody takes over an empty lock.
+        try {
+          closeSync(fd);
+        } catch {}
+        rmSync(lock, { force: true });
+        throw err;
+      }
+      closeSync(fd);
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
