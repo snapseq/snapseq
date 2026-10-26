@@ -99,7 +99,8 @@ screenshots/
 
 Within a run, a sequence's `<sequence>/<device>` directory is wiped when that
 sequence starts. So the run name and the device names must be directory names,
-not paths, and a directory outside the screenshots dir is never wiped. A
+not paths, and a directory outside the screenshots dir is never wiped, a symlink inside it
+leading there included. A
 sequence whose directory another sequence file writes into is refused instead;
 see [Troubleshooting](troubleshooting.md).
 

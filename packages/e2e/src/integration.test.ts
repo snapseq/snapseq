@@ -232,7 +232,16 @@ sequence(async ({ page, seq }) => {
     expect(existsSync(sentinel)).toBe(true);
   });
 
-  it("refuses to wipe a sequence's directory that another sequence writes into, and deletes nothing", async () => {
+  // A file system that ignores case (macOS, Windows) makes home/D1 the same folder as home/d1.
+  const caseless = (() => {
+    const probe = mkdtempSync(join(tmpdir(), "snapseq-case-"));
+    try {
+      return existsSync(probe.toUpperCase()) && existsSync(probe.toLowerCase());
+    } finally {
+      rmSync(probe, { recursive: true, force: true });
+    }
+  })();
+  async function refusesWipe(other: string) {
     const p = makeProject({
       esm: true,
       config: `
@@ -244,19 +253,48 @@ export default defineConfig({
 });
 `,
       // home/d1.seq.ts writes home/d1/<device>/, inside what home.seq.ts on d1 wipes.
-      sequences: { "home.seq.ts": sequenceB, "home/d1.seq.ts": sequenceB },
+      sequences: { "home.seq.ts": sequenceB, [`${other}.seq.ts`]: sequenceB },
     });
     dirs.push(p);
-    const theirs = join(p, "out", "run1", "home", "d1", "d2", "01.png");
+    const theirs = join(p, "out", "run1", ...other.split("/"), "d2", "01.png");
     const mine = join(p, "out", "run1", "home", "d1", "01.png");
     mkdirSync(dirname(theirs), { recursive: true });
     writeFileSync(theirs, "keep");
     writeFileSync(mine, "stale");
     const r = await playwright(p, ["home\\.seq", "--project", "d1"]);
     expect(r.status).not.toBe(0);
-    expect(r.out).toContain(`refusing to wipe ${join("run1", "home", "d1")}: home/d1 writes inside it; rename one of the sequences`);
+    expect(r.out).toContain(`refusing to wipe ${join("run1", "home", "d1")}: ${other} writes inside it; rename one of the sequences`);
     expect(readFileSync(theirs, "utf8")).toBe("keep");
     expect(readFileSync(mine, "utf8")).toBe("stale");
+  }
+  it("refuses to wipe a sequence's directory that another sequence writes into, and deletes nothing", () => refusesWipe("home/d1"));
+  it.skipIf(!caseless)("refuses the same where the other sequence's name differs only in case, on a file system that ignores case", () =>
+    refusesWipe("home/D1"),
+  );
+
+  // home/d2 a link to home/d1, where home/d1.seq.ts writes: the wipe of home/d2 only unlinks it.
+  it("shoots into a device folder that is a link to another sequence's folder, and leaves that one alone", async () => {
+    const p = makeProject({
+      esm: true,
+      config: `
+import { defineConfig } from "snapseq";
+export default defineConfig({
+  envs: { dev: { host: "${server.url}" } },
+  devices: { d1: { viewport: { width: 400, height: 300 } }, d2: { viewport: { width: 500, height: 300 } } },
+  screenshotsDir: "out",
+});
+`,
+      sequences: { "home.seq.ts": sequenceB, "home/d1.seq.ts": sequenceB },
+    });
+    dirs.push(p);
+    const theirs = join(p, "out", "run1", "home", "d1", "d1", "01.png");
+    mkdirSync(dirname(theirs), { recursive: true });
+    writeFileSync(theirs, "keep");
+    symlinkSync(join(p, "out", "run1", "home", "d1"), join(p, "out", "run1", "home", "d2"));
+    const r = await playwright(p, ["home\\.seq", "--project", "d2"]);
+    expect(r.status, r.out).toBe(0);
+    expect(readFileSync(theirs, "utf8")).toBe("keep");
+    expect(pngSize(join(p, "out", "run1", "home", "d2", "01.png"))[0]).toBeGreaterThan(0);
   });
 });
 
