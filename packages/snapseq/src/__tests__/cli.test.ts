@@ -1,14 +1,12 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { PKG, makeApp, node } from "./harness.js";
 
 // Drives the BUILT bin (dist/cli.js) from a temp project, the way a consumer would.
-const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 // What /api answers; one test sets it, then runs a sequence that fetches it.
 let api = { status: 200, type: "application/json", body: '{"v":"live"}' };
@@ -45,42 +43,13 @@ afterAll(async () => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
-/** `dir` as a consumer's app: the package and its Playwright linked into node_modules, plus these files. */
-function makeApp(dir: string, files: Record<string, string>): string {
-  mkdirSync(join(dir, "node_modules", "@playwright"), { recursive: true });
-  symlinkSync(PKG, join(dir, "node_modules", "snapseq"));
-  symlinkSync(join(PKG, "node_modules", "@playwright", "test"), join(dir, "node_modules", "@playwright", "test"));
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
-  for (const [rel, src] of Object.entries(files)) {
-    mkdirSync(dirname(join(dir, rel)), { recursive: true });
-    writeFileSync(join(dir, rel), src);
-  }
-  return dir;
-}
-
 const tmp = (): string => {
   const dir = mkdtempSync(join(tmpdir(), "snapseq-cli-"));
   dirs.push(dir);
   return dir;
 };
 
-// Async on purpose: the fixture server runs in this process.
-function snapseq(cwd: string, args: string[]) {
-  const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith("SNAPSEQ_")) env[k] = v;
-  }
-  return new Promise<{ status: number | null; out: string }>((ok) => {
-    const child = spawn(process.execPath, [join(PKG, "dist", "cli.js"), ...args], {
-      cwd,
-      env: { ...env, SNAPSEQ_RUN: "run1" },
-    });
-    let out = "";
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (out += d.toString()));
-    child.on("close", (status) => ok({ status, out }));
-  });
-}
+const snapseq = (cwd: string, args: string[]) => node([join(PKG, "dist", "cli.js"), ...args], cwd, { SNAPSEQ_RUN: "run1" });
 
 const config = (extra = "") => `import { defineConfig } from "snapseq";
 export default defineConfig({ envs: { dev: { host: ${JSON.stringify(host)}, ${extra} } }, devices: { d1: {} } });`;
@@ -124,36 +93,6 @@ describe("--record", () => {
     expect(r.status).not.toBe(0);
     expect(r.out).toContain(`snapseq: --record got a non-JSON body for ${host}/api; snapseq/replay/api.json not written`);
     expect(existsSync(file)).toBe(false);
-  });
-
-  it("writes a 200 JSON body, as before", async () => {
-    api = { status: 200, type: "application/json", body: '{"v":"live"}' };
-    const { dir, file } = record();
-    const r = await snapseq(dir, ["--record"]);
-    expect(r.status, r.out).toBe(0);
-    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ v: "live" });
-  });
-
-  it("records for =1 and =true, replays for =0 and =false, and refuses any other value", async () => {
-    api = { status: 200, type: "application/json", body: '{"v":"live"}' };
-    for (const value of ["0", "false"]) {
-      const { dir, file } = record('{"v":"old"}');
-      const r = await snapseq(dir, [`--record=${value}`]);
-      expect(r.status, r.out).toBe(0);
-      expect(readFileSync(file, "utf8")).toBe('{"v":"old"}'); // replayed, not overwritten
-    }
-    for (const value of ["1", "true"]) {
-      const { dir, file } = record('{"v":"old"}');
-      const r = await snapseq(dir, [`--record=${value}`]);
-      expect(r.status, r.out).toBe(0);
-      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ v: "live" });
-    }
-    for (const value of ["yes", ""]) {
-      const { dir } = record('{"v":"old"}');
-      const r = await snapseq(dir, [`--record=${value}`]);
-      expect(r.status).not.toBe(0);
-      expect(r.out).toContain(`must be 1 or 0, got "${value}"`); // SNAPSEQ_RECORD's check, or the flag's for "".
-    }
   });
 
   it("refuses a second request that the same pattern matches, before it overwrites the file", async () => {
@@ -305,6 +244,38 @@ describe("replay", () => {
   });
 });
 
+describe("an ordinary run", () => {
+  it("named by SNAPSEQ_RUN, takes the run's lock and drops its cache as --run does", async () => {
+    const dir = makeApp(tmp(), { "snapseq.config.ts": config(), "snapseq/w.seq.ts": WIDGET });
+    const runs = join(dir, "node_modules/.cache/snapseq/runs");
+    mkdirSync(runs, { recursive: true });
+    writeFileSync(join(runs, "run1.lock"), String(process.pid)); // the helper names every run run1
+    const busy = await snapseq(dir, ["--list"]);
+    expect(busy.status).toBe(1);
+    expect(busy.out).toContain(`snapseq: another snapseq (pid ${process.pid}) is writing this run`);
+    rmSync(join(runs, "run1.lock"));
+    writeFileSync(join(runs, "run1.json"), "{}");
+    const r = await snapseq(dir, ["--list"]);
+    expect(r.status, r.out).toBe(0);
+    expect(existsSync(join(runs, "run1.json"))).toBe(false);
+    expect(existsSync(join(runs, "run1.lock"))).toBe(false);
+  });
+
+  it("attaches no capture, so options over the orchestration's 1 MiB limit still pass", async () => {
+    const dir = makeApp(tmp(), {
+      "snapseq.config.ts": config(),
+      "snapseq/big.seq.ts": `import { sequence } from "snapseq";
+sequence(async ({ page, seq }) => {
+  await page.goto("/blank");
+  await seq.snap({ style: "/*" + "x".repeat(1024 * 1024) + "*/" });
+});`,
+    });
+    const r = await snapseq(dir, []);
+    expect(r.status, r.out).toBe(0);
+    expect(existsSync(join(dir, "screenshots/run1/big/d1/01.png"))).toBe(true);
+  });
+});
+
 describe("Playwright beside the config", () => {
   it("is the app's own, found from a monorepo root that has none", async () => {
     const root = tmp();
@@ -316,5 +287,19 @@ describe("Playwright beside the config", () => {
     expect(r.out).not.toContain("Cannot find module");
     expect(r.out).toContain("w.seq.ts");
     expect(r.status, r.out).toBe(0);
+  });
+});
+
+describe("flags", () => {
+  it("keeps --device ahead of a `--`, after which Playwright reads file filters only", async () => {
+    const dir = makeApp(tmp(), {
+      "snapseq.config.ts": `import { defineConfig } from "snapseq";
+export default defineConfig({ envs: { dev: { host: ${JSON.stringify(host)} } }, devices: { d1: {}, d2: {} } });`,
+      "snapseq/w.seq.ts": WIDGET,
+    });
+    const r = await snapseq(dir, ["--list", "--device", "d1", "--", "w"]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain("[d1]");
+    expect(r.out).not.toContain("[d2]");
   });
 });

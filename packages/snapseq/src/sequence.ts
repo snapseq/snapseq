@@ -1,20 +1,77 @@
 import { mkdirSync, rmSync } from "node:fs";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import type { Page, PageScreenshotOptions } from "@playwright/test";
-import type { SequenceContext } from "./fixtures.js";
-import type { Plugin, Shot } from "./plugin.js";
+import { canonical, within } from "./sequence-id.js";
+import type { Stabilizer } from "./stabilize.js";
 
 /**
  * Playwright's screenshot options minus what the sequence owns: the numbered
  * path, and the type and quality from the config's `format`. An interface, so
- * a plugin can add its own keys: `declare module "snapseq" { interface SnapOptions { label?: string } }`.
+ * a step can add its own keys: `declare module "snapseq" { interface SnapOptions { label?: string } }`.
  * Playwright ignores the keys it does not know, so they reach the screenshot harmlessly.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface SnapOptions extends Omit<PageScreenshotOptions, "path" | "type" | "quality"> {}
+export interface SnapOptions extends Omit<PageScreenshotOptions, "path" | "type" | "quality"> {
+  /** `"keep"`: leave the pointer where the sequence put it for this shot, when `stabilize` would move it off the page. */
+  hover?: "keep";
+}
 
 /** Playwright's screenshot type and quality, as the config's `format`; Playwright validates them at the first shot. */
 export type ShotFormat = Pick<PageScreenshotOptions, "type" | "quality">;
+
+/**
+ * One screenshot of the sequence: not yet taken when stabilize's `beforeSnap` gets it, listed in `shots`
+ * once written. The sequence sets `name`, `path` and `index`; stabilize adds to `options` and `notes`.
+ */
+export interface Shot {
+  /** File name, e.g. `01.png`. */
+  name: string;
+  /** Absolute path of the file. */
+  path: string;
+  /** The page URL at screenshot time. */
+  url: string;
+  /** Position in the sequence, from 1. */
+  index: number;
+  /** What the sequence passed to `snap` or `snapPage`, as the screenshot takes it: `stabilize` may set `animations`. */
+  options: SnapOptions;
+  /** What the sequence passed to `snap` or `snapPage`, as JSON when the shot opened (`mask` left out): what the capture records. */
+  given: SnapOptions;
+  /**
+   * The shot's notes, printed with it in the terminal: what `beforeSnap` pushed, then the readiness caps
+   * that ran out, e.g. `2 images still loading after 5 s (first: …)`. Each is cleaned (control, format and line-separator
+   * characters to spaces, trimmed, at most 200 characters) and listed once.
+   */
+  notes: string[];
+  /** Once taken, the file's pixels per CSS pixel: e.g. `2` on a 2x phone, `1` for a shot with `scale: "css"`. */
+  deviceScaleFactor: number;
+}
+
+export const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v) && [Object.prototype, null].includes(Object.getPrototypeOf(v));
+
+const DROP = Symbol("drop");
+
+// Strings, finite numbers, booleans, null, and plain objects and arrays of those, copied; anything else (a Locator, a
+// function, undefined, NaN, a Date, a RegExp, a bigint, a reference back to an object it is inside) left out, without
+// calling its toJSON.
+const json = (value: unknown, ancestors: readonly object[] = []): unknown => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : DROP;
+  if (typeof value !== "object" || ancestors.includes(value)) return DROP;
+  const inside = [...ancestors, value];
+  if (Array.isArray(value)) return value.map((item) => json(item, inside)).filter((item) => item !== DROP);
+  if (!isPlainObject(value)) return DROP;
+  const entries = Object.entries(value).map(([key, item]) => [key, json(item, inside)] as const);
+  return Object.fromEntries(entries.filter(([, item]) => item !== DROP));
+};
+
+/**
+ * `Shot.given`: what the sequence passed to `snap` or `snapPage`, as JSON, taken when the shot opens: a deep copy, so
+ * neither stabilize nor a later change to the caller's object reaches it. `mask` is left out: its locators are the page's.
+ */
+export function givenOptions(options: SnapOptions | undefined): SnapOptions {
+  const { mask: _mask, ...rest } = options ?? {};
+  return json(rest) as SnapOptions;
+}
 
 export interface Sequence {
   /**
@@ -30,15 +87,14 @@ export interface Sequence {
    * document height, so sticky and fixed elements rest in flow and anything
    * that reacts to its slot coming into view (a tray that lands) gets to; the
    * page gets ready; one shot; the viewport and the scroll position are
-   * restored. A layout that follows the viewport height (`vh` units, a loader
-   * at the page end) grows with every resize and is refused: use
+   * restored. `stabilize`, on by default, freezes `vh` units first. A layout
+   * that still follows the viewport height (`vh` units it did not freeze, a
+   * loader at the page end) grows with every resize and is refused: use
    * `snap({ fullPage: true })` for those.
    */
   snapPage(options?: Omit<SnapOptions, "fullPage">): Promise<string>;
   /** Directory the screenshots are written to. */
   readonly dir: string;
-  /** Every shot listed so far, in order: each one's plugin `afterSnap` hooks passed. */
-  readonly shots: readonly Shot[];
 }
 
 const documentHeight = (page: Page): Promise<number> =>
@@ -63,14 +119,8 @@ const contentBottom = (page: Page): Promise<number> =>
     return Math.min(document.documentElement.scrollHeight, Math.ceil(bottom));
   });
 
-// checkVisibility() options under both names, Chromium's and the spec's (a browser ignores the ones it does not
-// know). VISIBLE: visibility: hidden is not. SHOWN: nor is opacity: 0, which also hides an image that fades in
-// once loaded (lazysizes, an onLoad class), so it only decides what counts as broken or as the page's scroller.
-const VISIBLE = { checkVisibilityCSS: true, visibilityProperty: true };
-const SHOWN = { ...VISIBLE, checkOpacity: true, opacityProperty: true };
-
-// ponytail: quiet-DOM heuristic (no mutation for 200 ms, 3 s cap), then two
-// frames so the result is painted. Every shot waits for it, so JS-driven motion
+// ponytail: quiet-DOM heuristic (no mutation for 200 ms, maxMs cap: 3 s for a shot, stabilize's own waits take 2 s),
+// then two frames so the result is painted. Every shot waits for it, so JS-driven motion
 // that touches the DOM each frame (a carousel spring, a chart growing) ends
 // before the shot. It sees nothing but DOM mutations in this document: a state
 // that lands slower, or arrives over video, canvas or an iframe, needs an
@@ -78,7 +128,7 @@ const SHOWN = { ...VISIBLE, checkOpacity: true, opacityProperty: true };
 // the cap released it, the element with the most mutation records, so the note
 // can name it ("" if none was counted). A text node counts for its parent; the
 // Map is capped, as a page that never quiets can add elements without end.
-async function settle(page: Page): Promise<true | string> {
+export async function settle(page: Page, maxMs = 3000): Promise<true | string> {
   return page.evaluate(
     ({ quietMs, maxMs }) =>
       new Promise<true | string>((resolve) => {
@@ -89,15 +139,13 @@ async function settle(page: Page): Promise<true | string> {
             if (el && (counts.has(el) || counts.size < 500)) counts.set(el, (counts.get(el) ?? 0) + 1);
           }
           window.clearTimeout(timer);
-          timer = window.setTimeout(() => {
-            observer.disconnect();
-            resolve(true);
-          }, quietMs);
+          timer = window.setTimeout(quiet, quietMs);
         });
-        let timer = window.setTimeout(() => {
+        const quiet = () => {
           observer.disconnect();
           resolve(true);
-        }, quietMs);
+        };
+        let timer = window.setTimeout(quiet, quietMs);
         window.setTimeout(() => {
           observer.disconnect();
           let most: Element | undefined;
@@ -116,7 +164,7 @@ async function settle(page: Page): Promise<true | string> {
             requestAnimationFrame(() => requestAnimationFrame(() => resolve(quiet))),
           ),
       ),
-    { quietMs: 200, maxMs: 3000 },
+    { quietMs: 200, maxMs },
   );
 }
 
@@ -140,7 +188,8 @@ async function loadFonts(page: Page): Promise<boolean> {
 
 // The <img> elements the shot shows: with `all` (a full page) every one, lazy
 // ones made eager so they start at all (a native full page never scrolls them
-// into view); otherwise the shown ones in the viewport, or in the clip
+// into view); otherwise the visible ones (`visibility: hidden` is not, `opacity: 0`
+// is: an image that fades in once loaded has it until then) in the viewport, or in the clip
 // (Playwright takes it in viewport coordinates for a viewport shot), and above
 // it, so images below the fold do not hold a viewport shot to the cap, nor ones
 // an ancestor's overflow box cuts out (below a panel's visible scroll area). They get
@@ -157,7 +206,7 @@ async function loadImages(
   all: boolean,
   clip: SnapOptions["clip"],
 ): Promise<{ pending: number; first: string; failed: number; firstFailed: string }> {
-  return page.evaluate(async ({ all, clip, visible, shown, maxMs }) => {
+  return page.evaluate(async ({ all, clip, maxMs }) => {
     const deadline = performance.now() + maxMs;
     const remaining = () => Math.max(0, deadline - performance.now());
     let timer = 0;
@@ -195,7 +244,7 @@ async function loadImages(
       Array.from(document.images).filter((img) => {
         if (all) return true;
         const r = img.getBoundingClientRect();
-        return img.checkVisibility(visible) && r.right >= left && r.left <= right && r.top <= bottom && !cut(img, r);
+        return img.checkVisibility({ visibilityProperty: true }) && r.right >= left && r.left <= right && r.top <= bottom && !cut(img, r);
       });
     // One load and one error listener per image seen pending, each waking the pass in progress, all removed at
     // the end: a listener per image per pass would pile up on a page whose images settle one by one. Kept until
@@ -223,54 +272,75 @@ async function loadImages(
     off.abort();
     await Promise.race([Promise.all(selected().map((img) => img.decode().catch(() => undefined))), capped]);
     window.clearTimeout(timer);
-    const src = (img: HTMLImageElement | undefined) => (img ? img.currentSrc || img.src : "");
-    // Rendered ones only: a display: none tracking pixel that answers 204 is no broken image.
+    // The URL as the page has it, scrubbed in Node by the note; a data: URL's bytes never leave the page.
+    const src = (img: HTMLImageElement | undefined) => {
+      const u = img ? img.currentSrc || img.src : "";
+      // Capped, so a data: URL in a query parameter does not cross whole: a real loader URL is far shorter, and the
+      // note keeps 80 characters plus one parameter anyway.
+      return u.startsWith("data:") ? "data:" : u.slice(0, 4096);
+    };
+    // Rendered ones only: a display: none tracking pixel that answers 204 is no broken image, nor is an opacity: 0 one.
+    // opacity: 0 also hides an image that fades in once loaded (lazysizes, an onLoad class), so it only decides what
+    // counts as broken or as the page's scroller.
     const failed = selected().filter(
-      (img) => img.complete && img.naturalWidth === 0 && src(img) !== "" && img.checkVisibility(shown),
+      (img) =>
+        img.complete && img.naturalWidth === 0 && src(img) !== "" && img.checkVisibility({ visibilityProperty: true, opacityProperty: true }),
     );
-    // The note names the image, not its credentials, its signed query or its bytes.
-    // ponytail: the one query parameter kept is the first named url, src or image that holds an http(s) URL (the image
-    // an optimizer such as Next.js's /_next/image?url=… wraps), else every note on such a site reads the same. A
-    // heuristic on the names; a loader with another one (?file=) is still dropped.
-    const wrapped = (base: URL, raw: string | null) => {
-      let value = (raw ?? "").trim();
-      // searchParams decoded it once; twice more, so credentials do not hide behind %2540 or a leading space.
-      for (let i = 0; i < 2; i++) {
-        try {
-          const decoded = decodeURIComponent(value).trim();
-          if (decoded === value) break;
-          value = decoded;
-        } catch {
-          break;
-        }
-      }
-      if (value === "") return "";
-      try {
-        // Resolved against the image's own URL, where the loader would look; an unparsable value is dropped.
-        const inner = new URL(value, base);
-        if (inner.protocol !== "http:" && inner.protocol !== "https:") return ""; // data: in any case, javascript:, blob:
-        [inner.username, inner.password, inner.search, inner.hash] = ["", "", "", ""];
-        return /^\/(?![/\\])/.test(value) ? inner.pathname : inner.href; // a path stays a path
-      } catch {
-        return "";
-      }
-    };
-    const short = (url: string) => {
-      if (url.startsWith("data:")) return "a data: URL";
-      try {
-        const parsed = new URL(url);
-        const kept = ["url", "src", "image"]
-          .map((key) => ({ key, value: wrapped(parsed, parsed.searchParams.get(key)) }))
-          .find(({ value }) => value !== "");
-        [parsed.username, parsed.password, parsed.search, parsed.hash] = ["", "", "", ""];
-        return parsed.href.slice(0, 80) + (kept ? `?${kept.key}=${kept.value.slice(0, 60)}` : "");
-      } catch {
-        return url.slice(0, 80);
-      }
-    };
-    return { pending: pending.length, first: short(src(pending[0])), failed: failed.length, firstFailed: short(src(failed[0])) };
-  }, { all, clip, visible: VISIBLE, shown: SHOWN, maxMs: 5000 });
+    return { pending: pending.length, first: src(pending[0]), failed: failed.length, firstFailed: src(failed[0]) };
+  }, { all, clip, maxMs: 5000 });
 }
+
+/** A URL as a shot's notes name it (printed, and carried in the capture): no credentials, query string or fragment (a signed CDN URL), at most 80 characters. */
+export const scrubUrl = (href: string): string => {
+  try {
+    const url = new URL(href);
+    [url.username, url.password, url.search, url.hash] = ["", "", "", ""];
+    return url.href.slice(0, 80);
+  } catch {
+    return href.slice(0, 80);
+  }
+};
+
+// ponytail: the one query parameter an image note keeps is the first named url, src or image that holds an http(s) URL
+// (the image an optimizer such as Next.js's /_next/image?url=… wraps), else every note on such a site reads the same. A
+// heuristic on the names; a loader with another one (?file=) is still dropped.
+const wrapped = (base: URL, raw: string | null) => {
+  let value = (raw ?? "").trim();
+  // searchParams decoded it once; twice more, so credentials do not hide behind %2540 or a leading space.
+  for (let i = 0; i < 2; i++) {
+    try {
+      const decoded = decodeURIComponent(value).trim();
+      if (decoded === value) break;
+      value = decoded;
+    } catch {
+      break;
+    }
+  }
+  if (value === "") return "";
+  try {
+    // Resolved against the image's own URL, where the loader would look; an unparsable value is dropped.
+    const inner = new URL(value, base);
+    if (inner.protocol !== "http:" && inner.protocol !== "https:") return ""; // data: in any case, javascript:, blob:
+    [inner.username, inner.password, inner.search, inner.hash] = ["", "", "", ""];
+    return /^\/(?![/\\])/.test(value) ? inner.pathname : inner.href; // a path stays a path
+  } catch {
+    return "";
+  }
+};
+
+// The note names the image, not its credentials, its signed query or its bytes.
+const short = (url: string) => {
+  if (url.startsWith("data:")) return "a data: URL";
+  try {
+    const parsed = new URL(url);
+    const kept = ["url", "src", "image"]
+      .map((key) => ({ key, value: wrapped(parsed, parsed.searchParams.get(key)) }))
+      .find(({ value }) => value !== "");
+    return scrubUrl(url) + (kept ? `?${kept.key}=${kept.value.slice(0, 60)}` : "");
+  } catch {
+    return scrubUrl(url);
+  }
+};
 
 // A page that scrolls inside an element (html and body at 100% with overflow
 // hidden, a scrolling main) is one screen to the document. Names the element
@@ -281,7 +351,7 @@ async function loadImages(
 // body while html's is visible and body has no containment, as then body's is:
 // each is the document scrolling.
 const scrollContainer = (page: Page, viewport: { width: number; height: number }): Promise<string> =>
-  page.evaluate(({ v, shown }) => {
+  page.evaluate((v) => {
     const name = (el: Element) => el.localName + (el.id ? `#${el.id}` : "") + (el.classList[0] ? `.${el.classList[0]}` : "");
     const html = getComputedStyle(document.documentElement);
     const body = document.body ? getComputedStyle(document.body) : undefined;
@@ -301,13 +371,14 @@ const scrollContainer = (page: Page, viewport: { width: number; height: number }
         if (overflowY !== "auto" && overflowY !== "scroll") continue;
         const r = el.getBoundingClientRect();
         if (r.height < v.height / 2 || r.width < v.width / 3) continue;
-        if (r.right <= 0 || r.left >= v.width || r.bottom <= 0 || r.top >= v.height || !el.checkVisibility(shown)) continue;
+        if (r.right <= 0 || r.left >= v.width || r.bottom <= 0 || r.top >= v.height) continue;
+        if (!el.checkVisibility({ visibilityProperty: true, opacityProperty: true })) continue;
         best = hosts + name(el);
         most = hidden;
       }
     }
     return best;
-  }, { v: viewport, shown: SHOWN });
+  }, viewport);
 
 // One line in the terminal: no control, format or line-separator characters, no blanks, each once.
 const clean = (notes: readonly unknown[]): string[] => [
@@ -328,16 +399,16 @@ async function quiet(page: Page, notes: string[]): Promise<void> {
 // building; quiet again after, because image loads run handlers of their own.
 // Every cap that released a wait leaves a note, so a shot taken mid-motion or
 // with images still loading says so.
-// ponytail: motion that never touches the DOM (Web Animations API) is not seen.
-// Await document.getAnimations() with finite timing in the last quiet wait if a
-// site needs it; an infinite animation would otherwise pay the cap every shot.
+// ponytail: motion that never touches the DOM (Web Animations API) is not seen here; stabilize's `motion` step
+// finishes or cancels it before the wait, and Playwright's animations: "disabled" at the screenshot. With
+// `motion: false` it is shot mid-flight.
 async function ready(page: Page, notes: string[], all: boolean, clip?: SnapOptions["clip"]): Promise<void> {
   await quiet(page, notes);
   if (!(await loadFonts(page))) notes.push("font readiness still pending after 5 s");
   const images = await loadImages(page, all, clip);
   const count = (n: number) => `${n} image${n === 1 ? "" : "s"}`;
   // A lazy srcset image that never started has no URL to name.
-  const first = (url: string) => (url ? ` (first: ${url})` : "");
+  const first = (url: string) => (url ? ` (first: ${short(url)})` : "");
   if (images.pending > 0) notes.push(`${count(images.pending)} still loading after 5 s${first(images.first)}`);
   if (images.failed > 0) notes.push(`${count(images.failed)} failed to load${first(images.firstFailed)}`);
   await quiet(page, notes);
@@ -345,8 +416,7 @@ async function ready(page: Page, notes: string[], all: boolean, clip?: SnapOptio
 
 /**
  * Numbered screenshots (`01.png`, `02.png`, …; as wide as `numbering`, in
- * `format`) in `root/dir`, listed in `shots` once every
- * plugin's `afterSnap` hook passed. The directory is wiped on
+ * `format`) in `root/dir`, listed in `shots` once written. The directory is wiped on
  * creation so a run never mixes with the previous run's files; it must lie
  * inside `root`.
  */
@@ -358,9 +428,7 @@ export function createSequence(
     wrap = (_title, shoot) => shoot(),
     numbering = "00",
     format = {},
-    plugins = [],
-    ctx,
-    signal,
+    stabilizer,
     deviceScaleFactor,
   }: {
     // Runs one shot; the fixture wraps it in a `test.step` titled `01.png  <url>`,
@@ -368,23 +436,26 @@ export function createSequence(
     wrap?: (title: string, shoot: () => Promise<void>) => Promise<void>;
     numbering?: string;
     format?: ShotFormat;
-    plugins?: readonly Plugin[];
-    // What the hooks get; the fixture always passes it.
-    ctx?: SequenceContext;
-    // Aborted when the sequence ends: a shot still in flight then is not listed.
-    signal?: AbortSignal;
+    // The config's `stabilize`, unless it is false; its `begin` is the fixture's.
+    stabilizer?: Pick<Stabilizer, "beforeSnap" | "afterGrow" | "afterRestore">;
     // The context's deviceScaleFactor option; the fixture passes it.
     deviceScaleFactor?: number;
   } = {},
-): Sequence {
+): Sequence & { readonly inFlight: boolean; readonly shots: readonly Shot[] } {
   const full = join(root, dir);
   // Wiped recursively, so it has to be the run's own: a run name or device
   // with ".." in it would otherwise take something else with it.
-  const inside = relative(root, full);
-  if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+  if (!relative(root, full) || !within(root, full)) {
     throw new Error(`snapseq: refusing to wipe ${full}: not inside ${root}`);
   }
-  // Whole, a hook's own directory inside included: the fixture has refused a directory another sequence writes into.
+  // And through symlinks: the wipe follows a linked folder above it to what it points at (the last name, a link
+  // itself, is only unlinked). Strictly inside, as above: a link back to the root would take every run with it.
+  const real = join(canonical(dirname(full)), basename(full));
+  const realRoot = canonical(root);
+  if (!relative(realRoot, real) || !within(realRoot, real)) {
+    throw new Error(`snapseq: refusing to wipe ${full}: a symlink leads it to ${real}, not inside ${root}`);
+  }
+  // Whole, anything else written inside included: the fixture has refused a directory another sequence writes into.
   rmSync(full, { recursive: true, force: true });
   mkdirSync(full, { recursive: true });
 
@@ -395,43 +466,26 @@ export function createSequence(
   // devicePixelRatio. Read from the page only when the option is unset (a headed run takes the screen's), once,
   // at the first shot, and bounded: it sizes the label strip and the PDF page.
   let ratio = deviceScaleFactor;
-  const open = async (options: SnapOptions | undefined): Promise<Shot> => {
+  const open = async (options: SnapOptions | undefined, given: SnapOptions): Promise<Shot> => {
     if (ratio === undefined) {
       const read: unknown = await page.evaluate(() => window.devicePixelRatio);
       ratio = typeof read === "number" && Number.isFinite(read) ? Math.min(16, Math.max(0.1, read)) : 1;
     }
     const index = counter + 1;
     const name = `${String(index).padStart(numbering.length, "0")}.${ext}`;
-    return { name, path: join(full, name), url: page.url(), index, options: { ...options }, notes: [], format: { ...format }, deviceScaleFactor: ratio };
+    return { name, path: join(full, name), url: page.url(), index, options: { ...options }, given, notes: [], deviceScaleFactor: ratio };
   };
-  const hooks = async (kind: "beforeSnap" | "afterGrow" | "afterSnap" | "afterRestore", shot: Shot): Promise<void> => {
-    let first: Error | undefined;
-    for (const plugin of plugins) {
-      try {
-        await plugin[kind]?.(shot, ctx as SequenceContext);
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
-        first ??= new Error(`snapseq: plugin "${plugin.name}" threw in ${kind} on ${shot.name}: ${message}`, { cause });
-        // A cleanup hook runs for every plugin, whatever an earlier one did; the others stop at the first throw.
-        if (kind !== "afterRestore") break;
-      }
-    }
-    if (first) throw first;
-  };
-  const take = async (shot: Shot, readiness: string[]): Promise<string> => {
+  const take = async (shot: Shot): Promise<string> => {
     // Claimed this late so a shot refused before its screenshot (snapPage's height check) gives its number back.
     counter = shot.index;
-    // Locals: an afterSnap hook that edits the shot must not reach the step or the list.
-    const { name, path } = shot;
-    shot.url = page.url(); // a beforeSnap hook may have navigated
-    const url = shot.url;
-    // What the beforeSnap hooks pushed, then the readiness notes.
-    const notes = clean([...shot.notes, ...readiness]);
-    shot.notes = [...notes];
+    shot.url = page.url(); // the page's own scripts may have changed it during the waits (a router's replaceState, a redirect)
+    // What beforeSnap pushed, then the readiness notes.
+    shot.notes = clean(shot.notes);
+    const { name, path, url, notes } = shot;
     await wrap(`${name}  ${url}`, async () => {
-      // A beforeSnap hook may have set scale: "css", which makes the file 1x.
+      // A shot with scale: "css" is 1x.
       shot.deviceScaleFactor = shot.options.scale === "css" ? 1 : ratio!; // set in open()
-      // The config's type and quality (unset is PNG) and the numbered path win over anything a hook put in the options.
+      // The config's type and quality (unset is PNG) and the numbered path win over anything in the options.
       try {
         await page.screenshot({ ...shot.options, type: format.type, quality: format.quality, path });
       } catch (cause) {
@@ -439,9 +493,6 @@ export function createSequence(
         const message = cause instanceof Error ? cause.message : String(cause);
         throw new Error(`${message}; readiness: ${notes.length > 0 ? notes.join(", ") : "ok"}`, { cause });
       }
-      // Inside the step, so the shot counts only once its hooks passed.
-      await hooks("afterSnap", shot);
-      if (signal?.aborted) throw new Error(`snapseq: the sequence ended before ${name} was listed`);
       shots.push(shot);
       // Worker stderr reaches every reporter; the list reporter prints it under the step.
       if (notes.length > 0) console.warn(`snapseq: ${name} taken with ${notes.join(", ")}  ${url}`);
@@ -449,40 +500,39 @@ export function createSequence(
     return path;
   };
 
-  // One shot at a time: a second snap before the first resolved (a hook taking
-  // its own, a Promise.all in a sequence) would number and list them out of order.
+  // One shot at a time: a second snap before the first resolved (a snap not
+  // awaited, a Promise.all in a sequence) would number and list them out of order.
   let busy = false;
-  const one = async <T>(shoot: () => Promise<T>): Promise<T> => {
+  const one = async <T>(options: SnapOptions | undefined, shoot: (shot: Shot) => Promise<T>): Promise<T> => {
     if (busy) throw new Error("snapseq: a shot is already in progress; await each snap before the next");
+    // What the sequence gave, recorded at the call, before any await: a later change to its object cannot reach it.
+    const given = givenOptions(options);
     busy = true;
     try {
       // A click that navigates resolves once the new document commits, while it
-      // may still be parsing: the hooks, the URL and snapPage's first height
+      // may still be parsing: stabilize, the URL and snapPage's first height
       // would see half a page. Not "load": a hung beacon would hold every shot
       // to the navigation bound, which bounds this wait too.
       await page.waitForLoadState("domcontentloaded");
-      return await shoot();
+      return await shoot(await open(options, given));
     } finally {
       busy = false;
     }
   };
 
   return {
-    snap: (options) => one(async () => {
-      const shot = await open(options);
-      await hooks("beforeSnap", shot);
-      const notes: string[] = [];
-      await ready(page, notes, !!shot.options.fullPage, shot.options.clip);
-      return take(shot, notes);
+    snap: (options) => one(options, async (shot) => {
+      await stabilizer?.beforeSnap(shot);
+      await ready(page, shot.notes, !!shot.options.fullPage, shot.options.clip);
+      return take(shot);
     }),
-    snapPage: (options) => one(async () => {
-      // Before the viewport is read and grown, so what a hook changed is settled and measured.
-      const shot = await open(options);
-      await hooks("beforeSnap", shot);
+    snapPage: (options) => one(options, async (shot) => {
+      // Before the viewport is read and grown, so what stabilize changed is settled and measured.
+      await stabilizer?.beforeSnap(shot);
       delete shot.options.fullPage; // the grown viewport is the full page already
       const viewport = page.viewportSize();
       if (!viewport) throw new Error("snapPage: the page has no viewport size");
-      // The grown viewport scrolls the page to the top: read where the hooks left it, and in which document
+      // The grown viewport scrolls the page to the top: read where stabilize left it, and in which document
       // (timeOrigin is its own per document), so a reload or a navigation since is not scrolled.
       const scroll = await page.evaluate(() => ({
         origin: window.performance.timeOrigin,
@@ -498,12 +548,7 @@ export function createSequence(
           }, scroll)
           .catch(() => undefined);
         // Taken or failed: the page goes back to its viewport state. In the catch path below a throw is swallowed with the restore's.
-        await hooks("afterRestore", shot);
-      };
-      // The afterGrow hooks run at the grown viewport, before the readiness wait that follows.
-      const grow = async (height: number) => {
-        await page.setViewportSize({ width: viewport.width, height });
-        await hooks("afterGrow", shot);
+        await stabilizer?.afterRestore(shot);
       };
       let height = await documentHeight(page);
       // One screen (64 px of slack for margins and a bar) whose content scrolls inside an element: a taller
@@ -512,61 +557,53 @@ export function createSequence(
       let inner = height <= viewport.height + 64 ? await scrollContainer(page, viewport) : "";
       let path: string;
       try {
-        const notes: string[] = [];
         if (inner) {
-          await ready(page, notes, false);
+          await ready(page, shot.notes, false);
           // Content that landed during the wait can make it a page after all.
           height = await documentHeight(page);
           if (height > viewport.height + 64) inner = "";
         }
         if (!inner) {
-          await grow(height);
-          // Ready before measuring: an image that just loaded, a font that just
-          // arrived, has its height now.
-          await ready(page, notes, true);
-          // Landing in flow can change the height; measure once more.
-          let grown = await documentHeight(page);
-          const stable = height;
-          let shrunk = false;
-          // scrollHeight reads unchanged when the page got shorter than the viewport: the boxes say whether it did. Not
-          // below the device's viewport, which is as short as a page gets.
-          if (grown === height) {
+          // stabilize's afterGrow runs at the grown viewport, before the readiness wait. Ready before measuring: an image
+          // that just loaded, a font that just arrived, has its height now, and what the taller viewport brings into view
+          // can start an image of its own (a section whose observer sets its src).
+          const growTo = async (h: number) => {
+            height = h;
+            await page.setViewportSize({ width: viewport.width, height });
+            await stabilizer?.afterGrow(shot);
+            await ready(page, shot.notes, true);
+            return documentHeight(page);
+          };
+          // Grown to the document height, then measured again. V is the device's viewport height, h the height grown to,
+          // A the scrollHeight after a grow, C the content's bottom by its boxes, at least V (as short as a page gets):
+          //   A = h, C > h - 1   read once more; grown since → final(h), else shot at h.
+          //   A = h, C <= h - 1  scrollHeight never reads below the viewport, so it cannot say the page got shorter; the
+          //                      boxes do. Grow to C: A' <= C, shot at C; else the boxes read too short (text overflowing a
+          //                      fixed-height box, an html padding) and the page measured stable at h, so grow to h again,
+          //                      settled as a grow is: A'' <= h, shot at h; else final(h).
+          //   A != h             landing in flow changed the height: grow to A. A' <= A, shot at A; else final(A).
+          //   final(x)           the page grew with the viewport. An app shell whose content landed late: shot at x, with
+          //                      the scroller note. No scroller: a layout that follows the viewport grows with every resize,
+          //                      so a shot of it would be cut off. Not a loop: refused, "grew from x", with what stabilize
+          //                      noted, as the refused shot is never listed.
+          const first = height;
+          let after = await growTo(height);
+          if (after !== height) after = await growTo(after);
+          else {
             const content = Math.max(await contentBottom(page), viewport.height);
-            if (content <= height - 1) {
-              grown = content;
-              shrunk = true;
-            }
+            if (content > height - 1) after = await documentHeight(page);
+            else if ((after = await growTo(content)) > height) after = await growTo(first);
           }
-          if (grown !== height) {
-            height = grown;
-            await grow(height);
-            // Ready again, as what the taller viewport brings into view can start an image of its own (a section
-            // whose observer sets its src).
-            await ready(page, notes, true);
-          }
-          // Not a loop: a layout that follows the viewport grows with every
-          // resize, and a shot of it would be cut off. Say so instead, with
-          // what the hooks noted, as the refused shot is never listed.
-          let after = await documentHeight(page);
-          // The boxes read too short (text overflowing a fixed-height box, an html padding): the page measured stable at the
-          // height before the shrink, so it goes back there, settled as a grow is, rather than being refused as one that follows the viewport.
-          if (shrunk && after > height) {
-            height = stable;
-            await grow(height);
-            await ready(page, notes, true);
-            after = await documentHeight(page);
-          }
-          // An app shell whose content landed late grows with the viewport too: shot as it is, with the note.
           if (after > height) inner = await scrollContainer(page, viewport);
           if (after > height && !inner) {
-            const said = clean([...shot.notes, ...notes]);
+            const said = clean(shot.notes);
             throw new Error(
               `snapPage: the document grew from ${height} to ${after} px after the viewport was set to its height, so its layout follows the viewport (vh units, a loader at the page end, or isMobile on a page without a viewport meta). Use snap({ fullPage: true }) for this page.${said.length > 0 ? ` Notes: ${said.join(", ")}` : ""}`,
             );
           }
         }
-        if (inner) notes.push(`the page scrolls inside <${inner}> not the document: scrollable content may be omitted`);
-        path = await take(shot, notes);
+        if (inner) shot.notes.push(`the page scrolls inside <${inner}> not the document: scrollable content may be omitted`);
+        path = await take(shot);
       } catch (error) {
         // The shot's own error wins over a restore that fails after it.
         await restore().catch(() => undefined);
@@ -577,5 +614,9 @@ export function createSequence(
     }),
     dir: full,
     shots,
+    // For the fixture: a shot the body left running (a snap not awaited) when it ended.
+    get inFlight() {
+      return busy;
+    },
   };
 }

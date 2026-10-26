@@ -27,14 +27,16 @@ export default defineConfig({
 
 | Field            | Default                                | Notes                                                                   |
 | ---------------- | -------------------------------------- | ----------------------------------------------------------------------- |
-| `envs`           | required                               | One entry per environment. See "Envs".                                  |
+| `envs`           | required                               | One entry per environment. See "Envs". An empty `envs` stops with `envs is empty; name at least one env and its host`.                                  |
 | `defaultEnv`     | `"dev"` if present, else the first env | Used when neither `--env` nor `SNAPSEQ_ENV` is given.                |
 | `devices`        | desktop and mobile as above            | One Playwright project per key. See "Devices".                          |
 | `sequencesDir`   | `"snapseq"`                            | Relative to the config file. Matches `*.seq.ts` (and `.js`, `.mts`, `.cts`, `.mjs`, `.cjs`). |
 | `screenshotsDir` | `"screenshots"`                        | Relative to the config file. Snapseq writes a `.gitignore` inside it. |
 | `numbering`      | `"00"`                                 | The shape of a shot number: `"00"` gives `01.png`, `"000"` gives `001.png`. Zeros only. Wide enough for the longest sequence: `100.png` sorts before `99.png`. |
 | `format`         | `{}` (PNG)                             | Playwright's screenshot `type` and `quality`: `{ type: "jpeg", quality: 60 }` writes `01.jpg`, … Quality is 0 to 100 and JPEG only, as in Playwright. |
-| `plugins`        | none                                   | Addons such as `label()`, `pdf()` and `stabilize()`, run in the order listed. See "Plugins". |
+| `stabilize`      | on                                     | Holds the page still for each shot, and lets `snapPage` grow pages with `vh` units. `false` turns it off; an object switches single steps. See "Stabilize". |
+
+`SnapseqConfig`, `EnvConfig`, `DeviceConfig` and `StabilizeOptions` are exported for config helpers; `SequenceContext` and `Sequence` type a helper that takes `ctx` or `seq`.
 
 ## Envs
 
@@ -65,7 +67,7 @@ envs: {
 Playwright sends `extraHTTPHeaders` to every origin the page loads,
 third-party scripts and images included. A secret belongs in
 `httpCredentials`, which goes to one origin, or in a `page.route` for the
-host's origin, set up in a plugin's `begin` hook.
+host's origin, set up in the sequence.
 
 ### Dev server
 
@@ -84,6 +86,10 @@ Ctrl-C included. A host different from the env's (`--host`, `SNAPSEQ_HOST`)
 never starts the command; point it at a server you run yourself. The server's
 stdout is hidden and its stderr shown; `DEBUG=pw:webserver` shows everything.
 
+In an [orchestration](orchestration.md#limits) each `run()` is a run of its own, so
+the command starts and stops with every one. Start the server yourself and keep it
+up.
+
 ### Replay
 
 A page state that depends on a request this env cannot answer, such as a
@@ -98,32 +104,14 @@ prod: {
 ```
 
 Each key is a Playwright `page.route` URL pattern and each value a file
-relative to the config file. A glob like `**/api/search` matches that path on
-any host, a third-party request included; `--record` then stops the sequence
-on the second, different request and names both. Pinning the host
-(`https://api.example.com/search`) avoids that, but only when the API has a
-host of its own. When the API is same-origin and you record with `--host`
-against another host, a pinned pattern never matches, so keep the glob.
-Before every sequence, snapseq routes the pattern
+relative to the config file. Before every sequence, snapseq routes the pattern
 and answers it with the file's contents as JSON. The request never reaches the
 backend; the rest of the page stays live. A run whose file is missing, or is
 not valid JSON (a hand edit left a comma behind), fails before its first shot and
 names the file.
 
 `pnpm snapseq --record` (or `SNAPSEQ_RECORD=1`) fetches each request live
-instead, writes its file, and answers with it. The variable takes `1` or
-`true` to record, and `0`, `false` or empty not to; any other value is an
-error. The flag takes the same values as `--record=0`, except that an empty
-`--record=` is an error too. `--record 0`, with a space, records and hands `0`
-to Playwright as a file filter. One replay file holds one response, so a
-different method, URL or request body is a second request: it would write the
-same file in one device's run, and stops the sequence instead of overwriting
-it. Two searches that differ only in their POST body, "lamps" and "chairs",
-cannot be told apart by a pattern: Playwright routes by URL, and when two
-patterns match one URL only the later one answers, for both requests. Record
-one of them, serve the other with a `page.route` in the sequence that checks
-`route.request().postData()` (and calls `route.fallback()` for the rest), or
-use a HAR. Record against a host where the
+instead, writes its file, and answers with it. Record against a host where the
 request succeeds, check the shot, and commit the file; every later run replays
 it. `--host` points the env at such a host for the recording run:
 
@@ -132,12 +120,9 @@ pnpm snapseq --env prod --record --host https://staging.example.com
 pnpm snapseq --env prod
 ```
 
-Only an env with `replay` is affected. The recorder saves a JSON success body
-and later serves it as a 200; a status outside 200–299 or a body that is not
-JSON fails the sequence at that request (shots already taken stay), and the
-file is left as it was for that response. A
-response the page renders by status (a 4xx) or anything that is not JSON goes
-through `page.route` or Playwright's `page.routeFromHAR` in the sequence.
+One file holds one response: a second, different request on the pattern, a non-2xx
+or a non-JSON body stops the sequence ([Troubleshooting](troubleshooting.md));
+[Running](running.md#flags-and-variables) lists the values `--record` takes.
 
 ## Devices
 
@@ -177,24 +162,215 @@ stays `?0` while `isMobile` is off, so some servers may still see a desktop.
 userAgent: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/<version>.0.0.0 Mobile Safari/537.36",
 ```
 
-## Plugins
+## Stabilize
 
-A plugin acts on a sequence and the shots it takes: a label strip above each
-image, a PDF of the sequence, a page that holds still for the shot. List the
-instances in `plugins`; their hooks run in that order.
+`stabilize` is on. It lets `snapPage` take a page with viewport-height units, and
+holds the page still for each shot: motion stopped, the pointer off the content.
+`stabilize: false` turns it all off. An object switches single steps; the ones you
+leave out keep their defaults:
 
 ```ts
-import { defineConfig } from "snapseq";
-import { label } from "@snapseq/label";
-import { pdf } from "@snapseq/pdf";
-
 export default defineConfig({
   envs: { dev: { host: "http://localhost:3000" } },
-  plugins: [label(), pdf()],
+  stabilize: { floating: false, scroll: true },
 });
 ```
 
-[Plugins](plugins.md) covers installing them and writing your own.
+| Option          | Default | What it does                                                                                         |
+| --------------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `viewportUnits` | on      | Freezes `vh` and the other viewport-height units to px, so `snapPage` works on a `100vh` page.        |
+| `floating`      | on      | In `snapPage`, a fixed element keeps the top it had on the first screen.                              |
+| `scrollEvent`   | on      | In `snapPage`, a scroll event after the viewport grows and again once it is restored.                 |
+| `motion`        | on      | Transitions off; animations finished, or cancelled, before each shot, in open shadow roots too.       |
+| `hover`         | on      | The pointer leaves the content before each shot.                                                      |
+| `scroll`        | off     | A scroll pass before a native full page, so lazy content loads.                                       |
+| `reducedMotion` | off     | Emulates `prefers-reduced-motion: reduce`.                                                            |
+
+A call of an orchestration can give its own `stabilize`
+([Orchestration](orchestration.md#options)). It works through the sequence's
+`seq`: a sequence that uses neither `seq` nor `ctx` gets none of it. A step that
+throws fails the sequence. The error names where it threw, and the shot when there
+is one: `snapseq: stabilize threw in begin: <message>` (before the sequence's body),
+`snapseq: stabilize threw in beforeSnap on 01.png: <message>`. It is developed and
+tested on Chromium.
+
+### Viewport units
+
+`snapPage` grows the viewport to the page height, and a `100vh` section grows with
+it, so the page never settles and `snapPage` refuses it. Before each shot, while the
+viewport is still the device's, stabilize rewrites the page's viewport-height units
+to px: `vh`, `vmin`, `vmax`, `vb` and their `s`, `l` and `d` variants. The hero
+stays one screen tall and sticky elements rest in flow. Width units (`vw`) are left
+alone: the width never changes.
+
+- It reaches stylesheets (media, supports, layer, container, nested rules, keyframes,
+  `@import`), inline `style` attributes and custom properties (`--h: 50vh`), and
+  keeps `!important`. Text in quotes and `url(...)` are not touched.
+- It reaches open shadow roots and adopted stylesheets (`adoptedStyleSheets`), on the
+  document and in every root, nested roots included.
+- The page's own value is kept for every declaration. The next shot freezes it again
+  at that shot's viewport, so a viewport you resized in between is followed. Between
+  shots the page keeps the px values of the last shot's viewport.
+- CSS that arrives while the viewport is grown is frozen at the viewport the shot
+  started with: `<style>` and `<link>` elements added, alone or inside a subtree, the
+  text of a `<style>` edited, and inline styles on added elements or written on
+  elements that were already there. Open shadow roots are watched too.
+- A stylesheet from another origin cannot be read by script. Before a shot, stabilize
+  fetches such a stylesheet again as a CORS request, and the page's rules then become
+  readable. If the server refuses, or the stylesheet redirects, it stays as the page
+  had it, and each shot taken while it is unreadable carries the note
+  `cannot read <url>: its viewport units stay live` (the URL without its query string,
+  cut to 80 characters). See
+  [Troubleshooting](troubleshooting.md#the-terminal-says-cannot-read-url-its-viewport-units-stay-live).
+
+A sheet that stays unreadable keeps the note unless a plain fetch of its text
+shows no viewport unit.
+
+### Floating
+
+`snapPage` grows the viewport to the page height, and a `position: fixed` element
+follows its insets with it: a promo drawer at `bottom: 325px`, a chat bubble or a
+cookie banner ends up at the page end, over the footer, where the reader saw it on the
+first screen. A fixed element on the first screen keeps the top it had there; its
+own inline `top`/`bottom` come back after the shot.
+
+It leaves alone:
+
+- A fixed element off the screen at the device's viewport, such as a drawer parked at
+  `bottom: -100%`, and one only partly on the screen, such as a bottom sheet peeking
+  60 px: it stays at the page end, clipped as the device's viewport clipped it.
+- An element the page removed, hid, moved off the screen or un-fixed in response to the
+  grow or to the scroll event.
+- An element whose size changed with the viewport, such as a `top: 10%; bottom: 0`
+  panel or an `inset: 0` dimmer: it has its own layout.
+- An element already at its top (a `top: 0` header).
+- An element the override does not bring to where it was: a fixed element inside a
+  transformed, filtered or `contain`ed ancestor, and a fixed child of a pinned fixed
+  ancestor. Its inline values are put back.
+- A box centred by `margin: auto`, such as a `<dialog>` opened with `showModal()` or a
+  `[popover]`: it stays centred in the grown page.
+- An element the page positions or restyles itself (a dropdown, a popover, a menu
+  placed by a positioning library). Stabilize notes its inline style, its `transform`
+  and its `class` at the device's viewport, and leaves it where the page put it when
+  any of them differs once the viewport has grown. CSS anchor positioning changes none
+  of them and is not detected.
+
+It cannot see fixed elements inside iframes, in closed shadow roots, or made by
+pseudo-elements. Open shadow roots are walked. `floating: false` turns the step off; a
+fixed element then sits where its insets put it in the grown viewport, and a
+`bottom: 0` bar is drawn at the page end.
+
+### Scroll event
+
+`snapPage` grows the viewport from where the page is; from the top nothing scrolls, so
+no scroll event fires, and UI that follows scroll events only stays as it was: a fixed
+tray that hides on scroll once its inline counterpart is in view is drawn over the
+footer, a back-to-top button stays hidden. Stabilize fires one scroll event after each
+grow, at the document and bubbling to the window as the browser's own does, and one
+once the viewport is restored, so the page is back in its viewport state for what the
+sequence does next. The event is synthetic: `isTrusted` is `false`, and a handler that
+checks it ignores it. Any scroll handler runs, not only the tray's, and some react in
+ways you do not want:
+
+- A header that hides on scroll down and treats a zero delta as down is hidden in the
+  full page, and the restore event has a zero delta too, so it also stays hidden
+  between `snapPage` and the sequence's next step.
+- A "bottom reached" handler, such as an infinite scroll that appends on each event or
+  a 100 % scroll beacon, runs on each grow and on the restore. One that appends content
+  every time keeps the document growing, and `snapPage` refuses the page.
+- A reveal script that judges what is in view against the window height it read at load
+  takes its in-view class off everything below the first screen, and an animated chart
+  there goes back to its base state.
+
+`scrollEvent: false` turns the event off.
+
+### Motion
+
+When the sequence begins, transitions and smooth scrolling are turned off on every
+document: `disableTransitions` without its `animation: none`. Animations run. Before
+each shot, and in `snapPage` after each grow once the DOM has been quiet for 200 ms
+(2 s at most), CSS and Web Animations are finished, or cancelled when they cannot
+finish (an infinite one), rather than removed. A `forwards` reveal, such as a bar chart
+that grows in, keeps its final state, and so does a `forwards` exit animation, hidden;
+one without fill goes back to its base style. Finishing runs the page's `animationend`
+and `finish` handlers. After a grow this comes before `snapPage` measures the page, so a
+section that opens as it comes into view is measured open. SVG animations are paused
+where they are, like a video, so a draw-in that finished stays drawn; videos stop
+playing.
+
+The screenshot itself runs with Playwright's `animations: "disabled"` unless the
+sequence sets its own, so an animation that starts after the pass (from a resize
+handler, say) is finished or cancelled too. Playwright plays an infinite animation it
+cancelled again once the shot is taken, so between shots the page holds less still than
+under `animation: none`.
+
+### Hover
+
+After a click the pointer stays where it was, and whatever moved under it (a product
+card, a menu) is drawn in `:hover`. Before each shot stabilize moves the pointer off the
+viewport, so nothing is hovered. The move fires the page's `mouseleave` handlers: a menu
+that opens on hover closes. The pointer leaves through the left edge at mid-height, so
+exit-intent scripts that watch the top edge are not triggered. It then sits off the page
+until the sequence's next action: `page.click` and locator actions move it first, a bare
+`mouse.down`, `mouse.up` or `mouse.wheel` does not. For a hover state the sequence set
+up on purpose, leave it for that shot:
+
+```ts
+await page.hover(".menu");
+await seq.snap({ hover: "keep" });
+```
+
+### Scroll
+
+`snap({ fullPage: true })` is Playwright's native full page: it does not scroll, so an
+`IntersectionObserver` reveal stays blank and a `data-src` image stays unloaded. With
+`scroll: true`, a shot with `fullPage`, after the DOM has been quiet for 200 ms (2 s at
+most), scrolls the document from its top down to its end, one viewport at a time with a
+frame on each stop, then restores the scroll position the page had. The end is read on
+every stop, so growth that lands during the pass is followed. It stops after 60 steps or
+5 s, and the shot then carries the note `scroll pass stopped after N steps`. Plain `snap`
+and `snapPage` are not scrolled: `snapPage` grows the viewport to the whole page, which
+shows everything already. A virtualized list, or a header that changes with the scroll
+direction, is not helped. With `hover: "keep"` the pass moves content under the kept
+pointer.
+
+### Reduced motion
+
+`reducedMotion: true` emulates `prefers-reduced-motion: reduce` for the sequence, for a
+page that has a quieter variant. Off, the page's own preference is left alone.
+
+### What stabilize does not do
+
+- Media queries that depend on the viewport height (`min-height`, `orientation`,
+  `aspect-ratio`), and the `media` attribute of a stylesheet.
+- `@property` initial values.
+- Closed shadow roots, a cross-origin `<link>` inside a shadow root (skipped without a
+  warning), and an open shadow root attached after the shot started (the next shot
+  reaches it).
+- A viewport unit in a `var()` fallback inside a shorthand (`margin: var(--gap, 10vh)`);
+  the same fallback in a longhand is frozen.
+- `@container` units, and JS that reads `innerHeight` or `matchMedia`.
+- CSS added with `insertRule` (CSS-in-JS in production), `replaceSync` on a constructed
+  stylesheet, or a new `adoptedStyleSheets` after the shot has started, and a
+  cross-origin stylesheet added while the viewport is grown.
+- Vertical writing modes: `vb` is frozen as a height and `vi` is left alone, as in
+  horizontal text.
+- A cross-origin stylesheet that redirects, or that a stylesheet imports with its own
+  `@import` (a font service's CSS): the browser loads an import without CORS, so no
+  refetch can open it, and its viewport units stay live. It is noted on the shots unless
+  its text, fetched as above, rules a viewport unit out; `@font-face` rules alone say
+  nothing. A stylesheet that arrives after the first shot, or whose imports load after
+  it, carries the note from the next shot on.
+- A cross-origin stylesheet that a `replay` entry or a HAR route serves: the route
+  stabilize adds runs first and fetches it live, falling back to the earlier routes only
+  when that fetch fails. The replayed copy then carries no CORS header, so the sheet is
+  noted on the shots.
+- A script that keeps a reference to the original `<link>` of a cross-origin sheet: after
+  stabilize swaps it for a CORS copy, the reference no longer reaches the page.
+- GIFs and carousels. A video's playback stops, but its frame is wherever it was: use a
+  poster or `mask`.
+- A page that still grows after this is still refused by `snapPage`. Use
+  `snap({ fullPage: true })` for it, Playwright's native full page.
 
 ## Playwright defaults
 
@@ -211,7 +387,7 @@ export default defineConfig({
 | `ignoreHTTPSErrors` | true                            | Self-signed staging certificates.                                                                                                         |
 | `userAgent`         | headless token removed          | Headless Chromium's `HeadlessChrome` user agent is rewritten to `Chrome` unless you set `userAgent` yourself; some WAFs 403 the headless token. |
 | `reporter`          | the terminal view               | Playwright's list reporter when stdout is not a terminal. See [Running](running.md#the-terminal).                                        |
-| `outputDir`         | `node_modules/.cache/snapseq` | Playwright's own artifacts (traces, error context, `.last-run.json`) stay out of the screenshots dir.                                    |
+| `outputDir`         | `node_modules/.cache/snapseq/playwright` | Playwright's own artifacts (traces, error context, `.last-run.json`) stay out of the screenshots dir. See below for what to keep out of it.   |
 
 ## Overriding Playwright options
 
@@ -240,5 +416,8 @@ Nested objects such as `launchOptions` are replaced whole. To drop a
 generated `webServer`, spread the result instead:
 `{ ...defineConfig({ /* … */ }), webServer: undefined }`.
 
-Playwright's own artifacts go to `node_modules/.cache/snapseq`, so
-`--trace on` leaves traces there, not among the screenshots.
+Playwright empties `outputDir` before each run, and the orchestration's run cache
+lives beside it in `node_modules/.cache/snapseq`. An orchestration run refuses an
+`outputDir` override that holds or sits inside `node_modules/.cache/snapseq/runs` or
+`…/requests`, or overlaps the screenshots folder, by its path or through a symlink. A plain run checks nothing, so never
+point `outputDir` at the screenshots folder.

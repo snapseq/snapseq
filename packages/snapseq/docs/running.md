@@ -2,23 +2,65 @@
 
 ```bash
 pnpm snapseq                              # every sequence, every device
-pnpm snapseq pricing                      # sequences whose path matches "pricing"
+pnpm snapseq pricing                      # the sequence with the id "pricing"
+pnpm snapseq 'campaign/*'                 # every sequence in campaign/ (quote a glob)
 pnpm snapseq pricing --device mobile
 pnpm snapseq --env staging                # or SNAPSEQ_ENV=staging
 pnpm snapseq --host http://localhost:4000 # or SNAPSEQ_HOST=…
-SNAPSEQ_RUN=review-1 pnpm snapseq      # name the run dir instead of the timestamp
+pnpm snapseq --run review-1               # name the run dir instead of the timestamp (or SNAPSEQ_RUN=review-1)
 pnpm snapseq --headed                     # also --ui, --debug, --trace on, --reporter json
 pnpm snapseq --help
+pnpm snapseq -o spring --run review-1     # an orchestration, by name: see below
+pnpm snapseq snapseq/spring.orchestration.ts --run review-1   # or by its file
 ```
 
 From a monorepo root: `pnpm --filter <app> exec snapseq pricing --device desktop`.
 
-A filter is a regular expression matched against each sequence file's absolute
-path, not its name. `pricing` also matches a folder named pricing anywhere
-above the file, and `home` matches every sequence on a machine whose path
-contains `/home/`. When the word could appear in the path, filter with a path
-fragment that includes the snapseq folder (`snapseq/home`) or the file name
-with its extension (`home.seq.ts`).
+A filter word is a sequence id or a glob over ids. The id is the sequence file's
+path in the config's `sequencesDir` without `.seq.ts`, with `/` on every
+platform: `campaign/pricing` for `snapseq/campaign/pricing.seq.ts`. The word is
+matched against the whole id, case-sensitively:
+
+| Word                 | Selects                                         |
+| -------------------- | ----------------------------------------------- |
+| `campaign/pricing`   | exactly that sequence                           |
+| `'campaign/*'`       | every sequence directly in campaign/            |
+| `'campaign/**'`      | everything under campaign/, nested folders too  |
+| `'*'`                | the top-level sequences only                    |
+| `'**/pricing'`       | a sequence named pricing in any folder          |
+| `'{a,b}/*'`, `'a/[a-d]*'`, `'?ra'` | braces, a range, one character    |
+
+Several words select the union. No word runs everything. The glob syntax is
+Node's `path.matchesGlob`, which needs Node 20.17 or 22.5 and prints an
+experimental warning on Node 20 when a glob is used; negation (`!`) is not
+supported, and a word that starts with one selects nothing, Node's `'!(a)/**'` included.
+
+**Quote every glob.** A shell reads `*` first: stock zsh stops with `no matches
+found` when nothing matches an unquoted `campaign/*`, bash passes it on as it is,
+and a working directory that holds a matching folder expands it into file names,
+which snapseq refuses with `snapseq: campaign/pricing.md is not a sequence file;
+quote a glob so the shell leaves it`, and for a file inside `sequencesDir` the glob
+over ids to quote, like `: 'campaign/*'`. A sequence file does work as its id, and
+only its own, so tab completion does: `pnpm snapseq snapseq/campaign/pricing.seq.ts`.
+Spelled in another case than the disk's (macOS finds `snapseq/Campaign/pricing.seq.ts`
+too), it selects no id and stops snapseq as below. A link named like a sequence file
+to a file that is no sequence file is refused as any other file.
+
+Every word must select at least one sequence. One that does not stops snapseq
+with exit 1 before Playwright starts, with or without a terminal, and says what
+it may have meant: a folder, an orchestration, ids that differ only in case, ids
+that end in or contain the word, else every id.
+
+```
+snapseq: no sequence matches "campaign"
+  campaign is a folder: 'campaign/*' selects its 3 sequences
+  campaign is an orchestration: snapseq -o campaign
+```
+
+snapseq turns the words into one exact file filter per selected sequence for
+Playwright. To use Playwright's own, a regular expression over absolute paths or
+`file:42`, put it after `--`; everything after it goes to Playwright as given and
+adds to the sequences the words select.
 
 `snapseq` translates its own flags, finds `snapseq.config.ts` in the
 current directory (or takes `-c <path>`), and hands everything else to
@@ -29,16 +71,17 @@ current directory (or takes `-c <path>`), and hands everything else to
 
 | Flag                  | Variable          | Effect                                                                                        |
 | --------------------- | ----------------- | --------------------------------------------------------------------------------------------- |
-| `[filter...]`         |                   | Playwright's file filter: sequences whose path matches.                                        |
-| `--env <name>`        | `SNAPSEQ_ENV`  | The env from the config. Default: `defaultEnv`, else `dev`, else the first.                   |
+| `[filter...]`         |                   | A sequence id or a quoted glob over ids; several select the union. A word that selects nothing stops the run. |
+| `--env <name>`        | `SNAPSEQ_ENV`  | The env from the config. Default: `defaultEnv`, else `dev`, else the first. Without `--host`, an inherited `SNAPSEQ_HOST` is dropped.                   |
 | `--host <url>`        | `SNAPSEQ_HOST` | Override that env's host for this run. A host different from the env's does not start its `webServer`. |
 | `--device <name>`     |                   | Only this device; repeatable. Playwright's `--project`.                                       |
-| `--record`            | `SNAPSEQ_RECORD` | Fetch the env's `replay` requests live and write their files. The variable takes `1` or `true` to record, `0`, `false` or empty not to; anything else is an error. The flag takes `--record=0` and the like, but `--record=` is an error, and `--record 0` records and passes `0` to Playwright as a file filter. On an env without `replay` it does nothing. See [Config](config.md#replay). |
-| `-c, --config <path>` |                   | The config file. Default: `./snapseq.config.{ts,mts,cts,js,mjs,cjs}`.                      |
-|                       | `SNAPSEQ_RUN`  | The run directory's name. Default: the local time the run started. A name, not a path.        |
+| `--record`            | `SNAPSEQ_RECORD` | Fetch the env's `replay` requests live and write their files. The variable takes `1` or `true` to record, `0`, `false` or empty not to; anything else is an error. The flag takes `--record=0` and the like, but `--record=` is an error, and `--record 0` records and reads `0` as a sequence word: the run stops with `no sequence matches "0"` unless a sequence is named `0`, and then it records that one. On an env without `replay` it does nothing. See [Config](config.md#replay). |
+| `-c, --config <path>` |                   | The config file, or its folder. Default: `./snapseq.config.{ts,mts,cts,js,mjs,cjs}`.                      |
+| `--run <name>`        | `SNAPSEQ_RUN`  | The run directory's name. Default: the local time the run started. A name, not a path. Into a name already used, only the sequences that run again are wiped. Either also drops the run's orchestration cache: see [Repairs](orchestration.md#repairs). |
 |                       | `SNAPSEQ_OPEN` | `0` or `false` (any case) keeps the run directory's file manager window closed at the end of an interactive run. See [The terminal](#the-terminal). |
 
-The flag wins over the variable. An empty value (`--env ""`) means unset.
+The flag wins over the variable. An empty `--env` or `--host` means unset; an empty `--run` is refused.
+Everything after `--` goes to Playwright as given.
 
 ## Run directories
 
@@ -56,17 +99,10 @@ screenshots/
 
 Within a run, a sequence's `<sequence>/<device>` directory is wiped when that
 sequence starts. So the run name and the device names must be directory names,
-not paths, and a directory outside the screenshots dir is never wiped. A
+not paths, and a directory outside the screenshots dir is never wiped, a symlink inside it
+leading there included. A
 sequence whose directory another sequence file writes into is refused instead;
 see [Troubleshooting](troubleshooting.md).
-Retries and `--repeat-each` are rejected because a second run would overwrite
-the first.
-
-A run lives in `screenshots/<run>` (`screenshotsDir`, beside the config),
-`<run>` being the time it started. The terminal summary prints the path; a
-piped or CI run does not. For scripts and CI, name the run:
-`SNAPSEQ_RUN=nightly pnpm snapseq` writes `screenshots/nightly/`. A name
-used twice is the same directory: only the sequences that run again are wiped.
 
 ## Rerunning
 
@@ -81,6 +117,47 @@ SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm snapseq --last-failed
 ```
 
 [Example 11](examples.md#11-rerun-one-sequence-into-the-same-run) walks through it.
+
+## Orchestration runs
+
+A file whose name ends in `.orchestration.ts` takes the place of the sequence
+filter: the file says which sequences run, on which devices, and what is done to
+the shots. [Orchestration](orchestration.md) covers the file, the terminal and
+the exit codes.
+
+Give the file, or its name: `-o spring` runs `snapseq/spring.orchestration.ts`, `-o wm/proof` runs
+`snapseq/wm/proof.orchestration.ts`. The name is the file's path in the config's
+`sequencesDir` without `.orchestration.ts`, with `/` on every platform. Everything after
+`-o <name>` reads as it does after a file. `-o` is snapseq's only as the first argument;
+anywhere else a plain run hands it to Playwright, which rejects it, and after an
+orchestration file it is refused.
+
+| Flag                | Effect in an orchestration run                                                                      |
+| ------------------- | --------------------------------------------------------------------------------------------------- |
+| `-o <name>`, `--orchestration <name>` | First argument only. Runs `<sequencesDir>/<name>.orchestration.ts`. `--orchestration=<name>` works too. |
+| `--run <name>`      | The run folder. With words or `--device` after it, a repair: see [Repairs](orchestration.md#repairs). |
+| `[sequence...]`     | Needs `--run`. Shoot again the parts these select: a sequence id or a quoted glob over ids, as in a plain run. `12346` is the id `12346`; `'12346*'` is every id that starts with it. |
+| `--device <name>`   | Needs `--run`. Shoot again the parts on that device. Exact name, repeatable.                        |
+| `--env`, `--host`   | As in a plain run, and over the `env` and `host` that any `run()` gives.                            |
+| `--record`          | Sets `SNAPSEQ_RECORD` for every child, as a plain run does. Write `--record=0`; with a space, `0` is read as a sequence filter. |
+| `-c, --config`      | The config file, or its folder.                                                                     |
+| `--headed`, `--debug` | Passed to every child.                                                                            |
+| `--trace <mode>`, `--timeout <ms>`, `--max-failures <n>` | Passed to every child, with their value.                         |
+
+These are refused, with the reason in the message:
+
+| Flag                           | Why                                                                                 |
+| ------------------------------ | ----------------------------------------------------------------------------------- |
+| `--ui`                         | It opens one Playwright window on one run.                                          |
+| `--list`                       | The orchestration decides its sequences while it runs.                              |
+| `--shard`                      | An orchestration runs its sequences one after another, in its own order.            |
+| `--repeat-each`, `--retries`   | A second pass would overwrite the shots. Catch the rejection of `run()` and call it again. |
+| `--reporter`                   | snapseq reads each child's result through its own reporter.                         |
+| `--last-failed`, `--only-changed` | The orchestration picks its sequences. Shoot a part again with `--run` and a filter. |
+
+Any other flag is refused too, with the list of the ones that work. The variables
+`SNAPSEQ_ENV`, `SNAPSEQ_HOST`, `SNAPSEQ_RUN`, `SNAPSEQ_RECORD` and `SNAPSEQ_OPEN` work
+as in a plain run.
 
 ## Timeouts
 
@@ -99,9 +176,7 @@ click, fill and wait at 30 s (`actionTimeout`).
 
 A sequence that fails or times out leaves `failed.png` beside the shots it did
 take: the page as the teardown found it, when it can still be shot (5 s at
-most). The terminal names that page as where it died. Images still loading, including `<picture>`
-sources and those in frames, are abandoned (their `src` and `srcset` removed)
-before that shot, so one that never answers cannot hold it back. The run stops
+most). The terminal names that page as where it died. The run stops
 there (`maxFailures: 1`); `--max-failures 0` runs the rest.
 
 ## The terminal

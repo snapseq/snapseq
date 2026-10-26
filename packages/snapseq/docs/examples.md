@@ -5,15 +5,13 @@ it says otherwise; names are placeholders.
 
 ## 1. One page, two shots
 
-The smallest sequence: freeze motion, open a page, shoot the viewport and the
-whole page.
+The smallest sequence: open a page, shoot the viewport and the whole page.
 
 ```ts
 // snapseq/pricing.seq.ts
-import { disableTransitions, sequence } from "snapseq";
+import { sequence } from "snapseq";
 
 sequence(async ({ page, seq }) => {
-  await disableTransitions(page);
   await page.goto("/pricing");
   await seq.snap();      // 01.png  the viewport
   await seq.snapPage();  // 02.png  the whole page
@@ -31,12 +29,11 @@ each navigation.
 
 ```ts
 // snapseq/site.seq.ts
-import { addPersistentStyle, disableTransitions, sequence } from "snapseq";
+import { addPersistentStyle, sequence } from "snapseq";
 
 const routes = ["/", "/pricing", "/docs", "/blog"];
 
 sequence(async ({ page, seq }) => {
-  await disableTransitions(page);
   await addPersistentStyle(page, "#chat-widget { display: none !important }");
   for (const route of routes) {
     await page.goto(route);
@@ -52,10 +49,9 @@ only is a branch in the body; the other device gets fewer shots.
 
 ```ts
 // snapseq/home.seq.ts
-import { disableTransitions, sequence } from "snapseq";
+import { sequence } from "snapseq";
 
 sequence(async ({ page, seq, device }) => {
-  await disableTransitions(page);
   await page.goto("/");
   await seq.snap();                                 // 01.png  both devices
   if (device === "mobile") {
@@ -69,20 +65,9 @@ sequence(async ({ page, seq, device }) => {
 ## 4. A desktop-only sequence
 
 `skipIf` at the top of the file runs before any fixture, so the skipped
-device gets no directory. The reason shows in the terminal.
-
-```ts
-// snapseq/dashboard.seq.ts
-import { disableTransitions, sequence, skipIf } from "snapseq";
-
-skipIf(({ device }) => device !== "desktop", "desktop only");
-
-sequence(async ({ page, seq }) => {
-  await disableTransitions(page);
-  await page.goto("/dashboard");
-  await seq.snapPage();
-});
-```
+device gets no directory ([Sequences](sequences.md#skipping)). With
+`skipIf(({ device }) => device !== "desktop", "desktop only")` in
+`snapseq/dashboard.seq.ts`, the reason shows in the terminal:
 
 ```
   ✔ dashboard / desktop  1 shot  2.8s
@@ -121,13 +106,12 @@ export async function snapMenuOpen({ page, seq }: SequenceContext): Promise<stri
 
 ```ts
 // snapseq/menus.seq.ts
-import { disableTransitions, sequence, skipIf } from "snapseq";
+import { sequence, skipIf } from "snapseq";
 import { snapMenuOpen } from "./helpers/snap-menu";
 
 skipIf(({ device }) => device !== "mobile", "the menu is a drawer on mobile only");
 
 sequence(async ({ ctx, page, seq }) => {
-  await disableTransitions(page);
   for (const route of ["/", "/pricing", "/docs"]) {
     await page.goto(route);   // navigation closes the drawer
     await seq.snap();         // closed
@@ -136,32 +120,21 @@ sequence(async ({ ctx, page, seq }) => {
 });
 ```
 
-Helpers are plain files under `snapseq/`; only files named `*.seq.ts`
-(or `.js`, `.mts`, `.cts`, `.mjs`, `.cjs`) are sequences.
-
 ## 6. A sticky tray
 
 A promo tray docks to the bottom of the viewport and lands in its slot when
 the page end scrolls into view. `snapPage` grows the viewport to the page
 height, so the tray lands and the shot shows it in place.
 
-A page whose height follows the viewport, a `100vh` hero or a loader pinned
-to the page end, grows again with every resize. `snapPage` refuses it; use
-Playwright's native full page there, or list `stabilize()` from
-`@snapseq/stabilize` in `plugins` ([Plugins](plugins.md)) so `snapPage` takes a
-`100vh` hero (`stabilize({ motion: false, hover: false, floating: false, scrollEvent: false })`
-for that alone).
-
 ```ts
 // snapseq/landing.seq.ts
-import { disableTransitions, sequence } from "snapseq";
+import { sequence } from "snapseq";
 
 sequence(async ({ page, seq }) => {
-  await disableTransitions(page);
   await page.goto("/landing");
   await seq.snapPage();                // 01.png  the tray rests in its slot at the page end
 
-  await page.goto("/landing/video");   // a 100vh hero: its height follows the viewport
+  await page.goto("/landing/video");   // a script sizes the page from innerHeight
   await seq.snap({ fullPage: true });  // 02.png  native full page; sticky elements stay pinned
 });
 ```
@@ -178,10 +151,9 @@ one shot.
 
 ```ts
 // snapseq/account.seq.ts
-import { disableTransitions, sequence } from "snapseq";
+import { sequence } from "snapseq";
 
 sequence(async ({ page, seq }) => {
-  await disableTransitions(page);
   await page.goto("/account");
   await seq.snap({ mask: [page.locator("time"), page.getByTestId("avatar")], maskColor: "#888" });
 
@@ -207,10 +179,9 @@ with a timer, because it has no timeout of its own.
 
 ```ts
 // snapseq/report.seq.ts
-import { disableTransitions, sequence } from "snapseq";
+import { sequence } from "snapseq";
 
 sequence(async ({ page, seq }) => {
-  await disableTransitions(page);
   await page.goto("/report");
 
   // The chart lands after a fetch, once the DOM has already been quiet.
@@ -246,7 +217,7 @@ and answers preflights itself. The `env` fixture keeps it to dev.
 
 ```ts
 // snapseq/contact.seq.ts
-import { disableTransitions, sequence } from "snapseq";
+import { sequence } from "snapseq";
 
 sequence(async ({ page, seq, env }) => {
   if (env === "dev") {
@@ -254,7 +225,6 @@ sequence(async ({ page, seq, env }) => {
       await route.fulfill({ response: await route.fetch() });
     });
   }
-  await disableTransitions(page);
   await page.goto("/contact");
   await page.getByRole("form").waitFor();
   await seq.snap();
@@ -352,8 +322,9 @@ SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm snapseq --device mobile
 Only the rerun sequence's own `<sequence>/<device>` directory is wiped; the
 passed ones keep their shots. A rerun starts from `01.png` again, so it
 replaces the failed attempt whole. From a monorepo root the same commands go
-through `pnpm --filter <app> exec snapseq …`. To run every sequence regardless of
-failures, pass `--max-failures 0`.
+through `pnpm --filter <app> exec snapseq …`. To rerun one sequence by name, give its
+id, `pnpm snapseq pricing`, or a quoted glob for a folder, `pnpm snapseq 'campaign/*'`.
+To run every sequence regardless of failures, pass `--max-failures 0`.
 
 ## 12. A backend that rejects every request
 
@@ -382,10 +353,9 @@ export default defineConfig({
 
 ```ts
 // snapseq/search.seq.ts
-import { disableTransitions, sequence } from "snapseq";
+import { sequence } from "snapseq";
 
 sequence(async ({ page, seq }) => {
-  await disableTransitions(page);
   await page.goto("/");
   const form = page.locator(".search-form");
   await form.locator("input[name=q]").fill("lamps");
@@ -404,9 +374,3 @@ pnpm snapseq --env prod                                               # replays 
 
 The recorded file is one response as the backend sent it, so the page renders
 real content. Commit it with the sequence.
-
-The glob `**/api/search` matches that path on any host, so a third-party
-request to the same path would match too; `--record` then stops the sequence
-and names both requests. This example assumes the API is on the page's own
-host and the recording runs against staging, so a pattern pinned to prod's
-host would never match.

@@ -1,15 +1,23 @@
 # Troubleshooting
 
-Symptom, cause, fix. Error text is quoted as the terminal prints it.
+Symptom, cause, fix. Error text is quoted as the terminal prints it. What an
+orchestration file prints when it stops is in [Orchestration](orchestration.md#errors).
 
 ## Injected styles do nothing
 
 **Symptom.** Animations still run after `disableTransitions`, or
-`addPersistentStyle` / `page.addStyleTag` throws.
+`addPersistentStyle` / `page.addStyleTag` throws on a page of the site. With
+`stabilize` on, transitions run between shots on that site, and the browser console
+logs a `style-src` violation. Each shot still ends the ones running when it is taken.
 **Cause.** The site's `Content-Security-Policy` has a strict `style-src`, which
-rejects an injected `<style>` element.
+rejects an injected `<style>` element. `addPersistentStyle` throws on a page already
+on the site; the copy it adds to each later page is dropped without an error.
+`stabilize`'s `motion` step calls it before the sequence body. The page is blank
+there, so on the site its copy is only dropped; a page something already took to the
+site fails the sequence before its body with `snapseq: stabilize threw in begin: …`.
 **Fix.** `use: { bypassCSP: true }` for that site, on the env or composed over
-the config. See [Config](config.md#overriding-playwright-options).
+the config ([Config](config.md#overriding-playwright-options)). Or turn the step off
+with `stabilize: { motion: false }` ([Config](config.md#stabilize)).
 
 ## ReferenceError: __name is not defined
 
@@ -81,7 +89,7 @@ fails depends on its `goto`:
 
 The `timeout` screenshot option (`seq.snap({ timeout: 5000 })`) only makes the
 sequence fail sooner. To make it pass, answer the URL: a `page.route` in
-a `begin` hook, or in the sequence before the `goto`, that aborts it
+the sequence, before the `goto`, that aborts it
 (`page.route("**/hero.jpg", (route) => route.abort())`; the shot then notes one
 image that failed to load) or fulfills it with a small image of your own.
 
@@ -109,26 +117,25 @@ Otherwise shoot it section by section, scrolling the element between shots:
 
 ## The terminal says `scroll pass stopped after N steps`
 
-**Cause.** `@snapseq/stabilize` with `scroll: true` scrolls a native full page
+**Cause.** `stabilize` with `scroll: true` scrolls a native full page
 (`snap({ fullPage: true })`) from its top to its end, to wake lazy content, and
 stops at 60 steps or 5 s. The page is longer than that, or grows as it
 scrolls, like an infinite feed.
 **Fix.** Check the lower part of the shot. For a feed, take the part you need:
-scroll to it yourself and `snap()`. See the stabilize
-[README](../../stabilize/README.md).
+scroll to it yourself and `snap()`. See [Config](config.md#scroll).
 
 ## The terminal says `cannot read <url>: its viewport units stay live`
 
-**Cause.** `@snapseq/stabilize` could not read the rules of a stylesheet from
+**Cause.** `stabilize` could not read the rules of a stylesheet from
 another origin, so its viewport units were not frozen. The note is on every
-shot taken while the sheet is unreadable. The plugin fetches such a sheet again
+shot taken while the sheet is unreadable. It fetches such a sheet again
 as a CORS request; that fails when the server refuses, the sheet redirects, a
 script imports it with `@import`, or a `replay` entry or HAR route serves it.
 A `100vh` section from that sheet can make `snapPage` refuse the page, and the
 refusal ends with this note.
 **Fix.** Serve the stylesheet without a redirect, or from the page's own
 origin. If the page does not depend on that sheet's viewport units, ignore the
-note. See the stabilize [README](../../stabilize/README.md).
+note. See [Config](config.md#viewport-units).
 
 ## `snapPage: the document grew from … px after the viewport was set to its height`
 
@@ -137,16 +144,16 @@ footer or loader pinned to the page end. Every taller viewport makes it taller
 again, so no viewport could ever contain it. Or the device has `isMobile:
 true` and the page has no viewport meta, or a fixed-width one: the layout
 viewport scales with the grown viewport ([Config](config.md#devices)), and
-`stabilize()` does not change that. When the shot has notes before the
-refusal, a plugin's (such as `@snapseq/stabilize`'s `cannot read <url>`) or a
+`stabilize` does not change that. When the shot has notes before the
+refusal, `stabilize`'s (such as `cannot read <url>`) or a
 readiness note (such as `DOM still changing after 3 s`), the message ends with
 `Notes: …`.
-**Fix.** List `stabilize()` from `@snapseq/stabilize` in the config's `plugins`:
-it freezes viewport-height units to px before the viewport grows, so a `100vh`
-section stays one screen tall ([Plugins](plugins.md)).
-`stabilize({ motion: false, hover: false, floating: false, scrollEvent: false })`
-if you want only that. If the page is still refused, something the plugin cannot freeze follows the
-viewport (its README lists what); use
+**Fix.** `stabilize` freezes viewport-height units to px before the viewport
+grows, so a `100vh` section stays one screen tall. It is on by default: check
+that the config has neither `stabilize: false` nor `stabilize: { viewportUnits: false }`
+([Config](config.md#stabilize)). If the page is still refused, something
+`stabilize` cannot freeze follows the viewport
+([what it does not do](config.md#what-stabilize-does-not-do)); use
 `seq.snap({ fullPage: true })` for that page, Playwright's native full page.
 Sticky elements stay pinned where the scroll left them. For `isMobile` on a
 page without a viewport meta, use `snap({ fullPage: true })` or a device
@@ -162,25 +169,27 @@ flow and a tray lands in its slot.
 
 ## A shot caught an animation mid-frame
 
-**Cause.** `disableTransitions` was not called, or was called after the
-`goto` of a later document and the motion comes from the Web Animations API,
-which the readiness wait cannot see.
-**Fix.** Call `disableTransitions(page)` once at the top of the sequence, before
-the first `goto`. For Web Animations API motion, wait for the element's final
+**Cause.** `stabilize` is off (`stabilize: false` or `motion: false`), and
+`disableTransitions` was not called, or was called after the `goto` of a later
+document, and the motion comes from the Web Animations API, which the readiness
+wait cannot see.
+**Fix.** Leave `stabilize` on, as it is by default: its `motion` step finishes or
+cancels Web Animations before each shot and turns transitions off, so a sequence
+need not call `disableTransitions` ([Config](config.md#motion)). With it off, call
+`disableTransitions(page)` once at the top of the sequence, before the first
+`goto`. For Web Animations API motion, wait for the element's final
 state with a locator, or `await page.evaluate(() => Promise.all(document.getAnimations().map((a) => a.finished)))` raced against a timer.
-Or list `stabilize()` from `@snapseq/stabilize` in `plugins`: its `motion`
-option, on by default, finishes or cancels Web Animations before each shot and
-applies `disableTransitions` itself, so a sequence need not call it.
 
 ## An element that fades in is missing from the shot
 
 **Cause.** `disableTransitions` sets `animation: none`. That leaves an element
 at its base state, so a `.hero` with base `opacity: 0` and
 `animation: fadeIn 1s forwards` stays hidden.
-**Fix.** `stabilize()` from `@snapseq/stabilize` instead of
+**Fix.** `stabilize`'s `motion` step, on by default, instead of
 `disableTransitions`: it finishes the animation, so a `forwards` fade-in ends
-visible. Or `addPersistentStyle(page, ".hero { opacity: 1 !important }")`, or
-the page's own revealed class.
+visible. Take the `disableTransitions` call out of the sequence. Or
+`addPersistentStyle(page, ".hero { opacity: 1 !important }")`, or the page's own
+revealed class.
 
 ## Basic auth credentials are not sent, or are sent to the wrong host
 
@@ -196,22 +205,43 @@ redirect to a second origin gets none, and an `origin` set on the env wins over
 message lists the available ones.
 **Fix.** Use a listed name, or `--env ""` for the default.
 
-## `snapseq: SNAPSEQ_RUN must be a directory name, not a path: "…"`
+## `snapseq: --run must be …` or `SNAPSEQ_RUN must be …`
 
-**Cause.** The run name contains a slash or backslash, or is `.` or `..`. The
+**Cause.** The run name contains a slash or backslash, or is `.` or `..`, or `--run` is empty. The
 run's sequence directories are wiped, so the name may not point outside the
 screenshots dir.
-**Fix.** A plain name: `SNAPSEQ_RUN=review-1`.
+**Fix.** A plain name: `--run review-1` or `SNAPSEQ_RUN=review-1`.
 
 ## `snapseq: no snapseq.config.ts in …; pass -c <path>`
 
 **Cause.** The current directory has no `snapseq.config.{ts,mts,cts,js,mjs,cjs}`
-and `-c` was not given.
+and `-c` was not given, or, in an orchestration run, `-c` names a folder without one.
 **Fix.** Run from the app's directory, or pass `-c <path>`.
+
+## `snapseq: no sequence matches "…"`
+
+**Cause.** A filter word selected no sequence id. A word is an id (`cll/dosing`)
+or a glob over ids (`'cll/*'`), matched against the whole id and case-sensitively;
+`cll` alone is not the folder's sequences, and `dosing` is not a substring. The
+lines under the message say what it may have meant: a folder, an orchestration, ids
+that differ only in case, ids that end in or contain the word, else every id.
+**Fix.** Use the id or the glob the message suggests, or `snapseq` alone for
+everything. A regular expression or `file:42` goes after `--`.
+See [Running](running.md#running).
+
+## `snapseq: … is not a sequence file; quote a glob so the shell leaves it`
+
+**Cause.** The word names a file that exists, other than a sequence file in
+`sequencesDir` (in a repair, other than any sequence file). Usually an unquoted glob
+that your shell expanded into file names before snapseq saw it, because the working
+directory holds a matching folder. For a file inside `sequencesDir` the message ends
+with the glob over ids to quote.
+**Fix.** Quote the glob: `pnpm snapseq 'cll/*'`. (Stock zsh also stops with `no
+matches found` for an unquoted glob that matches nothing.)
 
 ## `snapseq: <flag> requires a value`
 
-**Cause.** A flag that takes a value (`--env`, `--host`, `--device`, `-c`,
+**Cause.** A flag that takes a value (`--env`, `--host`, `--device`, `--run`, `-c`,
 `--config`) is the last argument. Often `--env $ENV` with an empty `ENV`: the
 word vanishes.
 **Fix.** `--env staging` or `--env=staging`. Quote a variable that may be
@@ -223,8 +253,9 @@ empty, `--env "$ENV"`: an empty `--env` or `--host` means unset.
 variable (`--record=$FLAG`). The flag refuses it, since a bare `--record`
 records; an empty `SNAPSEQ_RECORD` means unset.
 **Fix.** `--record` to record, `--record=0` to replay, or leave the flag out.
-`--record 0` with a space is not the same: it records, and `0` goes to
-Playwright as a file filter.
+`--record 0` with a space is not the same: it records, and `0` is read as a
+sequence word, so the run stops with `snapseq: no sequence matches "0"` unless a
+sequence is named `0`, and then it records that one.
 
 ## `snapseq: numbering must be zeros, like "00", not "…"`
 
@@ -240,16 +271,9 @@ Playwright as a file filter.
 ## `snapseq: a shot is already in progress; await each snap before the next`
 
 **Cause.** A `snap` or `snapPage` started before the previous one resolved: a
-missing `await`, a `Promise.all`, or a plugin hook that took a shot of its own.
-**Fix.** Await each shot; take none from a plugin hook.
-
-## `snapseq: the sequence ended before … was listed`
-
-**Cause.** A `snap` or `snapPage` was still running when the sequence ended:
-the body returned without awaiting it, or the sequence failed or timed out
-during the shot. The file may be on disk, but the shot does not count.
-**Fix.** Await every shot before the body returns. If the sequence failed or
-timed out, read its first error; this one follows it.
+missing `await` or a `Promise.all`. A shot still running when the body returns
+gives `a shot was still being taken when the sequence ended; await each snap`.
+**Fix.** Await each shot.
 
 ## `snapPage: the page has no viewport size`
 
@@ -261,9 +285,11 @@ that device.
 ## `snapseq: refusing to wipe …: not inside …`
 
 **Cause.** A `describe` or test title with `..` in it points the sequence's
-directory outside the screenshots dir. That directory is wiped when the sequence
+directory outside the screenshots dir, or a symlink inside the screenshots dir
+(`a symlink leads it to …`) does. That directory is wiped when the sequence
 starts, so snapseq refuses.
-**Fix.** Plain titles, no `..`.
+**Fix.** Plain titles, no `..`. Replace the symlink with a real folder; the
+screenshots dir itself may be a symlink.
 
 ## `snapseq: refusing to wipe …: … writes inside it; rename one of the sequences`
 
@@ -271,8 +297,10 @@ starts, so snapseq refuses.
 device `mobile` writes `home/mobile/`; `home/mobile.seq.ts` on `desktop`
 writes `home/mobile/desktop/`, and so does every sequence under `home/mobile/`.
 A sequence's directory is wiped when it starts, so snapseq refuses first,
-naming the sequence file that writes inside it, and nothing is deleted. A
-directory a plugin hook wrote in it is wiped with the rest.
+naming the id of the sequence that writes inside it (`home/mobile`), and nothing
+is deleted. On a file system that ignores case (macOS, Windows), `home/Mobile.seq.ts`
+writes into the same folder once its output exists, and is named the same way. A subfolder a step made in it, such as `labelled/`, is wiped with the
+rest.
 **Fix.** Rename one of the sequences so its name is not a device's, such as
 `home/mobile-menu.seq.ts`.
 
@@ -304,9 +332,8 @@ yourself and pass `--host`. `DEBUG=pw:webserver` shows the server's output.
 
 ## No live terminal view, just one line per shot
 
-**Cause.** Stdout is not a terminal (CI, a pipe, `| tee`), or the run used
-`--list`, `--debug`, `--ui`, `--ui-host`, `--ui-port` or `PWDEBUG`, or
-`TERM=dumb`. Those get Playwright's list reporter instead.
+**Cause.** Stdout is not a terminal, or a flag or variable turned the view off;
+[Running](running.md#the-terminal) lists them.
 **Fix.** None needed; the list output has the same information. For the frame,
 run in a terminal without piping. Words instead of marks (`ok`, `FAIL`) mean
 the terminal cannot draw them; `NO_COLOR` drops colors on purpose.

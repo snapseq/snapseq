@@ -9,33 +9,33 @@ Playwright test; snapseq adds numbered screenshots per run, sequence and
 device, env and host selection, one project per device, a `snapseq`
 command, and defaults suited to long sequential runs. Everything else is stock
 Playwright: `--headed`, `--ui`, `--debug`, `--trace on`, reporters, the VS Code
-extension. [Plugins](docs/plugins.md) add to the shots: a label strip above
-each one, one PDF per sequence, or steady viewport units for `snapPage` and no
-motion before a shot.
+extension.
+
+Capture lives in `snapseq`: it takes the shots, and its `stabilize` setting
+([Config](docs/config.md#stabilize)), on by default, holds the page still for each
+one (steady viewport units for `snapPage`, no motion, the pointer off the content).
+What happens to the shots afterwards is
+steps in an [orchestration file](docs/orchestration.md), which runs several
+sequences in an order you choose: `@snapseq/label` puts a label strip above each
+shot, and `@snapseq/pdf` binds shots into a PDF.
 
 ## Quick start
 
 In the app that owns the pages:
 
 ```bash
-pnpm add -D @playwright/test snapseq @snapseq/stabilize
+pnpm add -D @playwright/test snapseq
 pnpm exec playwright install chromium   # once per machine; under Node 26 run this with Node 22
 ```
 
 ```ts
 // snapseq.config.ts
 import { defineConfig } from "snapseq";
-import { stabilize } from "@snapseq/stabilize";
 
 export default defineConfig({
   envs: { dev: { host: "http://localhost:3000" } },
-  plugins: [stabilize()],
 });
 ```
-
-Without `stabilize()`, a page with a `100vh` section makes `snapPage` refuse it
-(`the document grew …`). With it, the section keeps its height, and motion
-stops and the pointer leaves the content before each shot.
 
 ```ts
 // snapseq/pricing.seq.ts
@@ -64,10 +64,10 @@ screenshots/2026-10-01 at 04.07.16 PM/pricing/mobile/02.png
 | Page                                        | Answers                                                              |
 | ------------------------------------------- | -------------------------------------------------------------------- |
 | [Getting started](docs/getting-started.md) | How do I get from an empty app to a PNG?                             |
-| [Config](docs/config.md)                   | How do I set up envs, devices, the dev server, Playwright options?   |
+| [Config](docs/config.md)                   | How do I set up envs, devices, the dev server, `stabilize`, Playwright options? |
 | [Sequences](docs/sequences.md)             | How do I write a sequence that takes the right shot?                 |
 | [Running](docs/running.md)                 | How do I run it, and what do the outputs and the terminal mean?      |
-| [Plugins](docs/plugins.md)                 | How do I add a label strip, a PDF or steady `vh` units, or write a plugin? |
+| [Orchestration](docs/orchestration.md)     | How do I run several sequences in one run, label the shots, bind a PDF per device, or shoot one part again? |
 | [Examples](docs/examples.md)               | Complete sequence files, basic to complex.                            |
 | [Troubleshooting](docs/troubleshooting.md) | Something looks wrong.                                               |
 

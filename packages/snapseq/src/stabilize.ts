@@ -1,6 +1,8 @@
-import type { Route } from "@playwright/test";
-import { addPersistentStyle, type Plugin } from "snapseq";
+import type { Page, Route } from "@playwright/test";
+import { addPersistentStyle, NO_TRANSITIONS } from "./dom.js";
+import { scrubUrl, settle, type Shot } from "./sequence.js";
 
+/** The config's `stabilize`: each step has its own switch. `stabilize: false` turns them all off. */
 export interface StabilizeOptions {
   /** Freeze viewport-height units to px at the shot's viewport, so `snapPage` can grow the viewport without the layout following it. Default true. */
   viewportUnits?: boolean;
@@ -18,42 +20,23 @@ export interface StabilizeOptions {
   floating?: boolean;
 }
 
-declare module "snapseq" {
-  interface SnapOptions {
-    /** `"keep"`: leave the pointer where the sequence put it for this shot. Needs `@snapseq/stabilize` in `plugins`. */
-    hover?: "keep";
-  }
-}
-
-// snapseq's disableTransitions without its `animation: none`, which would hold a reveal at its base state (a bar
-// chart at zero width): animations run, and stopMotion brings each to its end.
-const NO_TRANSITIONS = `*, *::before, *::after { transition: none !important; }
-*::details-content { transition: none !important; }
-*::backdrop { transition: none !important; }
-html { scroll-behavior: auto !important; }`;
-
 // The functions below run in the page. Arrow functions only: a bundler wraps
 // named inner functions in a helper the page does not have.
 
-// Resolves once the DOM has been quiet for 200 ms, 2 s at most: what a script inserts after domcontentloaded
-// (hydration), or what an observer reveals after a grow, has landed.
-const quiet = () =>
-  new Promise<void>((done) => {
-    let timer = 0;
-    const observer = new MutationObserver(() => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(end, 200);
-    });
-    const end = () => {
-      observer.disconnect();
-      window.clearTimeout(timer);
-      window.clearTimeout(cap);
-      done();
-    };
-    const cap = window.setTimeout(end, 2000);
-    timer = window.setTimeout(end, 200);
-    observer.observe(document, { childList: true, subtree: true, attributes: true, characterData: true });
-  });
+// What they keep in the page, per document, in one store under Symbol.for("snapseq") on window: freezeUnits's state,
+// the links findLinks leaves for swapLinks, and fixedElements's records. Types are erased, so the page functions share them.
+type Saved = { value: string; priority: string; frozen: string };
+type State = {
+  originals: WeakMap<CSSStyleDeclaration, Map<string, Saved>>;
+  bases: Record<string, number>;
+  warned: Set<string>;
+  unreadable: Set<string>;
+  checked: Map<string, boolean>; // href: true keeps the note, false is harmless
+  observer?: MutationObserver;
+};
+type Side = "top" | "bottom";
+type Entry = { top: number; width: number; height: number; sig: string; pin?: { was: Record<Side, [string, string]>; wrote: Record<Side, string> } };
+type Store = { units?: State; refetch?: HTMLLinkElement[]; floating?: Map<HTMLElement, Entry> };
 
 // The document from its top down to its end, one viewport at a time, a frame on each stop: what waits for
 // the viewport (an IntersectionObserver reveal, a data-src loader) fires on the way. The end is read
@@ -88,9 +71,18 @@ const fireScroll = () => document.dispatchEvent(new Event("scroll", { bubbles: t
 
 // Web Animations: a finite one is finished, an infinite one (or one that cannot
 // finish) is cancelled. A finish handler can start another, so go round again.
+// In the document and every open shadow root: document.getAnimations() leaves
+// those out, and the screenshot would finish them after snapPage measured.
 const stopMotion = async () => {
+  // Found again each round: a finish handler can attach a shadow root too.
+  const roots = () => {
+    const found: Array<Document | ShadowRoot> = [document];
+    for (const root of found) for (const el of Array.from(root.querySelectorAll("*"))) if (el.shadowRoot) found.push(el.shadowRoot);
+    return found;
+  };
+  const animations = () => roots().flatMap((root) => root.getAnimations());
   for (let round = 0; round < 5; round++) {
-    for (const animation of document.getAnimations()) {
+    for (const animation of animations()) {
       try {
         if (Number.isFinite(animation.effect?.getComputedTiming().endTime) && animation.playbackRate !== 0) animation.finish();
         else animation.cancel();
@@ -99,19 +91,21 @@ const stopMotion = async () => {
       }
     }
     await new Promise<void>((done) => requestAnimationFrame(() => done()));
-    if (document.getAnimations().every((animation) => animation.playState === "finished")) break;
+    if (animations().every((animation) => animation.playState === "finished")) break;
   }
-  for (const svg of Array.from(document.querySelectorAll("svg"))) {
-    if (!(svg instanceof SVGSVGElement)) continue; // an HTML element named svg has no animations to pause
-    svg.pauseAnimations(); // where it is, like a video: a draw-in that finished stays drawn
+  for (const root of roots()) {
+    for (const svg of Array.from(root.querySelectorAll("svg"))) {
+      if (!(svg instanceof SVGSVGElement)) continue; // an HTML element named svg has no animations to pause
+      svg.pauseAnimations(); // where it is, like a video: a draw-in that finished stays drawn
+    }
+    for (const video of Array.from(root.querySelectorAll("video"))) video.pause();
   }
-  for (const video of Array.from(document.querySelectorAll("video"))) video.pause();
 };
 
 // The links to fetch again, as hrefs without the fragment, which no request URL has: an unreadable,
-// enabled, non-alternate stylesheet link not warned about yet. The links themselves wait in a property for swapLinks.
+// enabled, non-alternate stylesheet link not warned about yet. The links themselves wait in the store for swapLinks.
 const findLinks = () => {
-  const warned = (window as unknown as { __snapseqViewportUnits?: { warned: Set<string> } }).__snapseqViewportUnits?.warned;
+  const store = ((window as unknown as Record<symbol, Store | undefined>)[Symbol.for("snapseq")] ??= {});
   const links = Array.from(document.styleSheets).flatMap((sheet) => {
     const link = sheet.ownerNode;
     let readable = true;
@@ -126,21 +120,21 @@ const findLinks = () => {
       !link.disabled &&
       link.relList.contains("stylesheet") &&
       !link.relList.contains("alternate") &&
-      !warned?.has(link.href)
+      !store.units?.warned.has(link.href)
       ? [link]
       : [];
   });
-  (window as unknown as { __snapseqRefetch?: HTMLLinkElement[] }).__snapseqRefetch = links;
+  store.refetch = links;
   return links.map((link) => link.href.replace(/#.*/, ""));
 };
 
 // Fetches each of those again as a CORS request, through a clone beside the original; the
 // original goes once the clone loaded, and stays when it did not (a 500, a timeout).
-// The plugin's route supplies the header the server did not.
+// The route in beforeSnap supplies the header the server did not.
 const swapLinks = async () => {
-  const host = window as unknown as { __snapseqRefetch?: HTMLLinkElement[] };
-  const links = (host.__snapseqRefetch ?? []).filter((link) => link.isConnected); // the page may have removed one since findLinks
-  delete host.__snapseqRefetch;
+  const store = ((window as unknown as Record<symbol, Store | undefined>)[Symbol.for("snapseq")] ??= {});
+  const links = (store.refetch ?? []).filter((link) => link.isConnected); // the page may have removed one since findLinks
+  delete store.refetch;
   const cap = new Promise<boolean>((done) => window.setTimeout(() => done(false), 5000));
   const swaps = links.map((link) => {
     const clone = link.cloneNode() as HTMLLinkElement;
@@ -161,36 +155,27 @@ const swapLinks = async () => {
 // page's own value is kept per declaration, so the next shot freezes it again at
 // the viewport of that shot. Open shadow roots and adopted stylesheets are reached. Resolves to the hrefs unreadable now that may hold a viewport unit.
 const freezeUnits = async () => {
-  type Saved = { value: string; priority: string; frozen: string };
-  type State = {
-    originals: WeakMap<CSSStyleDeclaration, Map<string, Saved>>;
-    bases: Record<string, number>;
-    warned: Set<string>;
-    unreadable: Set<string>;
-    checked: Map<string, boolean>; // href: true keeps the note, false is harmless
-    observer?: MutationObserver;
-  };
-  const host = window as unknown as { __snapseqViewportUnits?: State };
-  const state = (host.__snapseqViewportUnits ??= { originals: new WeakMap(), bases: {}, warned: new Set(), unreadable: new Set(), checked: new Map<string, boolean>() });
+  const store = ((window as unknown as Record<symbol, Store | undefined>)[Symbol.for("snapseq")] ??= {});
+  const state = (store.units ??= { originals: new WeakMap(), bases: {}, warned: new Set(), unreadable: new Set(), checked: new Map<string, boolean>() });
 
   // Reported on every call, so every shot says it; `warned` is for findLinks, which tries a sheet once per document.
   const note = (href: string) => {
     state.warned.add(href);
     state.unreadable.add(href);
   };
-  // A sheet from another origin has no readable rules unless it was fetched with CORS.
-  const readable = (sheet: CSSStyleSheet) => {
+  // A sheet from another origin has no readable rules (null) unless it was fetched with CORS.
+  const rulesOf = (sheet: CSSStyleSheet) => {
     try {
-      return !!sheet.cssRules;
+      return sheet.cssRules;
     } catch {
-      return false;
+      return null;
     }
   };
 
   // What the fetch again above could not make readable. The run below finds the imports again.
   state.unreadable.clear();
   for (const sheet of Array.from(document.styleSheets)) {
-    if (sheet.href && !sheet.disabled && !readable(sheet)) note(sheet.href);
+    if (sheet.href && !sheet.disabled && !rulesOf(sheet)) note(sheet.href);
   }
 
   // What 100 of each unit is in px. Width-only units (vw, vi) are not frozen: the width never changes.
@@ -210,7 +195,8 @@ const freezeUnits = async () => {
   state.observer?.takeRecords(); // the probe's own mutations; the run below covers everything present
 
   // Quoted strings and url(...) are left alone: split() keeps them at the odd indexes.
-  const protectedText = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|url\([^)]*\))/i;
+  // A quoted url("…") is left to the quote rules: its text may hold a ")".
+  const protectedText = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|url\((?!\s*["'])[^)]*\))/i;
   const viewportUnit = /(?<![\w-])(-?\d*\.?\d+(?:e[+-]?\d+)?)(s|l|d)?v(h|min|max|b)\b/gi;
   const convert = (value: string) =>
     value
@@ -271,10 +257,11 @@ const freezeUnits = async () => {
       for (const sheet of [...Array.from(root.styleSheets), ...root.adoptedStyleSheets]) {
         if (seen.has(sheet)) continue;
         seen.add(sheet);
+        const rules = rulesOf(sheet);
         try {
-          walk(sheet.cssRules);
+          if (rules) walk(rules); // unreadable: noted above
         } catch {
-          // unreadable: noted above
+          // a page whose CSSOM throws on the way (its setProperty replaced): the rest of this sheet stays as it is
         }
       }
       for (const el of Array.from(root.querySelectorAll<HTMLElement>("*"))) {
@@ -334,8 +321,10 @@ const freezeUnits = async () => {
   // the 10 ran out for, so the next shot tries it again, as it does one not checked yet (over the 10, or found while these were out).
   const deadline = AbortSignal.timeout(3000);
   let budget = 10;
+  // A comment, a quoted string or an unquoted url(): text no viewport unit or @import is read from.
+  const inert = /\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)/gi;
   // Comments and strings are tokens, so an @import inside one is not found; the @import token carries its URL.
-  const token = /\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)|@import\s*(?:url\(\s*)?(?:"([^"\\\n]*)"|'([^'\\\n]*)'|([^\s"'()\\;]+))/gi;
+  const token = new RegExp(`${inert.source}|${/@import\s*(?:url\(\s*)?(?:"([^"\\\n]*)"|'([^'\\\n]*)'|([^\s"'()\\;]+))/.source}`, inert.flags);
   const harmlessText = async (href: string, depth: number): Promise<boolean | undefined> => {
     if (budget-- <= 0) return undefined;
     try {
@@ -353,7 +342,7 @@ const freezeUnits = async () => {
       }
       text += decoder.decode();
       // An unquoted url() goes too, so a /* inside it is not taken for a comment; one with a backslash stays.
-      const bare = text.replace(/\/\*[\s\S]*?\*\/|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|url\(\s*[^\s"'()\\]*\s*\)/gi, " ");
+      const bare = text.replace(inert, " ");
       if (bare.includes("\\") || convert(bare) !== bare) return false;
       const specs = Array.from(text.matchAll(token), (m) => m[1] ?? m[2] ?? m[3]).filter((spec) => spec !== undefined);
       if (specs.length !== (bare.match(/@import/gi) ?? []).length || (depth > 0 && specs.length > 0) || specs.length > 9) return false;
@@ -371,28 +360,26 @@ const freezeUnits = async () => {
       if (harmless !== undefined) state.checked.set(href, !harmless);
     }),
   );
-  return { unreadable: Array.from(state.unreadable).filter((href) => state.checked.get(href) !== false) };
+  return Array.from(state.unreadable).filter((href) => state.checked.get(href) !== false);
 };
 
 // Fixed elements keep the top they had at the device viewport. "discover" records them at the end of beforeSnap, "pin" sets an
 // override on each at the end of afterGrow, "release" takes the page's inline values back and forgets them. The records live in
 // the page, per document, never in the DOM. Elements never cross evaluate: each call finds the map itself.
-const fixedElements = (mode: string) => {
-  type Side = "top" | "bottom";
-  type Entry = { top: number; width: number; height: number; sig: string; pin?: { was: Record<Side, [string, string]>; wrote: Record<Side, string> } };
-  const host = window as unknown as Record<symbol, Map<HTMLElement, Entry> | undefined>;
-  const records = (host[Symbol.for("snapseq.floating")] ??= new Map());
+const fixedElements = (mode: "discover" | "pin" | "release") => {
+  const store = ((window as unknown as Record<symbol, Store | undefined>)[Symbol.for("snapseq")] ??= {});
+  const records = (store.floating ??= new Map());
   const shows = (el: HTMLElement) => el.checkVisibility({ visibilityProperty: true, opacityProperty: true });
   const onScreen = (r: DOMRect) => r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
   // What the page sets on the element itself. Different at the grown viewport: the page placed it (a menu under its trigger,
-  // a tray it moved by class), and the plugin leaves it where the page put it.
+  // a tray it moved by class), and stabilize leaves it where the page put it.
   const signature = (el: HTMLElement) => [el.style.cssText, getComputedStyle(el).transform, el.getAttribute("class")].join("\n");
 
   // Each side goes back only while it still holds what was written, value and priority: a page that wrote its own since keeps
   // it, and an element whose side the page took places itself: it is not pinned again.
   const restore = (el: HTMLElement, entry: Entry) => {
+    if (!entry.pin) return;
     for (const side of ["top", "bottom"] as const) {
-      if (!entry.pin) continue;
       if (el.style.getPropertyValue(side) !== entry.pin.wrote[side] || el.style.getPropertyPriority(side) !== "important") {
         records.delete(el);
         continue;
@@ -405,7 +392,7 @@ const fixedElements = (mode: string) => {
   };
   // The viewport-unit step watches style attributes for the page's writes; ours are not the page's, or it would forget the
   // vh value it keeps for an inline `bottom` and not freeze it again at the next viewport.
-  const ours = () => (window as unknown as { __snapseqViewportUnits?: { observer?: MutationObserver } }).__snapseqViewportUnits?.observer?.takeRecords();
+  const ours = () => store.units?.observer?.takeRecords();
 
   // A shot that threw leaves a pin behind; the next discovery starts clean. Pinning again starts from the page's own layout.
   for (const [el, entry] of records) restore(el, entry);
@@ -465,39 +452,46 @@ const fixedElements = (mode: string) => {
   ours();
 };
 
-// What goes into the manifest and the terminal: no credentials, query string or fragment (a signed CDN URL), at most 80 characters.
-const shown = (href: string) => {
-  try {
-    const u = new URL(href);
-    u.username = u.password = u.search = u.hash = "";
-    return u.href.slice(0, 80);
-  } catch {
-    return href.slice(0, 80);
-  }
-};
+/** `stabilize` at each point of a shot: `begin` from the fixture, the other three from the sequence. */
+export type Stabilizer = ReturnType<typeof stabilize>;
 
 /**
  * Makes `snapPage` work on pages with viewport-height units, and holds the page
  * still for each shot: pointer off the content, motion stopped. Each step has its own switch.
  */
-export function stabilize({
-  viewportUnits = true,
-  motion = true,
-  reducedMotion = false,
-  hover = true,
-  scroll = false,
-  scrollEvent = true,
-  floating = true,
-}: StabilizeOptions = {}): Plugin {
+export function stabilize(
+  {
+    viewportUnits = true,
+    motion = true,
+    reducedMotion = false,
+    hover = true,
+    scroll = false,
+    scrollEvent = true,
+    floating = true,
+  }: StabilizeOptions,
+  page: Page,
+) {
+  // A throw names stabilize, the point and the shot, so the reader knows which switch to look at.
+  const named = async (point: string, body: () => Promise<void>): Promise<void> => {
+    try {
+      await body();
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(`snapseq: stabilize threw in ${point}: ${message}`, { cause });
+    }
+  };
   return {
-    name: "stabilize",
-    async begin({ page }) {
+    /** The page exists and the sequence body has not run. */
+    begin: (): Promise<void> => named("begin", async () => {
       if (reducedMotion) await page.emulateMedia({ reducedMotion: "reduce" });
+      // Transitions off, animations left running: `animation: none` would hold a reveal at its base state (a bar chart
+      // at zero width), where stopMotion brings each animation to its end.
       if (motion) await addPersistentStyle(page, NO_TRANSITIONS);
-    },
-    async beforeSnap(shot, { page }) {
+    }),
+    /** At the start of `snap` and `snapPage`, before the readiness wait and before `snapPage` grows the viewport. */
+    beforeSnap: (shot: Shot): Promise<void> => named(`beforeSnap on ${shot.name}`, async () => {
       // A pin left behind goes first, before the freeze meets it: afterRestore takes it off, so this is for a restore that itself failed.
-      if (floating) await page.evaluate(fixedElements, "release");
+      if (floating) await page.evaluate(fixedElements, "release" as const);
       // The pointer stays where the last click left it, and whatever moved under it (a card, a menu) is drawn in
       // :hover. Off the viewport nothing is hovered; the page's mouseleave handlers run. Out through the left
       // edge at mid-height, not the top: exit-intent scripts watch for a leave with clientY <= 0. (0, 0)
@@ -508,7 +502,7 @@ export function stabilize({
       }
       // Native full page does not scroll, so what waits for the viewport never fires. snapPage and a plain snap show what they take.
       if (scroll && shot.options.fullPage) {
-        await page.evaluate(quiet);
+        await settle(page, 2000); // what a script inserts after domcontentloaded (hydration) lands before the pass
         const { steps, capped } = await page.evaluate(scrollPass);
         if (capped) shot.notes.push(`scroll pass stopped after ${steps} steps`);
       }
@@ -538,11 +532,17 @@ export function stabilize({
             // A redirect is not followed (the body would be served at the old URL, where a relative url() in it
             // resolves wrongly, and the fetch would leave the URL that was routed); it is no 2xx, so it falls back.
             const response = await route.fetch({ maxRedirects: 0, headers: { ...request.headers(), cookie: "" } }).catch(() => undefined);
-            // Not a stylesheet, or no answer: the browser makes its own CORS request, which fails without the header
-            // and leaves the original sheet in place; freezeUnits notes it.
-            if (!response?.ok() || !response.headers()["content-type"]?.toLowerCase().startsWith("text/css")) return route.fallback();
-            served.add(request.url());
-            return route.fulfill({ response, headers: { ...response.headers(), "access-control-allow-origin": "*" } }).catch(() => {});
+            if (!response) return route.fallback();
+            // Its body stays in this process until disposed or the context closes: once served or let go, it goes.
+            try {
+              // Not a stylesheet, or no answer: the browser makes its own CORS request, which fails without the header
+              // and leaves the original sheet in place; freezeUnits notes it.
+              if (!response.ok() || !response.headers()["content-type"]?.toLowerCase().startsWith("text/css")) return await route.fallback();
+              served.add(request.url());
+              await route.fulfill({ response, headers: { ...response.headers(), "access-control-allow-origin": "*" } }).catch(() => {});
+            } finally {
+              await response.dispose().catch(() => {});
+            }
           };
           await page.route(match, serve);
           let timer: ReturnType<typeof setTimeout> | undefined;
@@ -554,29 +554,29 @@ export function stabilize({
             await page.unroute(match, serve);
           }
         }
-        const { unreadable } = await page.evaluate(freezeUnits);
-        for (const href of unreadable) shot.notes.push(`cannot read ${shown(href)}: its viewport units stay live`);
+        const unreadable = await page.evaluate(freezeUnits);
+        for (const href of unreadable) shot.notes.push(`cannot read ${scrubUrl(href)}: its viewport units stay live`);
       }
       // Last, so the page is in the state it wants at this viewport and the vh insets are frozen.
-      if (floating) await page.evaluate(fixedElements, "discover");
-    },
+      if (floating) await page.evaluate(fixedElements, "discover" as const);
+    }),
     // Grown from the top, nothing scrolls, so no scroll event fires. What the grow brought into view (an observer adding
     // .inView) may start an animation, which grows the page while it runs: once the DOM is quiet it is finished, so
     // snapPage measures the page at its end state. freezeUnits does not run again: it would freeze at the grown viewport.
     // The fixed elements go back to their top last, once the page has settled, from the baseline beforeSnap took.
-    async afterGrow(_shot, { page }) {
+    afterGrow: (shot: Shot): Promise<void> => named(`afterGrow on ${shot.name}`, async () => {
       if (scrollEvent) await page.evaluate(fireScroll);
-      if (floating || motion) await page.evaluate(quiet);
+      if (floating || motion) await settle(page, 2000);
       if (motion) await page.evaluate(stopMotion);
-      if (floating) await page.evaluate(fixedElements, "pin");
-    },
+      if (floating) await page.evaluate(fixedElements, "pin" as const);
+    }),
     // The viewport and the scroll position are back, the shot taken or failed: the page's own insets come back, then the page
     // hears the scroll event for its own viewport, so what the sequence does next finds it as it was (a tray the grow hid shows
     // again). If the restore itself failed this does not run, and the next shot's beforeSnap releases the pin.
-    async afterRestore(_shot, { page }) {
+    afterRestore: (shot: Shot): Promise<void> => named(`afterRestore on ${shot.name}`, async () => {
       // The page may have navigated by now (a timer): that is not the shot's failure.
-      if (floating) await page.evaluate(fixedElements, "release").catch(() => undefined);
+      if (floating) await page.evaluate(fixedElements, "release" as const).catch(() => undefined);
       if (scrollEvent) await page.evaluate(fireScroll).catch(() => undefined);
-    },
+    }),
   };
 }

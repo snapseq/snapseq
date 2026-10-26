@@ -1,7 +1,7 @@
 {
   "name": "@snapseq/label",
   "version": "0.2.1",
-  "description": "snapseq plugin: a labeled strip above each screenshot.",
+  "description": "snapseq step: a labeled strip above each screenshot.",
   "license": "ISC",
   "publishConfig": { "access": "public" },
   "repository": {
@@ -21,14 +21,13 @@
     "caption"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20.9"
   },
   "type": "module",
   "files": [
     "dist"
   ],
   "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -50,7 +49,7 @@
     "prepublishOnly": "pnpm typecheck && pnpm test"
   },
   "peerDependencies": {
-    "snapseq": ">=0.5.0 <1.0.0-0"
+    "snapseq": ">=0.7.0 <1.0.0-0"
   },
   "devDependencies": {
     "@playwright/test": "1.59.1",

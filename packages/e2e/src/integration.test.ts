@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -12,375 +11,14 @@ import {
 import { createServer } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { PDFDocument } from "@cantoo/pdf-lib";
+import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { AUTH, FONT, PKG, makeProject, playwright, pngSize, snapseq, startServer } from "./helpers";
 
 // Drives the BUILT package through the real Playwright CLI, the way a consumer would.
-const PKG = resolve(dirname(fileURLToPath(import.meta.url)), "../../snapseq");
-const PW_CLI = join(PKG, "node_modules/@playwright/test/cli.js");
-const AUTH = `Basic ${Buffer.from("u:p").toString("base64")}`;
-// Smooth scrolling, a running animation and a transition on a <details> fold's pseudo-element,
-// so a motion-freezing helper has something to defeat.
-const MOTION_PAGE = `<!doctype html><html style="scroll-behavior:smooth"><head><style>
-@keyframes spin { to { transform: rotate(1turn) } }
-#spin { animation: spin 1s linear infinite; transition: opacity 1s }
-#fold::details-content { transition: height 300ms }
-</style></head><body style="margin:0"><div id="spin">x</div><details id="fold"><summary>s</summary>b</details><div style="height:900px"></div></body></html>`;
-// 960 px tall; grows by 100 px while its bottom slot is in view, the way a tray lands when its slot shows.
-const STICKY_PAGE = `<!doctype html><html><head><style>html.landed { padding-bottom: 100px }</style></head>
-<body style="margin:0"><div style="height:900px;background:#eee"></div><div id="slot" style="height:60px;background:#cde"></div>
-<script>new IntersectionObserver((entries) => document.documentElement.classList.toggle("landed", entries.some((e) => e.isIntersecting))).observe(document.getElementById("slot"));</script>
-</body></html>`;
-
-// JS-driven motion: an attribute changes every frame for 40 frames, then data-done. `?forever` never stops.
-const JS_MOTION_PAGE = `<!doctype html><html><body style="margin:0"><div id="x">x</div><script>
-let n = 0; const el = document.getElementById("x"); const forever = location.search.includes("forever");
-const tick = () => { el.setAttribute("data-n", String(++n)); if (forever || n < 40) requestAnimationFrame(tick); else document.documentElement.dataset.done = "1"; };
-requestAnimationFrame(tick);
-</script></body></html>`;
-
-// A face that lands 1.5 s late, half again as large as the fallback: every line reflows and the page grows.
-const FONT = [
-  "/System/Library/Fonts/Supplemental/Verdana.ttf",
-  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-  "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-].find((f) => existsSync(f));
-const FONT_PAGE = `<!doctype html><html><head><style>@font-face { font-family: Late; src: url(/slow-font.ttf); size-adjust: 150%; font-display: swap } body { margin: 0; font: 24px Late, Arial }</style></head><body>${"<div>The measured height changes with the font.</div>".repeat(25)}</body></html>`;
-// A block as tall as the viewport, then 500 px more: the page grows with every viewport the shot sets.
-const VH_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:100vh;background:#cde"></div><div style="height:500px;background:#eee"></div></body></html>`;
-
-// 3000 px of content and a 200 px spacer under it that a resize handler removes once the viewport is taller than 2000 px, as a scroll
-// handler takes a tray and its spacer away: the page is then shorter than the viewport that was grown to its old height. A fixed bar
-// with a child sits at the viewport's end. A hidden block holds a box with margin: auto, which computes to "auto", not a length.
-// ?stay keeps the spacer, and ends it with a margin that collapses through <body>.
-const SHRINK_PAGE = (stay: boolean) => `<!doctype html><html><body style="margin:0"><div style="height:3000px;background:#cde"></div>
-<div id="spacer" style="height:200px;background:#eee;${stay ? "margin-bottom:20px" : ""}"></div>
-<div style="position:fixed;bottom:0;left:0;right:0;background:#f00"><div style="height:40px;margin-bottom:20px"></div></div>
-<div style="display:none"><div style="margin:auto">hidden</div></div>
-<script>addEventListener("resize", () => { if (innerHeight > 2000 && ${!stay}) document.getElementById("spacer").remove(); });</script></body></html>`;
-
-// 3000 px of content and a last box that the box measure of snapPage could read short: ?neg ends with margin-bottom: -1px; ?text is a
-// 40 px box whose text wraps past it, which scrollHeight counts and the boxes do not; ?both is that box, then a 200 px spacer that a
-// resize handler removes: the page looks shorter by its boxes and is not.
-const EDGE_TEXT = "The quick brown fox jumps over the lazy dog again and again";
-const EDGE_PAGE = (kind: string) => `<!doctype html><html><body style="margin:0"><div style="height:3000px;background:#cde"></div>${
-  kind === "neg"
-    ? '<div style="height:200px;background:#eee;margin-bottom:-1px"></div>'
-    : `<div style="height:40px;width:100px;background:#eee">${EDGE_TEXT}</div>${
-        kind === "both"
-          ? '<div id="spacer" style="height:200px"></div><script>addEventListener("resize", () => { if (innerHeight > 2000) document.getElementById("spacer").remove(); });</script>'
-          : ""
-      }`
-}</body></html>`;
-
-// A lazy image 2000 px down whose bytes arrive 1.5 s after they are asked for; 100 px tall once loaded.
-const LAZY_PAGE = `<!doctype html><html><body style="margin:0"><div style="height:2000px"></div><img id="lazy" loading="lazy" src="/slow.png" style="display:block;width:100px"></body></html>`;
-// Renders one field of a JSON response, so a replayed body shows in the page.
-const WIDGET_PAGE = `<!doctype html><html><body><h1 id="v"></h1><script>fetch("/api").then((r) => r.json()).then((j) => { document.getElementById("v").textContent = j.v; });</script></body></html>`;
-const PNG_1x1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
-
-interface Hit {
-  url: string;
-  ua: string;
-  auth?: string;
-}
-
-function startServer() {
-  const hits: Hit[] = [];
-  let release: (() => void) | undefined; // answers the /held.png in waiting
-  const server = createServer((req, res) => {
-    const url = req.url ?? "";
-    hits.push({ url, ua: req.headers["user-agent"] ?? "", auth: req.headers.authorization });
-    if (url.startsWith("/stall.png") || url.startsWith("/hang") || url.startsWith("/_next/image")) return; // never answers; the browser close ends it
-    if (url.startsWith("/held.png")) {
-      release = () => {
-        res.writeHead(200, { "content-type": "image/png" });
-        res.end(PNG_1x1);
-      };
-      return;
-    }
-    if (url.startsWith("/release")) {
-      release?.();
-      release = undefined;
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-    if (url.startsWith("/slow-font.ttf")) {
-      setTimeout(() => {
-        res.writeHead(200, { "content-type": "font/ttf" });
-        res.end(readFileSync(FONT!));
-      }, 1500);
-      return;
-    }
-    if (url.startsWith("/slow.png")) {
-      setTimeout(() => {
-        res.writeHead(200, { "content-type": "image/png" });
-        res.end(PNG_1x1);
-      }, 1500);
-      return;
-    }
-    if (url.startsWith("/late.png")) {
-      setTimeout(() => {
-        res.writeHead(200, { "content-type": "image/png" });
-        res.end(PNG_1x1);
-      }, 8000);
-      return;
-    }
-    if (url.startsWith("/missing")) {
-      res.writeHead(404);
-      res.end();
-      return;
-    }
-    if (url.startsWith("/stream")) {
-      // 2 KB, then 600 ms of nothing, then the rest: the parser waits mid-document.
-      res.writeHead(200, { "content-type": "text/html" });
-      res.write(`<!doctype html><html><body style="margin:0"><p>${"x ".repeat(1024)}</p>`);
-      setTimeout(() => res.end(`<div id="late" style="height:900px"></div></body></html>`), 600);
-      return;
-    }
-    if (url.startsWith("/api")) {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ v: "live" }));
-      return;
-    }
-    if (url.startsWith("/protected") && req.headers.authorization !== AUTH) {
-      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="t"' });
-      res.end("unauthorized");
-      return;
-    }
-    res.writeHead(200, { "content-type": "text/html" });
-    if (url.startsWith("/shrink")) return void res.end(SHRINK_PAGE(url.includes("stay")));
-    if (url.startsWith("/edge")) return void res.end(EDGE_PAGE(url.split("?")[1] ?? ""));
-    res.end(
-      url.startsWith("/sticky")
-        ? STICKY_PAGE
-        : url.startsWith("/widget")
-          ? WIDGET_PAGE
-        : url.startsWith("/font")
-          ? FONT_PAGE
-          : url.startsWith("/vh")
-            ? // ?root: the document's own scroller set to scroll, which is the viewport's, not an inner one.
-              url.includes("root") ? VH_PAGE.replace("<html>", '<html style="overflow-y:auto">') : VH_PAGE
-        : url.startsWith("/lazy")
-          ? LAZY_PAGE
-          : url.startsWith("/chain")
-            ? // Blur-up after the load event: a click inserts a placeholder and a stalled sibling, in view;
-              // the placeholder's load inserts the real image, lazy, so only a rescan finds it. The stalled
-              // sibling must not hide it. ?far puts them 20000 px down, where only an eager flip starts the lazy one.
-              `<!doctype html><html><body style="margin:0"><button id="go">go</button>${url.includes("far") ? `<div style="height:20000px"></div>` : ""}<script>
-document.getElementById("go").addEventListener("click", () => {
-  const c = new Image(); c.src = "/stall.png?c"; document.body.appendChild(c);
-  const a = new Image(); a.src = "/slow.png?a";
-  a.addEventListener("load", () => { const b = new Image(); b.id = "b"; b.loading = "lazy"; b.src = "/slow.png?b"; document.body.appendChild(b); });
-  document.body.appendChild(a);
-});
-</script></body></html>`
-            : url.startsWith("/lateimg")
-            ? // No web fonts, and one image in the initial HTML that answers after 8 s: the load event waits for it.
-              `<!doctype html><html><body style="margin:0"><img src="/late.png" style="display:block;width:100px;height:50px"></body></html>`
-            : url.startsWith("/initstall")
-            ? // An image in the initial HTML that never answers: the load event never comes.
-              `<!doctype html><html><body style="margin:0"><img src="/stall.png?init" style="display:block;width:100px;height:50px"></body></html>`
-            : url.startsWith("/initpicture")
-            ? // A stalled image chosen by a <source>: removing the <img>'s own attributes would not stop it.
-              `<!doctype html><html><body style="margin:0"><picture><source srcset="/stall.png?source"><img src="/stall.png?fallback" style="display:block;width:100px;height:50px"></picture></body></html>`
-            : url.startsWith("/initframe")
-            ? // The stalled image is in a frame: the parent's load event waits for it too.
-              `<!doctype html><html><body style="margin:0"><iframe src="/initstall" style="width:200px;height:100px"></iframe></body></html>`
-            : url.startsWith("/initnext")
-            ? // The same through an image loader: every image is /_next/image?url=…, signed.
-              `<!doctype html><html><body style="margin:0"><img src="/_next/image?url=%2Fimg%2Fhero.png&w=640&sig=secret" style="display:block;width:100px;height:50px"></body></html>`
-            : url.startsWith("/stall")
-            ? // Three images that never answer, added after load so the document itself is loaded.
-              `<!doctype html><html><body><script>addEventListener("load", () => { for (const i of [1, 2, 3]) { const img = new Image(); img.src = "/stall.png?" + i; document.body.appendChild(img); } });</script></body></html>`
-            : url.startsWith("/tostream")
-              ? `<!doctype html><html><body><a id="go" href="/stream">go</a>`
-            : url.startsWith("/manylazy")
-              ? // 40 lazy images below the fold, each 1.5 s late; six connections take ten seconds for them all.
-                `<!doctype html><html><body style="margin:0"><div style="height:2000px"></div>${Array.from({ length: 40 }, (_, i) => `<img loading="lazy" src="/slow.png?${i}" style="display:block;width:10px;height:10px">`).join("")}</body></html>`
-            : url.startsWith("/broken")
-              ? `<!doctype html><html><body><img src="http://u:p@${req.headers.host}/missing/x.png?q=1#f"><img src="/missing/${"x".repeat(90)}.png?q=1#h"><img src="data:image/png;base64,AAAA"></body></html>`
-            : url.startsWith("/hidden")
-              ? // In view at opacity 0 (it may fade in once loaded): waited for. Hidden, or below the viewport under a clip
-                // past it: not. A display: none pixel that fails is no broken image, on a full page either. The stalled
-                // ones come after the load event, which they would otherwise hold (and fonts.ready with it).
-                `<!doctype html><html><body style="margin:0"><img style="display:none" src="/missing/pixel.gif"><div style="height:500px"></div><script>
-addEventListener("load", () => {
-  for (const [style, q] of [["visibility:hidden", "v"], ["opacity:0", "o"]]) { const img = new Image(); img.style.cssText = style; img.src = "/stall.png?" + q; document.body.prepend(img); }
-  const below = new Image(); below.src = "/stall.png?below"; document.body.append(below);
-});
-</script></body></html>`
-            : url.startsWith("/drawer")
-              ? // One screen, and a full-height menu that scrolls, off screen to the left.
-                `<!doctype html><html><body style="margin:0"><p>one screen</p><nav style="position:fixed;top:0;left:0;width:300px;height:100%;transform:translateX(-100%);overflow-y:auto"><div style="height:3000px"></div></nav></body></html>`
-            : url.startsWith("/scrolly")
-              ? // One screen to the document; the content scrolls inside main.
-                `<!doctype html><html style="height:100%;overflow:hidden"><body style="height:100%;margin:0;overflow:hidden"><main class="content" style="height:100%;overflow-y:auto"><div style="height:3000px"></div></main></body></html>`
-            : url.startsWith("/shell")
-              ? // The same with body's default 8 px margin: the document is 16 px more than a screen, and grows with the viewport.
-                `<!doctype html><html style="height:100%;overflow:hidden"><body style="height:100%;overflow:hidden"><main class="content" style="height:100%;overflow-y:auto"><div style="height:3000px"></div></main></body></html>`
-            : url.startsWith("/appshell")
-              ? // The scroller inside an open shadow root.
-                `<!doctype html><html style="height:100%;overflow:hidden"><body style="height:100%;margin:0;overflow:hidden"><app-shell style="display:block;height:100%"></app-shell><script>document.querySelector("app-shell").attachShadow({ mode: "open" }).innerHTML = '<div class="content" style="height:100%;overflow-y:auto"><div style="height:3000px"></div></div>';</script></body></html>`
-            : url.startsWith("/lands")
-              ? // One screen with a scroller, until the data lands 500 ms on (a ticking skeleton until then): three screens.
-                `<!doctype html><html><body style="margin:0"><main style="height:300px;overflow-y:auto"><div style="height:3000px"></div></main><script>
-const tick = setInterval(() => (document.body.dataset.t = String(performance.now())), 50);
-setTimeout(() => { clearInterval(tick); const d = document.createElement("div"); d.style.height = "600px"; document.body.append(d); }, 500);
-</script></body></html>`
-            : url.startsWith("/lateshell")
-              ? // The body-margin shell, its scroller filled 500 ms on: no scroller yet when the shot starts.
-                `<!doctype html><html style="height:100%;overflow:hidden"><body style="height:100%;overflow:hidden"><main class="content" style="height:100%;overflow-y:auto"></main><script>
-const tick = setInterval(() => (document.body.dataset.t = String(performance.now())), 50);
-setTimeout(() => { clearInterval(tick); document.querySelector("main").innerHTML = '<div style="height:3000px"></div>'; }, 500);
-</script></body></html>`
-            : url.startsWith("/reveal")
-              ? // An image at the top, held until the first resize (snapPage's first grow), whose load adds a section
-                // below the grown viewport; the section's image gets its URL from an IntersectionObserver once the
-                // section shows, and answers 1.5 s later. window.resizes counts the grows.
-                `<!doctype html><html><body style="margin:0"><img src="/held.png" style="display:block;width:100px"><div style="height:900px"></div><script>
-window.resizes = 0;
-addEventListener("resize", () => { if (++window.resizes === 1) fetch("/release"); });
-document.images[0].addEventListener("load", () => {
-  const s = document.createElement("section"); s.style.height = "200px";
-  s.innerHTML = '<img id="late" data-src="/slow.png?late" style="display:block;width:10px;height:10px">';
-  document.body.append(s);
-  new IntersectionObserver((entries, o) => { if (entries.some((e) => e.isIntersecting)) { o.disconnect(); const img = document.getElementById("late"); img.src = img.dataset.src; } }).observe(s);
-});
-</script></body></html>`
-            : url.startsWith("/panel")
-              ? // A 100 px panel that scrolls; after load, an image that never answers goes 150 px down its content:
-                // in the viewport, below the panel's visible area.
-                `<!doctype html><html><body style="margin:0"><div id="panel" style="height:100px;overflow-y:auto"><div style="height:150px"></div><div id="slot"></div><div style="height:300px"></div></div><script>
-addEventListener("load", () => { const img = new Image(); img.src = "/stall.png?panel"; img.style.cssText = "display:block;width:10px;height:10px"; document.getElementById("slot").append(img); });
-</script></body></html>`
-            : url.startsWith("/escape")
-              ? // Four images that never answer, in view, each outside an overflow: hidden box (added after load).
-                // f: fixed, so its box clips nothing of it. a: absolute, its containing block the positioned card
-                // above the unpositioned box, so shown. p: absolute in a positioned box, cut out. o: inside two
-                // nested boxes it overlaps one at a time, with no pixel in both, cut out.
-                `<!doctype html><html><body style="margin:0">
-<div id="f" style="overflow:hidden;height:40px"></div>
-<div style="position:relative;height:100px"><div id="a" style="overflow:hidden;height:40px"></div></div>
-<div id="p" style="position:relative;overflow:hidden;height:40px"></div>
-<div style="overflow:hidden;width:100px;height:40px"><div id="o" style="overflow:hidden;width:100px;height:40px;margin-left:150px"></div></div>
-<script>
-addEventListener("load", () => {
-  for (const [slot, css] of [["f", "position:fixed;top:270px;left:300px"], ["a", "position:absolute;top:60px"], ["p", "position:absolute;top:60px"], ["o", "width:150px;margin-left:-100px"]]) {
-    const img = new Image(); img.src = "/stall.png?" + slot; img.style.cssText = "display:block;width:10px;height:10px;" + css; document.getElementById(slot).append(img);
-  }
-});
-</script></body></html>`
-            : url.startsWith("/containbody")
-              ? // html visible, body with paint containment: body's overflow stays its own, so body scrolls inside.
-                `<!doctype html><html style="height:100%"><body style="height:100%;margin:0;overflow-y:auto;contain:paint"><div style="height:3000px"></div></body></html>`
-            : url.startsWith("/long")
-              ? `<!doctype html><html><body style="margin:0"><div style="height:3000px"></div></body></html>`
-            : url.startsWith("/jsmotion")
-              ? JS_MOTION_PAGE
-              : url.startsWith("/motion")
-                ? MOTION_PAGE
-                : `<!doctype html><html><body style="margin:0"><h1>${url}</h1><div style="height:900px;background:#eee"></div></body></html>`,
-    );
-  });
-  return new Promise<{ url: string; hits: Hit[]; close: () => Promise<void> }>((ok) => {
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      ok({
-        url: `http://127.0.0.1:${port}`,
-        hits,
-        close: () => new Promise((done) => (server.closeAllConnections(), server.close(() => done()))),
-      });
-    });
-  });
-}
-
-function makeProject(opts: {
-  esm: boolean;
-  config: string;
-  sequences: Record<string, string>;
-}): string {
-  const dir = mkdtempSync(join(tmpdir(), "snapseq-it-"));
-  mkdirSync(join(dir, "node_modules", "@playwright"), { recursive: true });
-  mkdirSync(join(dir, "node_modules", "@snapseq"), { recursive: true });
-  symlinkSync(PKG, join(dir, "node_modules", "snapseq"));
-  // The consumer's own Playwright; same realpath as the package's, so one runner instance.
-  symlinkSync(
-    join(PKG, "node_modules", "@playwright", "test"),
-    join(dir, "node_modules", "@playwright", "test"),
-  );
-  // The workspace's plugins, built by their own prepare/test scripts.
-  for (const name of ["label", "pdf"]) {
-    symlinkSync(resolve(PKG, "..", name), join(dir, "node_modules", "@snapseq", name));
-  }
-  if (opts.esm) writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
-  writeFileSync(join(dir, "snapseq.config.ts"), opts.config);
-  for (const [rel, src] of Object.entries(opts.sequences)) {
-    const file = join(dir, "snapseq", rel);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, src);
-  }
-  return dir;
-}
-
-// Async on purpose: the fixture HTTP server runs in this process, so a sync
-// spawn would block the event loop and every page.goto would hang.
-function playwright(dir: string, args: string[], env: Record<string, string> = {}) {
-  const spawnEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith("SNAPSEQ_")) spawnEnv[k] = v;
-  }
-  return new Promise<{ status: number | null; out: string }>((ok) => {
-    const child = spawn(
-      process.execPath,
-      [PW_CLI, "test", "-c", join(dir, "snapseq.config.ts"), ...args],
-      { cwd: dir, env: { ...spawnEnv, SNAPSEQ_RUN: "run1", ...env } },
-    );
-    let out = "";
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (out += d.toString()));
-    child.on("close", (status) => ok({ status, out }));
-  });
-}
-
-// The snapseq bin, run from `cwd` (defaults to the project dir).
-function snapseq(
-  dir: string,
-  args: string[],
-  env: Record<string, string> = {},
-  cwd: string = dir,
-) {
-  const spawnEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !k.startsWith("SNAPSEQ_")) spawnEnv[k] = v;
-  }
-  return new Promise<{ status: number | null; out: string }>((ok) => {
-    const child = spawn(process.execPath, [join(PKG, "dist", "cli.js"), ...args], {
-      cwd,
-      env: { ...spawnEnv, SNAPSEQ_RUN: "run1", ...env },
-    });
-    let out = "";
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (out += d.toString()));
-    child.on("close", (status) => ok({ status, out }));
-  });
-}
-
 const REPORTER = join(PKG, "dist", "reporter.js");
 // The notes the run printed for the shots taken at `url`, in order: `snapseq: 01.png taken with <notes>  <url>`.
 const noted = (out: string, url: string) => (out.match(/snapseq: \d+\.png taken with .*/g) ?? []).filter((line) => line.endsWith(`  ${url}`));
-
-function pngSize(file: string): [number, number] {
-  const buf = readFileSync(file);
-  return [buf.readUInt32BE(16), buf.readUInt32BE(20)];
-}
-
-// Page sizes in pt. pdf-lib writes compressed object streams, so a grep for MediaBox sees nothing.
-const pdfPages = async (file: string) =>
-  (await PDFDocument.load(readFileSync(file))).getPages().map((p) => [p.getWidth(), p.getHeight()]);
 
 const sequenceA = `
 import { sequence } from "snapseq";
@@ -520,6 +158,13 @@ describe("snapseq via the Playwright CLI", () => {
     expect(server.hits.slice(before).map((h) => h.url)).toContain("/a?env=dead&device=d1");
   });
 
+  it("--env without --host drops an inherited SNAPSEQ_HOST, so the run goes to that env's host", async () => {
+    const before = server.hits.length;
+    const r = await snapseq(project, ["a", "--device", "d1", "--env", "dev"], { SNAPSEQ_HOST: "http://127.0.0.1:1" });
+    expect(r.status, r.out).toBe(0);
+    expect(server.hits.slice(before).map((h) => h.url)).toContain("/a?env=dev&device=d1");
+  });
+
   it("rejects an unknown env at config load", async () => {
     const r = await playwright(project, [], { SNAPSEQ_ENV: "nope" });
     expect(r.status).not.toBe(0);
@@ -587,7 +232,16 @@ sequence(async ({ page, seq }) => {
     expect(existsSync(sentinel)).toBe(true);
   });
 
-  it("refuses to wipe a sequence's directory that another sequence writes into, and deletes nothing", async () => {
+  // A file system that ignores case (macOS, Windows) makes home/D1 the same folder as home/d1.
+  const caseless = (() => {
+    const probe = mkdtempSync(join(tmpdir(), "snapseq-case-"));
+    try {
+      return existsSync(probe.toUpperCase()) && existsSync(probe.toLowerCase());
+    } finally {
+      rmSync(probe, { recursive: true, force: true });
+    }
+  })();
+  async function refusesWipe(other: string) {
     const p = makeProject({
       esm: true,
       config: `
@@ -599,19 +253,48 @@ export default defineConfig({
 });
 `,
       // home/d1.seq.ts writes home/d1/<device>/, inside what home.seq.ts on d1 wipes.
-      sequences: { "home.seq.ts": sequenceB, "home/d1.seq.ts": sequenceB },
+      sequences: { "home.seq.ts": sequenceB, [`${other}.seq.ts`]: sequenceB },
     });
     dirs.push(p);
-    const theirs = join(p, "out", "run1", "home", "d1", "d2", "01.png");
+    const theirs = join(p, "out", "run1", ...other.split("/"), "d2", "01.png");
     const mine = join(p, "out", "run1", "home", "d1", "01.png");
     mkdirSync(dirname(theirs), { recursive: true });
     writeFileSync(theirs, "keep");
     writeFileSync(mine, "stale");
     const r = await playwright(p, ["home\\.seq", "--project", "d1"]);
     expect(r.status).not.toBe(0);
-    expect(r.out).toContain(`refusing to wipe ${join("run1", "home", "d1")}: ${join("home", "d1.seq.ts")} writes inside it; rename one of the sequences`);
+    expect(r.out).toContain(`refusing to wipe ${join("run1", "home", "d1")}: ${other} writes inside it; rename one of the sequences`);
     expect(readFileSync(theirs, "utf8")).toBe("keep");
     expect(readFileSync(mine, "utf8")).toBe("stale");
+  }
+  it("refuses to wipe a sequence's directory that another sequence writes into, and deletes nothing", () => refusesWipe("home/d1"));
+  it.skipIf(!caseless)("refuses the same where the other sequence's name differs only in case, on a file system that ignores case", () =>
+    refusesWipe("home/D1"),
+  );
+
+  // home/d2 a link to home/d1, where home/d1.seq.ts writes: the wipe of home/d2 only unlinks it.
+  it("shoots into a device folder that is a link to another sequence's folder, and leaves that one alone", async () => {
+    const p = makeProject({
+      esm: true,
+      config: `
+import { defineConfig } from "snapseq";
+export default defineConfig({
+  envs: { dev: { host: "${server.url}" } },
+  devices: { d1: { viewport: { width: 400, height: 300 } }, d2: { viewport: { width: 500, height: 300 } } },
+  screenshotsDir: "out",
+});
+`,
+      sequences: { "home.seq.ts": sequenceB, "home/d1.seq.ts": sequenceB },
+    });
+    dirs.push(p);
+    const theirs = join(p, "out", "run1", "home", "d1", "d1", "01.png");
+    mkdirSync(dirname(theirs), { recursive: true });
+    writeFileSync(theirs, "keep");
+    symlinkSync(join(p, "out", "run1", "home", "d1"), join(p, "out", "run1", "home", "d2"));
+    const r = await playwright(p, ["home\\.seq", "--project", "d2"]);
+    expect(r.status, r.out).toBe(0);
+    expect(readFileSync(theirs, "utf8")).toBe("keep");
+    expect(pngSize(join(p, "out", "run1", "home", "d2", "01.png"))[0]).toBeGreaterThan(0);
   });
 });
 
@@ -619,7 +302,7 @@ describe("snapseq bin", () => {
   it("translates --env, --host and --device, and finds the config in cwd", async () => {
     const before = server.hits.length;
     const r = await snapseq(project, [
-      "a\\.seq",
+      "a",
       "--device",
       "d1",
       "--env",
@@ -633,9 +316,34 @@ describe("snapseq bin", () => {
   });
 
   it("passes unknown flags through to playwright test", async () => {
-    const r = await snapseq(project, ["a\\.seq", "--device=d1", "--list"]);
+    const r = await snapseq(project, ["a", "--device=d1", "--list"]);
     expect(r.status).toBe(0);
     expect(r.out).toContain("Total: 1 test in 1 file");
+  });
+
+  // The words are globs over sequence ids, not Playwright's regexes over paths: the quotes keep a shell from expanding them.
+  it("selects sequences by a quoted glob over their ids, and one that selects nothing stops before anything runs", async () => {
+    const top = await snapseq(project, ["*", "--device=d1", "--list"]);
+    expect(top.status, top.out).toBe(0);
+    expect(top.out).toContain("Total: 2 tests in 2 files"); // a and c, not nested/b
+    const none = await snapseq(project, ["b"]);
+    expect(none.status).toBe(1);
+    expect(none.out).toContain('snapseq: no sequence matches "b"\n  did you mean nested/b?');
+    expect(none.out).not.toContain("Running");
+  });
+
+  it("runs the files a glob selects, in a project reached through a symlink", async () => {
+    // Playwright filters the paths it walks from the config's own spelling, symlinks unresolved; the literal must match that.
+    const root = mkdtempSync(join(tmpdir(), "snapseq-link-"));
+    dirs.push(root);
+    symlinkSync(project, join(root, "alias"));
+    const before = server.hits.length;
+    const r = await snapseq(project, ["-c", join(root, "alias", "snapseq.config.ts"), "nested/*", "--device", "d1"], {}, root);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain("1 passed");
+    const urls = server.hits.slice(before).map((h) => h.url);
+    expect(urls).toContain("/b");
+    expect(urls.filter((u) => u.startsWith("/a") || u.startsWith("/c"))).toEqual([]);
   });
 
   it("prints its own usage for --help", async () => {
@@ -702,12 +410,14 @@ describe("helpers", () => {
   it("disableTransitions persists across navigations, snapPage lets the page land and restores the viewport, snap passes options through", async () => {
     const p = makeProject({
       esm: true,
+      // stabilize is on by default and would already have stopped the motion the fixture checks for.
       config: `
 import { defineConfig } from "snapseq";
 export default defineConfig({
   envs: { dev: { host: "${server.url}" } },
   devices: { d1: { viewport: { width: 400, height: 300 } } },
   screenshotsDir: "out",
+  stabilize: false,
 });
 `,
       sequences: {
@@ -818,36 +528,15 @@ sequence(async ({ page, seq }) => {
 });
 
 describe("readiness", () => {
-  it("waits for a streamed document, only for the images in view, names what it gave up on, restores the scroll, notes an inner scroller, lists hook notes and follows scale: css", async () => {
+  it("waits for a streamed document, only for the images in view, names what it gave up on, restores the scroll, notes an inner scroller and follows scale: css", async () => {
     const p = makeProject({
       esm: true,
       config: `
-import { appendFileSync } from "node:fs";
-import { join } from "node:path";
 import { defineConfig } from "snapseq";
 export default defineConfig({
   envs: { dev: { host: "${server.url}" } },
   devices: { d1: { viewport: { width: 400, height: 300 }, deviceScaleFactor: 2 } },
   screenshotsDir: "out",
-  plugins: [
-    {
-      name: "probe",
-      beforeSnap: async (shot, ctx) => {
-        const state = await ctx.page.evaluate(() => document.readyState + " " + !!document.getElementById("late"));
-        appendFileSync(join(ctx.seq.dir, "before.txt"), state + "\\n");
-        // The second note is the first once cleaned, so it is listed once.
-        if (shot.options.note) shot.notes.push(shot.options.note, "from\\nhook ");
-        if (shot.options.cssByHook) shot.options.scale = "css";
-      },
-      afterSnap: async (shot, ctx) => {
-        appendFileSync(join(ctx.seq.dir, "probe.txt"), JSON.stringify([shot.name, shot.deviceScaleFactor, shot.notes]) + "\\n");
-        shot.notes.push("from afterSnap"); // too late for the line
-        // Between the scroll position's save and its restore: the same document under another URL, or a new one.
-        if (shot.options.hash) await ctx.page.evaluate(() => history.replaceState(null, "", "#x"));
-        if (shot.options.reload) await ctx.page.reload();
-      },
-    },
-  ],
 });
 `,
       sequences: {
@@ -874,7 +563,7 @@ sequence(async ({ page, seq }) => {
 import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
   await page.goto("/broken");
-  await seq.snap({ note: "from hook" });
+  await seq.snap();
   await page.evaluate(() => document.images[0].remove());
   await seq.snap();
   await page.evaluate(() => document.images[0].remove());
@@ -887,7 +576,6 @@ sequence(async ({ page, seq }) => {
   await page.goto("/scale");
   await seq.snap({ scale: "css" });
   await seq.snap();
-  await seq.snap({ cssByHook: true }); // decided at the screenshot, after the hooks
 });
 `,
         "scroll.seq.ts": `
@@ -898,10 +586,6 @@ sequence(async ({ page, seq }) => {
   await page.evaluate(() => scrollTo(0, 1500));
   await seq.snapPage();
   if ((await y()) !== 1500) throw new Error("scrollY " + (await y()) + " after snapPage");
-  await seq.snapPage({ hash: true });
-  if ((await y()) !== 1500) throw new Error("scrollY " + (await y()) + " after a replaceState");
-  await seq.snapPage({ reload: true });
-  if ((await y()) !== 0) throw new Error("scrollY " + (await y()) + " after a reload");
   await page.goto("/scrolly");
   await seq.snapPage();
   await page.goto("/drawer");
@@ -934,41 +618,32 @@ sequence(async ({ page, seq }) => {
     expect(r.status, r.out).toBe(0);
     const out = join(p, "out", "run1");
     expect(noted(r.out, `${server.url}/stream`)).toEqual([]);
-    // The hooks run on the parsed document. (The shot itself waited already: fonts.ready holds until the document loads.)
-    expect(readFileSync(join(out, "stream", "d1", "before.txt"), "utf8")).toMatch(/^(interactive|complete) true\n$/);
     // In view nothing is pending; the whole page is 40 images that take ten seconds.
     expect(noted(r.out, `${server.url}/manylazy`)).toEqual([
       expect.stringMatching(new RegExp(`^snapseq: 02\\.png taken with \\d+ images still loading after 5 s \\(first: ${server.url}/slow\\.png\\)  `)),
     ]);
-    // Hook notes first, cleaned and listed once, then the readiness notes. The URL loses its credentials, query and
-    // hash, and is cut to 80 characters.
+    // The URL loses its credentials, query and hash, and is cut to 80 characters.
     const broken = `3 images failed to load (first: ${server.url}/missing/x.png)`;
     expect(noted(r.out, `${server.url}/broken`)).toEqual([
-      `snapseq: 01.png taken with from hook, ${broken}  ${server.url}/broken`,
+      `snapseq: 01.png taken with ${broken}  ${server.url}/broken`,
       `snapseq: 02.png taken with 2 images failed to load (first: ${`${server.url}/missing/${"x".repeat(90)}.png`.slice(0, 80)})  ${server.url}/broken`,
       `snapseq: 03.png taken with 1 image failed to load (first: a data: URL)  ${server.url}/broken`,
     ]);
-    expect(r.out).toContain(`snapseq: 01.png taken with from hook, ${broken}  ${server.url}/broken`);
-    // afterSnap sees the merged notes; what it pushes stays off the line.
-    const probed = (name: string) => readFileSync(join(out, name, "d1", "probe.txt"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-    expect(probed("broken")[0]).toEqual(["01.png", 2, ["from hook", broken]]);
-    expect(probed("scale")).toEqual([["01.png", 1, []], ["02.png", 2, []], ["03.png", 1, []]]);
     expect(pngSize(join(out, "scale", "d1", "01.png"))).toEqual([400, 300]);
     expect(pngSize(join(out, "scale", "d1", "02.png"))).toEqual([800, 600]);
-    expect(pngSize(join(out, "scale", "d1", "03.png"))).toEqual([400, 300]);
-    // Restored after a replaceState, not after a reload (the sequence checks scrollY); the scroller on screen is
-    // noted, the drawer off screen is not.
-    for (const quiet of ["/long", "/long#x", "/drawer", "/lands"]) expect(noted(r.out, server.url + quiet), quiet).toEqual([]);
+    // The scroll position comes back (the sequence checks scrollY); the scroller on screen is noted, the drawer off
+    // screen is not.
+    for (const quiet of ["/long", "/drawer", "/lands"]) expect(noted(r.out, server.url + quiet), quiet).toEqual([]);
     const inner = (n: number, path: string, el: string) =>
       `snapseq: ${String(n).padStart(2, "0")}.png taken with the page scrolls inside <${el}> not the document: scrollable content may be omitted  ${server.url}${path}`;
-    expect(noted(r.out, `${server.url}/scrolly`)).toEqual([inner(4, "/scrolly", "main.content")]);
-    expect(noted(r.out, `${server.url}/shell`)).toEqual([inner(6, "/shell", "main.content")]);
-    expect(noted(r.out, `${server.url}/appshell`)).toEqual([inner(7, "/appshell", "app-shell div.content")]);
-    expect(noted(r.out, `${server.url}/lateshell`)).toEqual([inner(9, "/lateshell", "main.content")]);
-    expect(noted(r.out, `${server.url}/containbody`)).toEqual([inner(10, "/containbody", "body")]);
-    expect(pngSize(join(out, "scroll", "d1", "06.png"))).toEqual([800, 600]);
+    expect(noted(r.out, `${server.url}/scrolly`)).toEqual([inner(2, "/scrolly", "main.content")]);
+    expect(noted(r.out, `${server.url}/shell`)).toEqual([inner(4, "/shell", "main.content")]);
+    expect(noted(r.out, `${server.url}/appshell`)).toEqual([inner(5, "/appshell", "app-shell div.content")]);
+    expect(noted(r.out, `${server.url}/lateshell`)).toEqual([inner(7, "/lateshell", "main.content")]);
+    expect(noted(r.out, `${server.url}/containbody`)).toEqual([inner(8, "/containbody", "body")]);
+    expect(pngSize(join(out, "scroll", "d1", "04.png"))).toEqual([800, 600]);
     // The data that landed during the wait made it a page: grown to its three screens.
-    expect(pngSize(join(out, "scroll", "d1", "08.png"))).toEqual([800, 1800]);
+    expect(pngSize(join(out, "scroll", "d1", "06.png"))).toEqual([800, 1800]);
     // In view, only the one at opacity 0 is pending; the full page waits for all three and counts no hidden failure.
     expect(noted(r.out, `${server.url}/hidden`)).toEqual([
       `snapseq: 01.png taken with 1 image still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/hidden`,
@@ -1135,26 +810,11 @@ sequence(async ({ page, seq }) => {
     const p = makeProject({
       esm: true,
       config: `
-import { appendFileSync } from "node:fs";
-import { join } from "node:path";
 import { defineConfig } from "snapseq";
 export default defineConfig({
   envs: { dev: { host: "${server.url}" } },
   devices: { d1: { viewport: { width: 400, height: 300 } } },
   screenshotsDir: "out",
-  plugins: [
-    {
-      name: "probe",
-      // Right after the screenshot, the viewport still grown: the revealed image as the shot found it, and the grows.
-      afterSnap: async (_shot, ctx) => {
-        const late = await ctx.page.evaluate(() => {
-          const img = document.getElementById("late");
-          return img && [img.complete && img.naturalWidth > 0, window.resizes];
-        });
-        if (late) appendFileSync(join(ctx.seq.dir, "probe.txt"), JSON.stringify(late) + "\\n");
-      },
-    },
-  ],
 });
 `,
       sequences: {
@@ -1163,6 +823,9 @@ import { sequence } from "snapseq";
 sequence(async ({ page, seq }) => {
   await page.goto("/reveal", { waitUntil: "domcontentloaded" });
   await seq.snapPage();
+  // The section the first grow revealed is there, and its image (1.5 s late) had loaded when the shot was taken.
+  const late = await page.evaluate(() => { const img = document.getElementById("late"); return !!img && img.complete && img.naturalWidth > 0; });
+  if (!late) throw new Error("snapPage returned before the revealed image loaded");
 });
 `,
         "panel.seq.ts": `
@@ -1185,8 +848,6 @@ sequence(async ({ page, seq }) => {
     expect(r.out).toContain("2 passed");
     expect(r.status, r.out).toBe(0);
     expect(noted(r.out, `${server.url}/reveal`)).toEqual([]);
-    // Loaded at the shot, which came after the second grow (the first was held until the first resize).
-    expect(readFileSync(join(p, "out", "run1", "reveal", "d1", "probe.txt"), "utf8")).toBe("[true,2]\n");
     // Scrolled into the panel's view, the stalled image holds the shot to the cap and is noted; of the four that
     // escape or not, the fixed one and the absolute one above its box do.
     expect(noted(r.out, `${server.url}/panel`)).toEqual([`snapseq: 02.png taken with 1 image still loading after 5 s (first: ${server.url}/stall.png)  ${server.url}/panel`]);
@@ -1195,12 +856,12 @@ sequence(async ({ page, seq }) => {
 });
 
 describe("snapPage geometry", () => {
-  const config = () => `
+  const config = (extra = "") => `
 import { defineConfig } from "snapseq";
 export default defineConfig({
   envs: { dev: { host: "${server.url}" } },
   devices: { d1: { viewport: { width: 400, height: 300 } } },
-  screenshotsDir: "out",
+  screenshotsDir: "out",${extra}
 });
 `;
 
@@ -1285,10 +946,11 @@ sequence(async ({ page, seq }) => {
     expect(pngSize(join(p, "out", "run1", "edge", "d1", "03.png"))).toEqual([400, 3240]); // the height that measured stable
   });
 
-  it("refuses a layout that follows the viewport, restores the viewport, and points at the native full page", async () => {
+  // stabilize is on by default and freezes vh before the grow; with `stabilize: false` the page is what the grow makes of it.
+  it("with stabilize: false, refuses a layout that follows the viewport, restores the viewport, and points at the native full page", async () => {
     const p = makeProject({
       esm: true,
-      config: config(),
+      config: config("\n  stabilize: false,"),
       sequences: {
         "vh.seq.ts": `
 import { sequence } from "snapseq";
@@ -1457,155 +1119,6 @@ sequence(async ({ page, seq }) => {
   });
 });
 
-describe("plugins", () => {
-  it("runs begin before the body, afterSnap per shot, done once a sequence passed and failed once it failed; a throwing hook fails the sequence, naming the plugin", async () => {
-    const p = makeProject({
-      esm: true,
-      config: `
-import { appendFileSync, existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
-import { defineConfig } from "snapseq";
-const log = (ctx, line) => appendFileSync(join(ctx.seq.dir, "hooks.txt"), line + "\\n");
-export default defineConfig({
-  envs: { dev: { host: "${server.url}" } },
-  devices: { d1: { viewport: { width: 320, height: 200 } } },
-  screenshotsDir: "out",
-  plugins: [
-    {
-      name: "probe",
-      begin: async (ctx) => ctx.page.route("**/marker", (route) => route.fulfill({ body: "ok" })),
-      afterSnap: async (shot, ctx) => log(ctx, \`shot \${shot.name} \${shot.options.tag ?? "-"} \${ctx.device}\`),
-      done: async (shots, ctx) => log(ctx, \`sequence \${shots.map((s) => s.name).join(",")}\`),
-      failed: async (shots, ctx) => log(ctx, \`failed \${shots.map((s) => s.name).join(",")} png=\${existsSync(join(ctx.seq.dir, "failed.png"))}\`),
-    },
-    {
-      name: "boom",
-      begin: async (ctx) => { if (basename(dirname(ctx.seq.dir)) === "early") throw new Error("early"); },
-      afterSnap: async (shot) => { if (shot.url.endsWith("/boom")) throw new Error("kaput"); },
-      done: async (shots) => { if (shots[0]?.url.endsWith("/late")) throw new Error("late"); },
-    },
-  ],
-});
-`,
-      sequences: {
-        "pass.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => { await page.goto("/pass"); await seq.snap({ tag: "x" }); await seq.snap(); });
-`,
-        "fails.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => { await page.goto("/fails"); await seq.snap(); throw new Error("after one shot"); });
-`,
-        "boom.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => { await page.goto("/boom"); await seq.snap(); });
-`,
-        "late.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => { await page.goto("/late"); await seq.snap(); });
-`,
-        "empty.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => { await page.goto("/empty"); void seq; });
-`,
-        "marker.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => {
-  const r = await page.goto("/marker");
-  if ((await r!.text()) !== "ok") throw new Error("begin did not run first");
-  await seq.snap();
-});
-`,
-        "early.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq }) => { await page.goto("/early"); await seq.snap(); });
-`,
-      },
-    });
-    dirs.push(p);
-
-    const r = await playwright(p, ["--max-failures", "0"]);
-    expect(r.status).not.toBe(0);
-    expect(r.out).toContain("4 failed");
-    expect(r.out).toContain("3 passed");
-    const out = join(p, "out", "run1");
-    const read = (name: string, file: string) => readFileSync(join(out, name, "d1", file), "utf8");
-    expect(read("pass", "hooks.txt")).toBe("shot 01.png x d1\nshot 02.png - d1\nsequence 01.png,02.png\n");
-    expect(read("fails", "hooks.txt")).toBe("shot 01.png - d1\nfailed 01.png png=true\n"); // failed, not done, and after failed.png
-    expect(read("empty", "hooks.txt")).toBe("sequence \n"); // used seq, took no shot: the hook still runs
-    expect(read("marker", "hooks.txt")).toBe("shot 01.png - d1\nsequence 01.png\n"); // the route begin set answered the body's goto
-    // A shot whose hook threw is written but not listed; the sequence fails and failed.png lands beside it.
-    expect(r.out).toContain('snapseq: plugin "boom" threw in afterSnap on 01.png: kaput');
-    expect(readdirSync(join(out, "boom", "d1")).sort()).toEqual(["01.png", "failed.png", "hooks.txt"]);
-    expect(r.out).toContain('snapseq: plugin "boom" threw in done: late');
-    // A begin that throws fails the sequence before its body runs: no shot, no failed.png.
-    expect(r.out).toContain('snapseq: plugin "boom" threw in begin: early');
-    expect(readdirSync(join(out, "early", "d1"))).toEqual([]);
-  });
-
-  it("@snapseq/label adds a strip to a labeled shot and @snapseq/pdf binds the sequence, labels included", async () => {
-    const p = makeProject({
-      esm: true,
-      config: `
-import { defineConfig } from "snapseq";
-import { label } from "@snapseq/label";
-import { pdf } from "@snapseq/pdf";
-export default defineConfig({
-  envs: { dev: { host: "${server.url}" } },
-  devices: {
-    d1: { viewport: { width: 400, height: 300 } },
-    // A phone: 2x, mobile layout. The plugins' own contexts must not inherit either.
-    d2: { viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true },
-  },
-  screenshotsDir: "out",
-  plugins: [label(), pdf()],
-});
-`,
-      sequences: {
-        "home.seq.ts": `
-import { sequence } from "snapseq";
-sequence(async ({ page, seq, device }) => {
-  await page.goto("/home");
-  await seq.snap({ label: "0.0 Home" });
-  // The test page has no viewport meta tag, so mobile emulation scales it and snapPage refuses it.
-  if (device === "d1") await seq.snapPage({ label: "0.1 Home, whole page" });
-  await seq.snap();
-});
-`,
-      },
-    });
-    dirs.push(p);
-
-    const r = await playwright(p, []);
-    expect(r.out).toContain("2 passed");
-    expect(r.status).toBe(0);
-    const dir = join(p, "out", "run1", "home", "d1");
-    expect(readdirSync(dir).sort()).toEqual(["01.png", "02.png", "03.png"]);
-    expect(pngSize(join(dir, "01.png"))).toEqual([400, 324]); // 24 px strip
-    const [, full] = pngSize(join(dir, "02.png"));
-    expect(full).toBeGreaterThan(924); // the whole 900 px page, plus the strip
-    expect(pngSize(join(dir, "03.png"))).toEqual([400, 300]); // no label, untouched
-    // The PDFs sit next to the device folders. One page per shot at the labeled size: 1 px is 0.75 pt.
-    expect(readdirSync(join(p, "out", "run1", "home")).sort()).toEqual(["d1", "d1.pdf", "d2", "d2.pdf"]);
-    expect(await pdfPages(join(dir, "..", "d1.pdf"))).toEqual([
-      [300, 243],
-      [300, full * 0.75],
-      [300, 225],
-    ]);
-    // The phone: 780 px wide at 2x, the strip 24 px of the file, nothing scaled.
-    // (Mobile emulation makes the 844 px viewport 1687 px tall, so measure, don't assume.)
-    const phone = join(p, "out", "run1", "home", "d2");
-    const [width, height] = pngSize(join(phone, "02.png")); // unlabeled
-    expect(width).toBe(780);
-    expect(pngSize(join(phone, "01.png"))).toEqual([width, height + 24]);
-    // Pages are the CSS size: the 2x file halved, so the phone page is phone-sized.
-    expect(await pdfPages(join(phone, "..", "d2.pdf"))).toEqual([
-      [(width / 2) * 0.75, ((height + 24) / 2) * 0.75],
-      [(width / 2) * 0.75, (height / 2) * 0.75],
-    ]);
-  });
-});
-
 describe("run directory", () => {
   it("stamps each run with a Finder-style local-time dir and keeps Playwright's artifacts out of the screenshots dir", async () => {
     const r = await playwright(project, ["a\\.seq", "--project", "d1"], { SNAPSEQ_RUN: "" });
@@ -1617,7 +1130,8 @@ describe("run directory", () => {
     expect(runs).toHaveLength(1);
     expect(readdirSync(join(out, runs[0]!, "a", "d1")).sort()).toEqual(["01.png", "02.png"]);
     expect(existsSync(join(out, ".playwright"))).toBe(false);
-    expect(existsSync(join(project, "node_modules", ".cache", "snapseq", ".last-run.json"))).toBe(
+    // Playwright's own folder inside snapseq's cache, which the orchestration's run cache also lives in.
+    expect(existsSync(join(project, "node_modules", ".cache", "snapseq", "playwright", ".last-run.json"))).toBe(
       true,
     );
   });
