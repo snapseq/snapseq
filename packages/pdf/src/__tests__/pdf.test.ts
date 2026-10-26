@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { PDFDocument } from "@cantoo/pdf-lib";
 import sharp from "sharp";
 import type { Capture, CaptureShot } from "snapseq";
@@ -143,6 +143,48 @@ describe("pdf", () => {
     expect(await readdir(join(root, "out"))).toEqual(["desktop.pdf"]);
   });
 
+  // A file system that ignores case (macOS, Windows): 01.PNG names the shot 01.png.
+  const caseless = (() => {
+    const probe = mkdtempSync(join(tmpdir(), "pdf-case-"));
+    try {
+      return existsSync(probe.toUpperCase()) && existsSync(probe.toLowerCase());
+    } finally {
+      rmSync(probe, { recursive: true, force: true });
+    }
+  })();
+  it.skipIf(!caseless)("refuses a file that names a shot in another case", async () => {
+    const root = setup();
+    const dir = join(root, "a", "desktop");
+    const shot = await makeShot(dir, 1, 400, 300);
+    const before = await readFile(shot.path);
+    await expect(pdf([capture(dir, "a", [shot])], join(dir, shot.name.toUpperCase()))).rejects.toThrow("@snapseq/pdf: file is one of the shots");
+    expect((await readFile(shot.path)).equals(before)).toBe(true);
+  });
+
+  it("refuses a shot's own path when that path is a link: the rename would put the PDF where the shot is recorded", async () => {
+    const root = setup();
+    const dir = join(root, "a", "desktop");
+    const real = await makeShot(dir, 1, 400, 300);
+    const linked = { ...real, path: join(root, "linked.png") };
+    symlinkSync(real.path, linked.path);
+    await expect(pdf([capture(dir, "a", [linked])], linked.path)).rejects.toThrow("@snapseq/pdf: file is one of the shots");
+    // the same link through another spelling of its folder
+    symlinkSync(root, join(root, "..", `${basename(root)}-alias`));
+    const alias = join(root, "..", `${basename(root)}-alias`, "linked.png");
+    await expect(pdf([capture(dir, "a", [linked])], alias)).rejects.toThrow("@snapseq/pdf: file is one of the shots");
+    rmSync(join(root, "..", `${basename(root)}-alias`));
+  });
+
+  it("writes through a link at the file's own name: rename() replaces the link, not the shot", async () => {
+    const root = setup();
+    const dir = join(root, "a", "desktop");
+    const shot = await makeShot(dir, 1, 400, 300);
+    const before = await readFile(shot.path);
+    symlinkSync(shot.path, join(root, "link.pdf"));
+    await pdf([capture(dir, "a", [shot])], join(root, "link.pdf"));
+    expect((await readFile(shot.path)).equals(before)).toBe(true);
+  });
+
   it("refuses a file that is one of the shots, and leaves the shot alone", async () => {
     const root = setup();
     const dir = join(root, "a", "desktop");
@@ -152,6 +194,14 @@ describe("pdf", () => {
     await expect(pdf([capture(dir, "a", [shot])], shot.path)).rejects.toThrow("@snapseq/pdf: file is one of the shots");
     // the same path spelled another way is the same file
     await expect(pdf([capture(dir, "a", [shot])], join(dir, "..", "desktop", shot.name))).rejects.toThrow("@snapseq/pdf: file is one of the shots");
+    // and through a linked folder: rename() writes where the link points
+    symlinkSync(dir, join(root, "delivery"));
+    await expect(pdf([capture(dir, "a", [shot])], join(root, "delivery", shot.name))).rejects.toThrow("@snapseq/pdf: file is one of the shots");
+    // a ".." after a link is taken from where the link points, not from the path as written
+    mkdirSync(join(dir, "sub"));
+    symlinkSync(join(dir, "sub"), join(root, "into-sub"));
+    await expect(pdf([capture(dir, "a", [shot])], `${root}/into-sub/../${shot.name}`)).rejects.toThrow("@snapseq/pdf: file is one of the shots");
+    rmSync(join(dir, "sub"), { recursive: true });
 
     expect((await readFile(shot.path)).equals(before)).toBe(true);
     expect(await readdir(dir)).toEqual([shot.name]);

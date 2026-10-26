@@ -71,7 +71,8 @@ An earlier file at `file` is replaced whole, never half written; its folder is c
 - An empty list, or captures with no shots, throws `@snapseq/pdf: nothing to bind`
   and writes nothing.
 - A shot file that cannot be read throws, and nothing is written.
-- A `file` that is one of the shots throws `@snapseq/pdf: file is one of the shots`
+- A `file` that is one of the shots, however it is spelled and through a linked
+  folder too, throws `@snapseq/pdf: file is one of the shots`
   and writes nothing, so a shot is never replaced by the PDF.
 - A shot whose `deviceScaleFactor` is not a finite number above 0 throws, and
   nothing is written.
