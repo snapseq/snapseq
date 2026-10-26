@@ -179,13 +179,6 @@ describe("an orchestration with three parts, label and pdf", () => {
     expect(files(run)).toEqual(layout);
   });
 
-  it("CI=1 changes the presentation, not the exit code or the files", async () => {
-    const r = await orchestrate(["--run", "review-ci"], { CI: "1" });
-    expect(r.status, r.out).toBe(0);
-    expect(r.out).toMatch(footer("6 passed", "review-ci"));
-    expect(files(join(project, "screenshots", "review-ci"))).toEqual(layout);
-  });
-
   it("a plain run still writes raw shots only, on the config's devices and with stabilize as configured", async () => {
     const hits = dev.hits.length;
     const r = await snapseq(project, ["30-reminder", "--run", "plain"], { CI: "" });

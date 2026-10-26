@@ -32,7 +32,7 @@ function request(over: Partial<Request> = {}): void {
 type Project = NonNullable<PlaywrightTestConfig["projects"]>[number];
 const projects = (c: PlaywrightTestConfig): Project[] => c.projects ?? [];
 const meta = (c: PlaywrightTestConfig) =>
-  (c.metadata as { snapseq: { numbering: string; screenshotsDir: string; stabilize: unknown; orchestration?: unknown } }).snapseq;
+  (c.metadata as { snapseq: { numbering: string; screenshotsDir: string; stabilize: unknown; format: unknown; orchestration?: unknown } }).snapseq;
 const reporters = (c: PlaywrightTestConfig) => (c.reporter as unknown as [string, unknown?][]).map(([name]) => name);
 
 beforeEach(() => {
@@ -50,9 +50,12 @@ afterEach(() => {
 
 describe("defineConfig with an orchestration request", () => {
   it("applies the run's snapseq keys before anything is derived, and its devices as the only projects", () => {
-    request({ snapseq: { numbering: "000", screenshotsDir: "shots", stabilize: { motion: false } } });
-    const c = defineConfig({ envs, devices: { desktop: {}, mobile: {} }, stabilize: false });
-    expect(meta(c)).toMatchObject({ numbering: "000", screenshotsDir: "shots", stabilize: { motion: false } });
+    request({ snapseq: { numbering: "000", screenshotsDir: "shots", stabilize: { motion: false }, format: { quality: 70 } } });
+    const c = defineConfig({ envs, devices: { desktop: {}, mobile: {} }, stabilize: { hover: false }, format: { type: "jpeg" } });
+    expect(meta(c)).toMatchObject({ numbering: "000", screenshotsDir: "shots" });
+    // Whole keys, not merged: the config's hover and type are gone.
+    expect(meta(c).stabilize).toEqual({ motion: false });
+    expect(meta(c).format).toEqual({ quality: 70 });
     expect(projects(c).map((p) => [p.name, p.use])).toEqual([["desktop", DESKTOP]]);
   });
 
