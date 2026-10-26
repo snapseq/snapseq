@@ -103,15 +103,17 @@ export function matchSequence(id: string, word: string): boolean {
 
 /**
  * The ids any word selects, plus the `exact` ones as they are (a sequence file's id, whatever characters it has), in
- * `ids`' order, and the words that select none.
+ * `ids`' order, and the words that select none. An exact id `ids` does not list is a miss too: a file spelled in another
+ * case than the disk's (macOS finds it) would otherwise select nothing and leave no filter at all.
  */
 export function selectSequences(
   ids: readonly string[],
   words: readonly string[],
   exact: readonly string[] = [],
 ): { ids: string[]; misses: string[] } {
+  const listed = new Set(ids.map(nfc));
   const found = new Set(exact.map(nfc));
-  const misses = new Set<string>();
+  const misses = new Set(exact.filter((id) => !listed.has(nfc(id))));
   for (const word of words) {
     const hits = ids.filter((id) => matchSequence(id, word));
     if (hits.length === 0) misses.add(word);
@@ -153,7 +155,8 @@ export function fileWord(word: string, dir: string, anywhere = false): string | 
   if (!statSync(given, { throwIfNoEntry: false })?.isFile()) return undefined;
   const file = canonical(given);
   const inside = within(canonical(dir), file);
-  if (SEQUENCE_FILE.test(given) && (anywhere || inside)) return file;
+  // The target too: a link named like a sequence to another file would take an id of that file's path.
+  if (SEQUENCE_FILE.test(given) && SEQUENCE_FILE.test(file) && (anywhere || inside)) return file;
   // The glob over ids that would have selected its neighbours, only where it is a folder of the sequences.
   const folder = relative(canonical(dir), dirname(file)).split(sep).join("/");
   const glob = inside ? `: '${folder === "" ? "*" : `${folder}/*`}'` : "";

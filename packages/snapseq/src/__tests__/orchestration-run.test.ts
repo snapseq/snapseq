@@ -869,6 +869,26 @@ describe("the command line", () => {
       expect(given(dir)).toHaveLength(1); // only the first started Playwright
     });
 
+    // The first selected no id, and with the word taken out Playwright got no filter: every sequence, into the run. The
+    // second took the id of its target's path, which another sequence has.
+    it("stops a sequence file in another case, or a link to a file that is no sequence, before the lock and the cache", async () => {
+      const dir = sequences();
+      write(join(dir, "snapseq/shared/fixture.ts"));
+      write(join(dir, "snapseq/shared/fixture.ts.seq.ts"));
+      symlinkSync(join(dir, "snapseq/shared/fixture.ts"), join(dir, "snapseq/alias.seq.ts"));
+      const runs = join(dir, "node_modules/.cache/snapseq/runs");
+      write(join(runs, "x.json"), "{}");
+      // macOS finds the file in any case; elsewhere the word is a glob that selects nothing
+      const cased = await bin(dir, ["--run", "x", "snapseq/CLL/dosing.seq.ts"]).closed;
+      expect(cased.status, cased.out).toBe(1);
+      expect(cased.out).toContain('snapseq: no sequence matches "snapseq/CLL/dosing.seq.ts"\n');
+      const linked = await bin(dir, ["--run", "x", "snapseq/alias.seq.ts"]).closed;
+      expect(linked.status, linked.out).toBe(1);
+      expect(linked.out).toContain("snapseq: snapseq/alias.seq.ts is not a sequence file");
+      expect(readdirSync(runs)).toEqual(["x.json"]);
+      expect(given(dir)).toEqual([]);
+    });
+
     it("selects only the sequence file named, even when its name is a glob that selects its neighbours", async () => {
       const dir = plainPlaywright(project());
       rmSync(join(dir, "snapseq"), { recursive: true });
