@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -370,7 +370,7 @@ describe("filters", () => {
   it("reshoot the matching parts, reuse the rest from the run's cache, and drop the shot entries before the child starts", async () => {
     const dir = project();
     await full(dir);
-    const r = await repair(dir, ["12346", "--device", "mobile"]);
+    const r = await repair(dir, ["12346*", "--device", "mobile"]);
     expect(r.code, r.out).toBe(0);
     expect(r.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[OFFER, ["mobile"]]]);
     const atStart = Object.keys(r.calls[0]!.cacheAtStart!.entries);
@@ -392,14 +392,82 @@ describe("filters", () => {
     expect(r.code).toBe(1);
     expect(r.out).toContain(`  +    ${`${LAUNCH} / desktop`.padEnd(35)}  building, no capture yet\n`);
     expect(r.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[LAUNCH, ["desktop"]]]);
-    expect(r.out).toContain('failed  no part matched "zzz"');
+    expect(r.out).toContain('failed  no part matched "zzz"\n    sequences: 12345-spring-launch, 12346-spring-offer, nested/pricing\n');
+  });
+
+  it("select by exact id too, and not by a substring: that fails with what it may have meant, after the file ran", async () => {
+    const dir = project();
+    await full(dir);
+    const exact = await repair(dir, [OFFER, "--device", "mobile"]);
+    expect(exact.code, exact.out).toBe(0);
+    expect(exact.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[OFFER, ["mobile"]]]);
+    expect(summary(g.result)).toEqual([`${LAUNCH}/desktop reused`, `${LAUNCH}/mobile reused`, `${OFFER}/desktop reused`, `${OFFER}/mobile`]);
+
+    const substring = await repair(dir, ["12346"]);
+    expect(substring.code).toBe(1);
+    expect(substring.calls).toHaveLength(0); // every part came from the cache
+    expect(summary(g.result)).toHaveLength(4); // the file ran to its end, steps included
+    expect(substring.out).toContain('failed  no part matched "12346"\n    did you mean 12346-spring-offer?\n');
+  });
+
+  it("fail for each word that selected no part, naming it, though another word matched", async () => {
+    const dir = project();
+    await full(dir);
+    const r = await repair(dir, [LAUNCH, "spring-offer", "zzz"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(
+      `failed  no part matched "spring-offer"\n    did you mean ${OFFER}?\n  no part matched "zzz"\n    sequences: ${LAUNCH}, ${OFFER}, nested/pricing\n`,
+    );
+    expect(r.out).not.toContain(`no part matched "${LAUNCH}"`);
+    const device = await repair(dir, [LAUNCH, "--device", "mobile"]); // devices keep the one rule: some part matched
+    expect(device.code, device.out).toBe(0);
+  });
+
+  it("select the part of a sequence file named by its path, in whatever folder the call points at", async () => {
+    const dir = project();
+    write(join(dir, `alt/${OFFER}.seq.ts`));
+    const body = `(globalThis as any).result = await run("${OFFER}", { sequencesDir: "alt" });`;
+    const first = await orchestrate(dir, body, ["--run", "r1"], "alt");
+    expect(first.code, first.out).toBe(0);
+    const r = await orchestrate(dir, body, ["--run", "r1", join(dir, `alt/${OFFER}.seq.ts`), "--device", "mobile"], "alt");
+    expect(r.code, r.out).toBe(0);
+    expect(r.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[OFFER, ["mobile"]]]);
+    // the file of that id in the config's folder is another file
+    const other = await orchestrate(dir, body, ["--run", "r1", join(dir, `snapseq/${OFFER}.seq.ts`)], "alt");
+    expect(other.code).toBe(1);
+    expect(other.calls).toHaveLength(0);
+    expect(other.out).toContain(`failed  no part matched "${join(dir, `snapseq/${OFFER}.seq.ts`)}"`);
+  });
+
+  it("refuse any other existing file before the orchestration runs, as a plain run does", async () => {
+    const dir = project();
+    await full(dir);
+    write(join(dir, "snapseq/notes.md"));
+    write(join(dir, "elsewhere.md"));
+    const refused = (file: string) => orchestrate(dir, `(globalThis as any).result = [await run("${LAUNCH}")];`, ["--run", "r1", file]);
+    await expect(refused(join(dir, "snapseq/notes.md"))).rejects.toThrow(`snapseq: ${join(dir, "snapseq/notes.md")} is not a sequence file; quote a glob so the shell leaves it: '*'`);
+    await expect(refused(join(dir, "elsewhere.md"))).rejects.toThrow(/is not a sequence file; quote a glob so the shell leaves it$/);
+    expect(g.result).toBeUndefined();
+  });
+
+  it("select the parts of a folder by glob, and hint at a glob for a folder's name", async () => {
+    const dir = project();
+    const body = `(globalThis as any).result = [...(await run("${LAUNCH}")), ...(await run("nested/pricing"))];`;
+    const first = await orchestrate(dir, body, ["--run", "r1"], "glob");
+    expect(first.code, first.out).toBe(0);
+    const r = await orchestrate(dir, body, ["--run", "r1", "nested/*", "--device", "mobile"], "glob");
+    expect(r.code, r.out).toBe(0);
+    expect(r.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([["nested/pricing", ["mobile"]]]);
+    const folder = await orchestrate(dir, body, ["--run", "r1", "nested"], "glob");
+    expect(folder.code).toBe(1);
+    expect(folder.out).toContain('failed  no part matched "nested"\n    nested is a folder: \'nested/*\' selects its 1 sequence\n');
   });
 
   it("need --run naming an earlier run, checked before the orchestration loads", async () => {
     const dir = project();
     const file = join(dir, "snapseq/never.orchestration.ts");
     const options = { findConfig: (c: string | undefined) => c!, playwrightCli: () => FAKE, stdout: { write: () => true } };
-    await expect(main([file, "12346"], options)).rejects.toThrow(
+    await expect(main([file, "12346*"], options)).rejects.toThrow(
       "snapseq: a filter reshoots parts of an earlier run; name that run with --run <name>",
     );
     await expect(main([file, "-c", join(dir, "snapseq.config.ts"), "--run", "nope", "--device", "mobile"], options)).rejects.toThrow(
@@ -594,7 +662,7 @@ describe("an orchestration by name", () => {
     script(dir, `(globalThis as any).result = [...(await run("${LAUNCH}")), ...(await run("${OFFER}"))];`);
     const full = await invoke(dir, ["-o", "spring", "-c", cfg(dir), "--run", "r1"]);
     expect(full.code, full.out).toBe(0);
-    const r = await invoke(dir, ["-o", "spring", "-c", cfg(dir), "--run", "r1", "12346", "--device", "mobile"]);
+    const r = await invoke(dir, ["-o", "spring", "-c", cfg(dir), "--run", "r1", "12346*", "--device", "mobile"]);
     expect(r.code, r.out).toBe(0);
     expect(r.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[OFFER, ["mobile"]]]);
     expect(summary(g.result)).toEqual([`${LAUNCH}/desktop reused`, `${LAUNCH}/mobile reused`, `${OFFER}/desktop reused`, `${OFFER}/mobile`]);
@@ -666,8 +734,8 @@ describe("the command line", () => {
 
   it.each([
     ["no arguments", []],
-    ["a bare filter", ["cll"]],
-    ["a bare filter with a slash", ["cll/"]],
+    ["a flag value that looks like a word", ["--grep", "cll", "--retries", "3"]],
+    ["words after a `--`", ["--", "cll", "cll/"]],
     ["-o after a `--`", ["--", "-o"]],
     ["-o anywhere but first", ["--grep", "-o", "--list", "--pass-with-no-tests"]],
   ])("sends %s to Playwright as given", async (_, args) => {
@@ -675,6 +743,217 @@ describe("the command line", () => {
     const { status, out } = await bin(dir, args).closed;
     expect(status, out).toBe(0);
     expect(given(dir)).toEqual([["test", "-c", "snapseq.config.ts", ...args]]);
+  });
+
+  describe("with sequence words", () => {
+    const IDS = ["bys", "cgvhd/site", "cll/dosing", "cll/efficacy-safety-resources", "cll/home-resonate-2", "ira", "wm/site", "x.y/a+b (1)/c$d"];
+    /** A project of these ids and a `cll` orchestration, whose Playwright only logs its argv. */
+    function sequences(): string {
+      const dir = plainPlaywright(project());
+      rmSync(join(dir, "snapseq"), { recursive: true });
+      for (const id of IDS) write(join(dir, `snapseq/${id}.seq.ts`));
+      write(join(dir, "snapseq/cll.orchestration.ts"));
+      return dir;
+    }
+    /** What Playwright is given for the sequence `id`: a regex literal that takes its file and no other, in any case. */
+    const lit = (dir: string, id: string): string => `/^${join(dir, "snapseq", `${id}.seq.ts`).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}$/`;
+    const CLL = IDS.filter((id) => id.startsWith("cll/"));
+    const base = ["test", "-c", "snapseq.config.ts"];
+
+    it("stops a word that selects nothing, with what it may have meant, before Playwright starts", async () => {
+      const dir = sequences();
+      write(join(dir, "cll/dosing.sequence.md")); // a folder in the working directory is no file either
+      const folder = await bin(dir, ["cll"]).closed;
+      expect(folder.status).toBe(1);
+      expect(folder.out).toContain(
+        `snapseq: no sequence matches "cll"\n  cll is a folder: 'cll/*' selects its 3 sequences\n  cll is an orchestration: snapseq -o cll\n`,
+      );
+      const last = await bin(dir, ["ira", "dosing", "zzz"]).closed;
+      expect(last.status).toBe(1);
+      expect(last.out).toContain(`snapseq: no sequence matches "dosing"\n  did you mean cll/dosing? '**/dosing' selects every dosing\n`);
+      expect(last.out).toContain(`snapseq: no sequence matches "zzz"\n  sequences: ${IDS.join(", ")}\n`);
+      expect(given(dir)).toEqual([]);
+    });
+
+    it("gives Playwright one anchored literal per selected file, none of them a word", async () => {
+      const dir = sequences();
+      const r = await bin(dir, ["cll/*"]).closed;
+      expect(r.status, r.out).toBe(0);
+      expect(given(dir)).toEqual([[...base, ...CLL.map((id) => lit(dir, id))]]);
+      // Playwright reads /…/ as a regex without flags: it takes its own file and no other, in this case only.
+      for (const arg of given(dir)[0]!.slice(3)) {
+        const re = new RegExp(/^\/(.*)\/$/.exec(arg)![1]!);
+        expect(CLL.map((id) => join(dir, "snapseq", `${id}.seq.ts`)).filter((file) => re.test(file))).toHaveLength(1);
+        expect(re.test(arg.toUpperCase())).toBe(false);
+      }
+    });
+
+    it("escapes every character of a path a regex reads, and the globs in an id select it by its own spelling", async () => {
+      const dir = sequences();
+      const id = "x.y/a+b (1)/c$d";
+      const r = await bin(dir, [id]).closed;
+      expect(r.status, r.out).toBe(0);
+      const [arg] = given(dir)[0]!.slice(3);
+      expect(arg).toBe(lit(dir, id));
+      const re = new RegExp(/^\/(.*)\/$/.exec(arg!)![1]!);
+      expect(re.test(join(dir, "snapseq", `${id}.seq.ts`))).toBe(true);
+      expect(re.test(join(dir, "snapseq", `${id}.seq.tsx`))).toBe(false);
+      expect(re.test(join(dir, "snapseq", "x-y/a+b (1)/c$d.seq.ts"))).toBe(false);
+    });
+
+    it("puts the literals where the first word was, and keeps --device as --project after them", async () => {
+      const dir = sequences();
+      const r = await bin(dir, ["-g", "foo", "wm/site", "--headed", "ira", "--device", "mobile"]).closed;
+      expect(r.status, r.out).toBe(0);
+      expect(given(dir)).toEqual([[...base, "-g", "foo", lit(dir, "ira"), lit(dir, "wm/site"), "--headed", "--project", "mobile"]]);
+    });
+
+    it.each<[string, string[], (l: (id: string) => string) => string[]]>([
+      ["after a flag that takes a value", ["--retries", "3", "ira"], (l) => ["--retries", "3", l("ira")]],
+      ["after a short flag that takes a value", ["-g", "ira", "wm/site"], (l) => ["-g", "ira", l("wm/site")]],
+      ["after a flag given its value with =", ["--reporter=json", "ira"], (l) => ["--reporter=json", l("ira")]],
+      ["after a flag Playwright does not know", ["--nope", "ira"], (l) => ["--nope", l("ira")]],
+      ["after an optional value taken", ["-u", "all", "ira"], (l) => ["-u", "all", l("ira")]],
+      ["after an optional value left", ["-u", "--headed", "ira"], (l) => ["-u", "--headed", l("ira")]],
+      ["after combined short flags, the last taking its value", ["-xj", "2", "ira"], (l) => ["-xj", "2", l("ira")]],
+      ["after combined short flags and a grep", ["-xg", "foo", "wm/site"], (l) => ["-xg", "foo", l("wm/site")]],
+      ["after a combined optional value taken", ["-xu", "all", "ira"], (l) => ["-xu", "all", l("ira")]],
+      ["after a combined optional value left", ["-xu", "--headed", "ira"], (l) => ["-xu", "--headed", l("ira")]],
+      ["after a short flag with its value attached", ["-j2", "ira"], (l) => ["-j2", l("ira")]],
+      ["after combined flags with the value attached", ["-xj2", "ira"], (l) => ["-xj2", l("ira")]],
+      ["after a flag with every project", ["--project", "desktop", "mobile", "--headed", "ira"], (l) => ["--project", "desktop", "mobile", "--headed", l("ira")]],
+    ])("finds the word %s", async (_, args, expected) => {
+      const dir = sequences();
+      const r = await bin(dir, args).closed;
+      expect(r.status, r.out).toBe(0);
+      expect(given(dir)).toEqual([[...base, ...expected((id) => lit(dir, id))]]);
+    });
+
+    it("leaves a line with no word, a variadic or optional value that looks like one, and everything after a `--`, as given", async () => {
+      const dir = sequences();
+      write(join(dir, "snapseq.config.ts"), 'throw new Error("config loaded");'); // the parent does not read it for these
+      const lines = [[], ["--headed"], ["--project", "desktop", "mobile", "cll/dosing"], ["--debug", "cll/dosing"], ["-g", "foo", "--", "cll", "ira"], ["--", "cll/*"], ["-xj", "2"], ["-xg", "foo"], ["-j2"]];
+      for (const args of lines) {
+        const r = await bin(dir, args).closed;
+        expect(r.status, r.out).toBe(0);
+      }
+      expect(given(dir)).toEqual(lines.map((args) => [...base, ...args]));
+    });
+
+    it("stops a word with no sequence before the lock and the cache of --run are touched", async () => {
+      const dir = sequences();
+      const runs = join(dir, "node_modules/.cache/snapseq/runs");
+      write(join(runs, "x.json"), "{}");
+      const r = await bin(dir, ["--run", "x", "zzz"]).closed;
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('snapseq: no sequence matches "zzz"');
+      expect(readdirSync(runs)).toEqual(["x.json"]); // no lock written, the cache still there
+      expect(given(dir)).toEqual([]);
+    });
+
+    it("takes a sequence file as its id, and any other file as a shell's expansion of an unquoted glob", async () => {
+      const dir = sequences();
+      write(join(dir, "snapseq/cll/dosing.sequence.md"));
+      write(join(dir, "snapseq/notes.md"));
+      write(join(dir, "cll/dosing.sequence.md"));
+      write(join(dir, "other.seq.ts"));
+      const file = await bin(dir, ["snapseq/cll/dosing.seq.ts"]).closed;
+      expect(file.status, file.out).toBe(0);
+      expect(given(dir)).toEqual([[...base, lit(dir, "cll/dosing")]]);
+      // the glob to quote is over ids, so relative to the sequences folder; none for a file outside it
+      for (const [word, glob] of [["snapseq/cll/dosing.sequence.md", ": 'cll/*'"], ["snapseq/notes.md", ": '*'"], ["cll/dosing.sequence.md", ""], ["other.seq.ts", ""]] as const) {
+        const r = await bin(dir, [word]).closed;
+        expect(r.status).toBe(1);
+        expect(r.out).toContain(`snapseq: ${word} is not a sequence file; quote a glob so the shell leaves it${glob}\n`);
+      }
+      expect(given(dir)).toHaveLength(1); // only the first started Playwright
+    });
+
+    it("selects only the sequence file named, even when its name is a glob that selects its neighbours", async () => {
+      const dir = plainPlaywright(project());
+      rmSync(join(dir, "snapseq"), { recursive: true });
+      for (const id of ["[ab]", "a", "b"]) write(join(dir, `snapseq/${id}.seq.ts`));
+      const r = await bin(dir, ["snapseq/[ab].seq.ts"]).closed;
+      expect(r.status, r.out).toBe(0);
+      expect(given(dir)).toEqual([[...base, lit(dir, "[ab]")]]);
+    });
+
+    it("stops a leading ! before the lock, though Node reads !(cll)/** as every other sequence", async () => {
+      const dir = sequences();
+      const runs = join(dir, "node_modules/.cache/snapseq/runs");
+      write(join(runs, "x.json"), "{}");
+      const r = await bin(dir, ["--run", "x", "!(cll)/**"]).closed;
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('snapseq: no sequence matches "!(cll)/**"');
+      expect(readdirSync(runs)).toEqual(["x.json"]);
+      expect(given(dir)).toEqual([]);
+    });
+
+    it("says when only the case keeps a word from selecting", async () => {
+      const dir = sequences();
+      const r = await bin(dir, ["CLL/*"]).closed;
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('snapseq: no sequence matches "CLL/*"\n  case matters: it would select cll/dosing, cll/efficacy-safety-resources, cll/home-resonate-2\n');
+      expect(r.out).not.toContain("sequences:");
+    });
+
+    it("keeps a line break in a path inside the regex literal Playwright reads as one", async () => {
+      const dir = sequences();
+      const file = join(dir, "snapseq/we\nird/a.seq.ts");
+      write(file);
+      const r = await bin(dir, ["we\nird/a"]).closed;
+      expect(r.status, r.out).toBe(0);
+      const [arg] = given(dir)[0]!.slice(3);
+      const literal = /^\/(.*)\/$/.exec(arg!); // Playwright's forceRegExp: `.` stops at a line break
+      expect(literal).not.toBeNull();
+      expect(new RegExp(literal![1]!).test(file)).toBe(true);
+      expect(new RegExp(literal![1]!).test(file.replace("\n", " "))).toBe(false);
+    });
+
+    // jiti imports a .cjs or .mjs config natively, so Node caches it and Playwright's own load of it, in the same process, reuses what the parent made.
+    it.each(["cjs", "mjs"])("loads a .%s config under the --env and --host Playwright's own load of it will see", async (ext) => {
+      const dir = sequences();
+      const config = `{ envs: { dev: { host: "https://dev.example" }, uat: { host: "https://uat.example" } }, defaultEnv: "dev", devices: { desktop: {} }, sequencesDir: "snapseq", screenshotsDir: "screenshots", numbering: "00", format: {}, stabilize: {} }`;
+      const seen = `JSON.stringify([process.env.SNAPSEQ_ENV ?? null, process.env.SNAPSEQ_HOST ?? null]) + "\\n"`;
+      write(
+        join(dir, `snapseq.config.${ext}`),
+        ext === "cjs"
+          ? `require("node:fs").appendFileSync("loads.jsonl", ${seen});\nmodule.exports = { [Symbol.for("snapseq.inputs")]: { protocol: 1, config: ${config} } };\n`
+          : `import { appendFileSync } from "node:fs";\nappendFileSync("loads.jsonl", ${seen});\nexport default { [Symbol.for("snapseq.inputs")]: { protocol: 1, config: ${config} } };\n`,
+      );
+      // as Playwright loads a config in its own process: require() a CommonJS one, import() a module
+      write(
+        join(dir, "node_modules/@playwright/test/cli.js"),
+        `import { appendFileSync } from "node:fs";\nimport { createRequire } from "node:module";\nimport { resolve } from "node:path";\nimport { pathToFileURL } from "node:url";\n` +
+          `appendFileSync("argv.jsonl", JSON.stringify(process.argv.slice(2)) + "\\n");\n` +
+          `const file = resolve(process.argv[process.argv.indexOf("-c") + 1]);\n` +
+          `if (file.endsWith(".mjs")) await import(pathToFileURL(file).href); else createRequire(import.meta.url)(file);\n`,
+      );
+      const r = await bin(dir, ["-c", `snapseq.config.${ext}`, "--env", "uat", "--host", "https://uat.example", "cll/dosing"]).closed;
+      expect(r.status, r.out).toBe(0);
+      const loads = readFileSync(join(dir, "loads.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      expect(loads.length).toBeGreaterThan(0);
+      expect(loads.every((seen) => seen[0] === "uat" && seen[1] === "https://uat.example"), JSON.stringify(loads)).toBe(true);
+    });
+
+    it("names files by the config's own path, as Playwright walks them, when that goes through a symlink", async () => {
+      const dir = sequences();
+      const alias = join(project(), "alias");
+      symlinkSync(dir, alias);
+      const elsewhere = plainPlaywright(project());
+      const r = await bin(elsewhere, ["-c", join(alias, "snapseq.config.ts"), "cll/dosing"]).closed;
+      expect(r.status, r.out).toBe(0);
+      expect(given(elsewhere)).toEqual([["test", "-c", join(alias, "snapseq.config.ts"), lit(alias, "cll/dosing")]]);
+    });
+
+    it("leaves the words to Playwright for a config folder that has no snapseq config", async () => {
+      const dir = sequences();
+      const empty = plainPlaywright(project()); // the Playwright beside the config it names
+      rmSync(join(empty, "snapseq.config.ts"));
+      const r = await bin(dir, ["-c", empty, "cll"]).closed;
+      expect(r.status, r.out).toBe(0);
+      expect(given(dir)).toEqual([["test", "-c", empty, "cll"]]);
+    });
   });
 
   it("prints the usage for -h, with -o in it, without starting anything", async () => {

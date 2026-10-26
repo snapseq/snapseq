@@ -12,7 +12,7 @@ import { spawnChild } from "../orchestration/spawn.js";
 import { partLine } from "../orchestration/run.js";
 import type { ResolvedSnapseqConfig } from "../orchestration/types.js";
 import { checkRun } from "../orchestration/validate.js";
-import { canonical } from "../sequence-id.js";
+import { canonical, fileWord, matchSequence, missHints, selectSequences } from "../sequence-id.js";
 
 const dirs: string[] = [];
 const tmp = (): string => {
@@ -124,13 +124,151 @@ describe("target", () => {
 });
 
 describe("filters", () => {
-  it("match a substring of the id and an exact device, both when both are given", () => {
-    const f = { sequences: ["12346"], devices: ["mobile"] };
+  it("match a glob over the id or the id itself and an exact device, both when both are given", () => {
+    const f = { sequences: ["12346*"], devices: ["mobile"] };
     expect(matches(f, "12346-spring-offer", "mobile")).toBe(true);
     expect(matches(f, "12346-spring-offer", "desktop")).toBe(false);
     expect(matches(f, "12345-spring-launch", "mobile")).toBe(false);
     expect(matches({ sequences: [], devices: ["mobile"] }, "anything", "mobile")).toBe(true);
-    expect(describeFilters(f)).toBe('"12346" --device mobile');
+    expect(matches({ sequences: ["12346-spring-offer"], devices: [] }, "12346-spring-offer", "desktop")).toBe(true);
+    expect(describeFilters(f)).toBe('"12346*" --device mobile');
+  });
+
+  it("match a sequence file word by the file's path, not by an id", () => {
+    const dir = tmp();
+    write(join(dir, "alt/a.seq.ts"));
+    const file = canonical(join(dir, "alt/a.seq.ts"));
+    const f = { sequences: [file, "b"], files: new Map([[file, file]]), devices: [] };
+    expect(matches(f, "a", "mobile", join(dir, "alt/a.seq.ts"))).toBe(true);
+    expect(matches(f, "a", "mobile", join(dir, "snapseq/a.seq.ts"))).toBe(false); // another file with the same id
+    expect(matches(f, "b", "mobile", join(dir, "snapseq/b.seq.ts"))).toBe(true);
+  });
+
+  it("no longer match a substring of the id", () => {
+    expect(matches({ sequences: ["12346"], devices: [] }, "12346-spring-offer", "mobile")).toBe(false);
+    expect(matches({ sequences: ["spring"], devices: [] }, "12346-spring-offer", "mobile")).toBe(false);
+  });
+});
+
+describe("filter words", () => {
+  const IDS = ["a/b/c", "bys", "cgvhd/site", "cll/dosing", "cll/efficacy-safety-resources", "cll/home-resonate-2", "ira", "root", "sitemap", "voucher", "wm/moa-resource-hub", "wm/site"];
+  const CLL = ["cll/dosing", "cll/efficacy-safety-resources", "cll/home-resonate-2"];
+  const select = (...words: string[]) => selectSequences(IDS, words).ids;
+
+  it.each([
+    ["an id, exactly", ["cll/dosing"], ["cll/dosing"]],
+    ["a folder's sequences", ["cll/*"], CLL],
+    ["a folder with **", ["cll/**"], CLL],
+    ["everything under a folder, nested too", ["wm/**"], ["wm/moa-resource-hub", "wm/site"]],
+    ["a nested folder", ["a/**"], ["a/b/c"]],
+    ["the top-level sequences with *", ["*"], ["bys", "ira", "root", "sitemap", "voucher"]],
+    ["every sequence with **", ["**"], IDS],
+    ["a last segment in any folder", ["**/dosing"], ["cll/dosing"]],
+    ["braces", ["{cll,wm}/*"], [...CLL, "wm/moa-resource-hub", "wm/site"]],
+    ["a character range", ["cll/[a-d]*"], ["cll/dosing"]],
+    ["one character", ["?ra"], ["ira"]],
+    ["a union without duplicates, in the order of the ids", ["wm/site", "cll/*", "cll/dosing"], [...CLL, "wm/site"]],
+    ["nothing for a folder's name", ["cll"], []],
+    ["nothing for a substring", ["dosing"], []],
+    ["nothing for another case", ["CLL/*"], []],
+    ["nothing for a leading !", ["!cll/*"], []],
+    ["nothing for a negative extglob", ["!(cll)/**"], []],
+  ])("select %s", (_, words, ids) => {
+    expect(select(...words)).toEqual(ids);
+  });
+
+  it("compares composed and decomposed spellings of a name as one", () => {
+    expect(matchSequence("caf\u00e9/home", "cafe\u0301/home")).toBe(true);
+    expect(matchSequence("caf\u00e9/home", "cafe\u0301/*")).toBe(true);
+    expect(matchSequence("cafe\u0301/home", "caf\u00e9/*")).toBe(true);
+  });
+
+  it("selects an id by its own spelling even when that looks like a glob", () => {
+    expect(matchSequence("a+b (1)/c$d", "a+b (1)/c$d")).toBe(true);
+    expect(matchSequence("[z]", "[z]")).toBe(true);
+    expect(matchSequence("!x", "!x")).toBe(true);
+  });
+
+  it("selects the exact ids it is given as they are, even when they look like globs", () => {
+    const ids = ["[ab]", "a", "b"];
+    expect(selectSequences(ids, [], ["[ab]"])).toEqual({ ids: ["[ab]"], misses: [] });
+    expect(selectSequences(ids, ["b"], ["[ab]"]).ids).toEqual(["[ab]", "b"]);
+    expect(selectSequences(["cafe\u0301/a"], [], ["caf\u00e9/a"]).ids).toEqual(["cafe\u0301/a"]);
+  });
+
+  it("names the words that select nothing, once each", () => {
+    expect(selectSequences(IDS, ["cll", "ira", "cll", "zzz"])).toEqual({ ids: ["ira"], misses: ["cll", "zzz"] });
+  });
+
+  describe("hints", () => {
+    const dir = tmp();
+    write(join(dir, "cll.orchestration.ts"));
+    write(join(dir, "wm/proof.orchestration.js"));
+    const hints = (word: string, ids: readonly string[] = IDS) => missHints(dir, ids, word);
+
+    it("say a word is a folder and what its glob selects", () => {
+      expect(hints("wm")).toEqual(["wm is a folder: 'wm/*' selects its 2 sequences"]);
+      expect(hints("a/b")).toEqual(["a/b is a folder: 'a/b/*' selects its 1 sequence"]);
+      expect(hints("a")).toEqual(["a is a folder: 'a/**' selects its 1 sequence"]); // only nested ones: /* would select none
+    });
+
+    it("say a word is an orchestration, beside the folder line when it is one too", () => {
+      expect(hints("cll")).toEqual(["cll is a folder: 'cll/*' selects its 3 sequences", "cll is an orchestration: snapseq -o cll"]);
+      expect(hints("wm/proof")).toEqual(["wm/proof is an orchestration: snapseq -o wm/proof"]);
+    });
+
+    it("offer the ids that end in the word, with the glob that selects them all", () => {
+      expect(hints("dosing")).toEqual(["did you mean cll/dosing? '**/dosing' selects every dosing"]);
+      expect(hints("site")).toEqual(["did you mean cgvhd/site, wm/site? '**/site' selects every site"]);
+    });
+
+    it("offer ids that contain the word otherwise, in any case, five at most", () => {
+      expect(hints("DOS")).toEqual(["did you mean cll/dosing?"]);
+      expect(hints("dos")).toEqual(["did you mean cll/dosing?"]);
+      expect(hints("o")).toEqual(["did you mean cll/dosing, cll/efficacy-safety-resources, cll/home-resonate-2, root, voucher?"]);
+    });
+
+    it("say when only the case keeps a word from selecting, five ids at most, instead of listing every id", () => {
+      expect(hints("CLL/*")).toEqual(["case matters: it would select cll/dosing, cll/efficacy-safety-resources, cll/home-resonate-2"]);
+      expect(hints("CLL/Dosing")).toEqual(["case matters: it would select cll/dosing"]);
+      expect(hints("**/*O*")).toEqual(["case matters: it would select cll/dosing, cll/efficacy-safety-resources, cll/home-resonate-2, root, voucher"]);
+    });
+
+    it("list every id when nothing else applies", () => {
+      expect(hints("zzz")).toEqual([`sequences: ${IDS.join(", ")}`]);
+      expect(hints("zzz", [])).toEqual(["sequences: (none)"]);
+    });
+  });
+
+  describe("naming a file", () => {
+    const dir = tmp();
+    const sequences = join(dir, "snapseq");
+    write(join(sequences, "cll/dosing.seq.ts"));
+    write(join(sequences, "cll/notes.md"));
+    write(join(sequences, "readme.md"));
+    write(join(dir, "cll/dosing.sequence.md"));
+    write(join(dir, "other.seq.ts"));
+
+    it("is the canonical path of a sequence file in the sequences folder, and undefined for any other word", () => {
+      expect(fileWord(join(sequences, "cll/dosing.seq.ts"), sequences)).toBe(join(sequences, "cll/dosing.seq.ts"));
+      expect(fileWord("cll/*", sequences)).toBeUndefined();
+      expect(fileWord(join(dir, "cll"), sequences)).toBeUndefined(); // a folder is not a file
+    });
+
+    it("takes a sequence file of another folder only where a run() may point there", () => {
+      expect(fileWord(join(dir, "other.seq.ts"), sequences, true)).toBe(join(dir, "other.seq.ts"));
+      expect(() => fileWord(join(dir, "other.seq.ts"), sequences)).toThrow("is not a sequence file; quote a glob");
+    });
+
+    it("is an error for any other file, with the glob over ids the shell should have left alone", () => {
+      const message = (word: string, anywhere = false) => () => fileWord(word, sequences, anywhere);
+      const base = "is not a sequence file; quote a glob so the shell leaves it";
+      expect(message(join(sequences, "cll/notes.md"))).toThrow(`snapseq: ${join(sequences, "cll/notes.md")} ${base}: 'cll/*'`);
+      expect(message(join(sequences, "readme.md"))).toThrow(`snapseq: ${join(sequences, "readme.md")} ${base}: '*'`);
+      // outside the sequences folder no glob over ids would help
+      expect(message(join(dir, "cll/dosing.sequence.md"))).toThrow(new RegExp(`${base}$`));
+      expect(message(join(dir, "cll/dosing.sequence.md"), true)).toThrow(new RegExp(`${base}$`));
+    });
   });
 });
 

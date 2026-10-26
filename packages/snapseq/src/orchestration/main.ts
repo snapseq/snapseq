@@ -6,13 +6,11 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import type { Jiti } from "jiti";
 import { openRun } from "../open.js";
 import { ORDER, type OutStream, shotCount } from "../reporter.js";
-import { sequenceFiles, sequenceIds } from "../sequence-id.js";
+import { ORCHESTRATION_FILE, fileWord, missHints, selectSequences, sequenceFiles, sequenceIds } from "../sequence-id.js";
 import { lockRun, runCacheFile } from "./cache.js";
 import { type Filters, type Target, createRunner, describeFilters, filtering } from "./run.js";
 import type { Orchestration, ResolvedSnapseqConfig } from "./types.js";
 import { assertDirName, isDirName, isHttpUrl, runStamp } from "./validate.js";
-
-export const ORCHESTRATION_FILE = /\.orchestration\.[cm]?[jt]s$/;
 
 const PASS_BARE = new Set(["--headed", "--debug"]);
 const PASS_VALUE = new Set(["--trace", "--timeout", "--max-failures"]);
@@ -168,15 +166,17 @@ type Inputs = { protocol: number; config: ResolvedSnapseqConfig };
 
 /**
  * The config through jiti, rooted at the config file so the orchestration resolves imports (tsconfig paths
- * too) the way the config does. SNAPSEQ_ENV and SNAPSEQ_HOST are out of the environment while it loads, so it
- * resolves the default env and cannot fail on an env a run brings in later.
+ * too) the way the config does. SNAPSEQ_ENV and SNAPSEQ_HOST are out of the environment while it loads (unless
+ * `strip` is off), so it resolves the default env and cannot fail on an env a run brings in later.
  */
-async function loadConfig(file: string): Promise<{ jiti: Jiti; inputs: Inputs }> {
+export async function loadConfig(file: string, strip = true): Promise<{ jiti: Jiti; inputs: Inputs }> {
   const { createJiti } = await import("jiti");
   const jiti = createJiti(file, { tsconfigPaths: true });
   const saved = { SNAPSEQ_ENV: process.env.SNAPSEQ_ENV, SNAPSEQ_HOST: process.env.SNAPSEQ_HOST };
-  delete process.env.SNAPSEQ_ENV;
-  delete process.env.SNAPSEQ_HOST;
+  if (strip) {
+    delete process.env.SNAPSEQ_ENV;
+    delete process.env.SNAPSEQ_HOST;
+  }
   let result: Record<symbol, unknown> | undefined;
   try {
     result = await jiti.import<Record<symbol, unknown>>(file, { default: true });
@@ -236,6 +236,25 @@ function trap(onInterrupt: () => void, onError: (error: unknown) => void): () =>
 
 // The parent's own lines after the children's rows: the footer, the reshoot hint.
 
+/**
+ * What `no part matched …` says, or undefined when every sequence word (with none, the device names) matched a part:
+ * one entry for each word that did not, then what it may have meant if it is no sequence of the config's folder. The
+ * file and its steps have run by then; a run() may also have pointed at another folder, so this is only a guess at a typo.
+ */
+function noPart(filters: Filters, state: { matched: boolean; hit: ReadonlySet<string> }, dir: string): string | undefined {
+  const words = [...new Set(filters.sequences)].filter((word) => !state.hit.has(word));
+  if (filters.sequences.length === 0 ? state.matched : words.length === 0) return undefined;
+  if (words.length === 0) return `no part matched ${describeFilters(filters)}`;
+  const ids = sequenceIds(dir);
+  const guessed = new Set(selectSequences(ids, words.filter((word) => !filters.files?.has(word))).misses);
+  return words
+    .map((word, i) => {
+      const hints = guessed.has(word) ? missHints(dir, ids, word).map((line) => `    ${line}`) : [];
+      return [`${i === 0 ? "" : "  "}no part matched ${describeFilters({ ...filters, sequences: [word] })}`, ...hints].join("\n");
+    })
+    .join("\n");
+}
+
 /** `2m 10s`, or `42s` under a minute. */
 function duration(ms: number): string {
   const s = Math.round(ms / 1000);
@@ -294,6 +313,14 @@ export async function main(argv: readonly string[], options: Options): Promise<n
   if (filtering(args.filters) && !existsSync(dir)) {
     throw new Error(`snapseq: no run "${run}" at ${runDir}; a filter reshoots parts of an earlier run`);
   }
+  // A word that names a file is that sequence file, in whichever folder a run() reads: compared by path in run().
+  const sequencesDir = resolve(configDir, config.sequencesDir);
+  const files = new Map<string, string>();
+  for (const word of args.filters.sequences) {
+    const path = fileWord(word, sequencesDir, true);
+    if (path !== undefined) files.set(word, path);
+  }
+  const filters: Filters = { ...args.filters, files };
   const fn = await loadOrchestration(jiti, resolve(file));
   const cacheFile = runCacheFile(configDir, run);
   const release = lockRun(cacheFile);
@@ -312,7 +339,7 @@ export async function main(argv: readonly string[], options: Options): Promise<n
       run,
       invocation,
       record: args.record,
-      filters: args.filters,
+      filters,
       cacheFile,
       command,
       out,
@@ -333,8 +360,11 @@ export async function main(argv: readonly string[], options: Options): Promise<n
         const site = pending.site ? ` (${pending.site})` : "";
         halt(1, ended.error ?? `run("${pending.sequence}") was not awaited; the orchestration finished first${site}`);
       } else if (ended.error !== undefined) halt(1, ended.error);
-      else if (filtering(args.filters) && !runner.state.matched) halt(1, `no part matched ${describeFilters(args.filters)}`);
-      else halt(0);
+      else {
+        const missed = filtering(filters) ? noPart(filters, runner.state, sequencesDir) : undefined;
+        if (missed !== undefined) halt(1, missed);
+        else halt(0);
+      }
     }
     await runner.stop();
     const { code, message } = await halted;
@@ -345,7 +375,7 @@ export async function main(argv: readonly string[], options: Options): Promise<n
     if (message === undefined) out.write("\n");
     else out.write(`\n  failed  ${message}\n`);
     footer(out, runner.state.tally, runner.state.shots, now() - start, runDir);
-    if (code === 0 && !filtering(args.filters)) hint(out, file, name, args.config, run);
+    if (code === 0 && !filtering(filters)) hint(out, file, name, args.config, run);
     openRun(out, dir);
     return code;
   } finally {

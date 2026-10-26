@@ -24,7 +24,7 @@
     "testing"
   ],
   "engines": {
-    "node": ">=20"
+    "node": "^20.17.0 || >=22.5.0"
   },
   "type": "module",
   "files": [

@@ -71,7 +71,7 @@ Run the whole proof, then shoot one part of it again:
 
 ```bash
 pnpm snapseq -o spring --run review-1
-pnpm snapseq -o spring --run review-1 12346 --device mobile
+pnpm snapseq -o spring --run review-1 '12346*' --device mobile
 ```
 
 The second command shoots `12346-spring-offer` on `mobile`, takes the other five
@@ -328,11 +328,15 @@ One part of a run is wrong: a page changed, a shot was caught mid-animation. Nam
 the run and say which parts to shoot again:
 
 ```bash
-pnpm snapseq -o spring --run review-1 12346 --device mobile
+pnpm snapseq -o spring --run review-1 '12346*' --device mobile
 ```
 
-- Words after the file, or after `-o <name>`, are sequence filters. A part matches when its sequence id
-  contains one of them as plain text, not a regular expression and not a path.
+- Words after the file, or after `-o <name>`, are sequence filters, read as in a plain run
+  ([Running](running.md#running)): a sequence id, or a glob over ids that you quote, like `'cll/*'`,
+  `'wm/**'` or `'12346*'`. A part matches when one of the words selects its sequence id. A word is
+  not a substring: `12346` selects only a sequence with exactly that id. Case matters. A sequence file's
+  path, as tab completion gives it, selects the part of that file, in whichever `sequencesDir` the `run()`
+  reads; any other existing file stops snapseq before the file runs, as in a plain run.
 - `--device <name>` is an exact device name, and may be repeated.
 - A part is a sequence on a device. It matches when it passes both filters; a
   filter left out matches everything.
@@ -353,7 +357,11 @@ Things to know:
 - The cache does not remember options. If you change what `run()` is given for a
   part, shoot that part again with a filter.
 - A filter without `--run`, or with a `--run` that names no folder, stops snapseq
-  before the file runs. A filter that matches no part fails with `no part matched "zzz"`.
+  before the file runs. Every sequence word that matched no part fails the run with
+  `no part matched "zzz"`, and under it what the word may have meant, even when another word matched. That is after the file and its steps have run, over the
+  reused captures, so they may have written their files again. snapseq cannot check the words
+  earlier: a `run()` can point at another `sequencesDir`, so the config's folder does not list
+  every id a run uses.
 - A shot again wipes the sequence's folder on that device first, `labelled/` inside it
   too. The steps write it again.
 - A plain `pnpm snapseq --run review-1` (or `SNAPSEQ_RUN=review-1`) into the same run drops
@@ -459,7 +467,7 @@ Ending the run:
 | Message | Cause |
 | ------- | ----- |
 | `run("x") was not awaited; the orchestration finished first` | The function returned with a call still going. The child is stopped. |
-| `no part matched "zzz"` | A repair whose filters matched no part. |
+| `no part matched "zzz"` | A repair in which a sequence word matched no part (one entry for each such word), or the `--device` names matched none; reported after the file and its steps ran. Lines under it say what a word may have meant (a folder, an orchestration, similar ids, else the ids in the config's `sequencesDir`). |
 | `<the step's message>` | A step threw, e.g. `@snapseq/pdf: nothing to bind`. |
 
 Before the file runs, the command itself refuses what cannot work, with a message that

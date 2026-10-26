@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PlaywrightTestConfig } from "@playwright/test";
 import { formatRow, marks, shotCount, type OutStream } from "../reporter.js";
-import { canonical, rowLabel, sequenceIds } from "../sequence-id.js";
+import { canonical, matchSequence, rowLabel, sequenceIds } from "../sequence-id.js";
 import { type CachedCapture, type Origin, cacheDir, isFile, loadCache, reusable, saveCache } from "./cache.js";
 import type { Entry, Report } from "./result-reporter.js";
 import type { Request } from "./request.js";
@@ -18,18 +18,28 @@ export interface Target {
   host?: string;
 }
 
-/** What the command line asked to reshoot: substrings of sequence ids and exact device names. */
+/**
+ * What the command line asked to reshoot: globs over sequence ids (or the ids themselves), the sequence files named by
+ * path (`files`: the word as typed → its canonical path, for the words that are one) and exact device names.
+ */
 export interface Filters {
   readonly sequences: readonly string[];
+  readonly files?: ReadonlyMap<string, string>;
   readonly devices: readonly string[];
 }
 
 export const filtering = (f: Filters): boolean => f.sequences.length > 0 || f.devices.length > 0;
 
-/** A part matches when its sequence contains one of the substrings and its device is one of the names; an empty list matches all. */
-export const matches = (f: Filters, sequence: string, device: string): boolean =>
-  (f.sequences.length === 0 || f.sequences.some((s) => sequence.includes(s))) &&
-  (f.devices.length === 0 || f.devices.includes(device));
+/** The words that select this sequence, `file` being the call's sequence file: a file word by its path, the rest by id. */
+const selecting = (f: Filters, sequence: string, file: string): string[] =>
+  f.sequences.filter((word) => {
+    const named = f.files?.get(word);
+    return named !== undefined ? named === canonical(file) : matchSequence(sequence, word);
+  });
+
+/** A part matches when one of the words selects its sequence and its device is one of the names; an empty list matches all. */
+export const matches = (f: Filters, sequence: string, device: string, file = ""): boolean =>
+  (f.sequences.length === 0 || selecting(f, sequence, file).length > 0) && (f.devices.length === 0 || f.devices.includes(device));
 
 /** `"12346" --device mobile`, as typed, for `no part matched …`. */
 export const describeFilters = (f: Filters): string =>
@@ -201,6 +211,8 @@ export function createRunner(s: Session) {
     stopped: false,
     /** A part matched the filters; a part built only because there was nothing to reuse does not count. */
     matched: false,
+    /** The sequence words that selected such a part. */
+    hit: new Set<string>(),
     shots: 0,
     tally: {} as Record<string, number>,
   };
@@ -258,8 +270,11 @@ export function createRunner(s: Session) {
     const result = new Map<string, Capture>();
     for (const device of checked.deviceOrder) {
       const key = keyOf(device);
-      const match = filtering(s.filters) && matches(s.filters, sequence, device);
-      if (match) state.matched = true;
+      const match = filtering(s.filters) && matches(s.filters, sequence, device, checked.file);
+      if (match) {
+        state.matched = true;
+        for (const word of selecting(s.filters, sequence, checked.file)) state.hit.add(word);
+      }
       // Through the same checks as a filtered reuse: a file the failed call's cleanup removed means a reshoot.
       let reuse = held.get(key) === fingerprint(device) ? reusable(cache, key, origin) : undefined;
       if (!reuse && filtering(s.filters) && !match) {

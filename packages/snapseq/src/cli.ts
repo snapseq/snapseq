@@ -8,8 +8,9 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { lockRun, runCacheFile } from "./orchestration/cache.js";
-import { ORCHESTRATION_FILE, main, messageOf, parseFlags, splitName } from "./orchestration/main.js";
+import { loadConfig, main, messageOf, parseFlags, splitName } from "./orchestration/main.js";
 import { assertDirName } from "./orchestration/validate.js";
+import { DEFAULT_TITLE, ORCHESTRATION_FILE, fileWord, missHints, selectSequences, sequenceFiles, sequenceId, sequenceIds } from "./sequence-id.js";
 
 const CONFIG_FILES = ["ts", "mts", "cts", "js", "mjs", "cjs"].map(
   (ext) => `snapseq.config.${ext}`,
@@ -19,6 +20,7 @@ const USAGE = `snapseq [filter...] [options]
 snapseq <file>.orchestration.ts [--run <name> [sequence...] [--device <name>]] [options]
 snapseq -o <name> [--run <name> [sequence...] [--device <name>]] [options]
 
+  [filter...]        a sequence id or a quoted glob over ids: cll/dosing, 'cll/*', 'wm/**' (nested too), '*' (top level)
   --env <name>       env from snapseq.config (same as SNAPSEQ_ENV); without --host, drops an inherited SNAPSEQ_HOST
   --host <url>       override that env's host (same as SNAPSEQ_HOST)
   --device <name>    only this device; repeatable (Playwright's --project)
@@ -47,7 +49,86 @@ function findConfig(given: string | undefined): string {
   return config ?? given!;
 }
 
-function translateArgs(argv: string[]): { config: string; args: string[] } {
+// What Playwright 1.59 (commander, `playwright test --help`) reads after each flag: one value, a value only when the next
+// token does not start with "-", or every token up to the next flag. A token after any other flag is a filter word.
+const FLAG_VALUES = new Map<string, "one" | "optional" | "many">([
+  ...[
+    "--browser", "-g", "--grep", "--grep-invert", "--global-timeout", "-j", "--workers", "--max-failures", "--output",
+    "--repeat-each", "--reporter", "--retries", "--run-agents", "--shard", "--test-list", "--test-list-invert",
+    "--timeout", "--trace", "--tsconfig", "--ui-host", "--ui-port", "--update-source-method",
+  ].map((flag) => [flag, "one"] as const),
+  ...["--debug", "--only-changed", "-u", "--update-snapshots"].map((flag) => [flag, "optional"] as const),
+  ["--project", "many"] as const,
+]);
+
+/** Where the filter words are in `tokens`: not flags, not the values of flags that take them. */
+function wordsAt(tokens: readonly string[]): number[] {
+  const at: number[] = [];
+  const free = (i: number): boolean => tokens[i] !== undefined && !tokens[i]!.startsWith("-");
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (!token.startsWith("-")) {
+      at.push(i);
+      continue;
+    }
+    let kind = FLAG_VALUES.get(token);
+    if (token[1] !== "-") {
+      // `-xj 2`, `-j2`: as commander reads a single-dash token, the first letter that takes a value takes the rest of the token, else the next one.
+      const letters = [...token.slice(1)];
+      const taker = letters.findIndex((letter) => FLAG_VALUES.has(`-${letter}`));
+      if (taker !== -1 && taker < letters.length - 1) continue;
+      kind = taker === -1 ? undefined : FLAG_VALUES.get(`-${letters[taker]}`);
+    }
+    if (kind === "one") i++;
+    else if (kind === "optional" && free(i + 1)) i++;
+    else if (kind === "many") while (free(i + 1)) i++;
+  }
+  return at;
+}
+
+/** Line terminators as the escapes a regex reads: Playwright takes a `/…/` for a literal only when `.` spans all of it. */
+const LINE_BREAKS: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\u2028": "\\u2028", "\u2029": "\\u2029" };
+
+/** Playwright's filter as a regex literal that matches this path and no other: `/…/` without flags is case-sensitive. */
+const exactly = (path: string): string => `/^${path.replace(/[.*+?^${}()|[\]\\/]|[\n\r\u2028\u2029]/g, (c) => LINE_BREAKS[c] ?? `\\${c}`)}$/`;
+
+/**
+ * `tokens` with the filter words replaced by one regex literal per sequence file they select. A word that selects
+ * nothing stops the run. Without words, or where there is no snapseq config to list the sequences (a folder without
+ * one goes to Playwright as it is), the tokens are Playwright's as they came.
+ */
+async function selectFiles(config: string, tokens: string[]): Promise<string[]> {
+  const words = wordsAt(tokens);
+  const file = resolve(config);
+  if (words.length === 0 || !statSync(file, { throwIfNoEntry: false })?.isFile()) return tokens;
+  // With the env and host as asked: Playwright loads this config next, in this process, and a .cjs or .mjs one is only
+  // evaluated once (jiti imports those natively, so Node caches them), so the evaluation it reuses is the one it would make.
+  const dir = resolve(dirname(file), (await loadConfig(file, false)).inputs.config.sequencesDir);
+  const ids = sequenceIds(dir);
+  // A word that names a sequence file selects its id as it is, whatever glob its name spells.
+  const exact: string[] = [];
+  const globs: string[] = [];
+  for (const i of words) {
+    const path = fileWord(tokens[i]!, dir);
+    if (path === undefined) globs.push(tokens[i]!);
+    else exact.push(sequenceId(dir, path, [DEFAULT_TITLE]));
+  }
+  const { ids: selected, misses } = selectSequences(ids, globs, exact);
+  if (misses.length > 0) {
+    throw new Error(
+      misses
+        .flatMap((word) => [`snapseq: no sequence matches ${JSON.stringify(word)}`, ...missHints(dir, ids, word).map((line) => `  ${line}`)])
+        .join("\n"),
+    );
+  }
+  // The paths as Playwright walks them from the config's own spelling, symlinks included: it filters before it resolves any.
+  const files = sequenceFiles(dir, selected).map(exactly);
+  const args = tokens.filter((_, i) => !words.includes(i));
+  args.splice(words[0]!, 0, ...files);
+  return args;
+}
+
+async function translateArgs(argv: string[]): Promise<{ config: string; args: string[] }> {
   const flags = parseFlags(argv);
   if (flags.env !== undefined) process.env.SNAPSEQ_ENV = flags.env;
   if (flags.host !== undefined) process.env.SNAPSEQ_HOST = flags.host;
@@ -60,7 +141,8 @@ function translateArgs(argv: string[]): { config: string; args: string[] } {
   const end = flags.rest.indexOf("--");
   const at = end === -1 ? flags.rest.length : end;
   const projects = flags.devices.flatMap((d) => ["--project", d]);
-  return { config, args: ["test", "-c", config, ...flags.rest.slice(0, at), ...projects, ...flags.rest.slice(at)] };
+  const before = await selectFiles(config, flags.rest.slice(0, at));
+  return { config, args: ["test", "-c", config, ...before, ...projects, ...flags.rest.slice(at)] };
 }
 
 /** The folder a config is relative to: a directory (Playwright takes `-c <dir>`) is the base itself. */
@@ -96,7 +178,7 @@ if (argv.includes("--help") || argv.includes("-h")) {
   }
 } else {
   try {
-    const { config, args } = translateArgs(argv);
+    const { config, args } = await translateArgs(argv);
     const cli = playwrightCli(config);
     // --run, else an inherited SNAPSEQ_RUN: the same named run either way.
     const run = process.env.SNAPSEQ_RUN || undefined;

@@ -176,7 +176,7 @@ A condition you only learn mid-sequence: `skipIf(condition, reason)` inside the
 body. The reason shows on the sequence's line in the terminal. `seq` is already
 set up by then, so a sequence that uses it leaves an empty `<sequence>/<device>/`
 directory behind; a file-level `skipIf` does not. To run a single sequence,
-filter by file: `pnpm snapseq pricing`.
+name it by its id: `pnpm snapseq pricing`, or `pnpm snapseq 'campaign/*'` for a folder ([Running](running.md#running)).
 
 ## Page states that flip
 

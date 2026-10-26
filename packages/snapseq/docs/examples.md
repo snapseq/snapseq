@@ -322,8 +322,9 @@ SNAPSEQ_RUN="2026-10-01 at 04.07.16 PM" pnpm snapseq --device mobile
 Only the rerun sequence's own `<sequence>/<device>` directory is wiped; the
 passed ones keep their shots. A rerun starts from `01.png` again, so it
 replaces the failed attempt whole. From a monorepo root the same commands go
-through `pnpm --filter <app> exec snapseq …`. To run every sequence regardless of
-failures, pass `--max-failures 0`.
+through `pnpm --filter <app> exec snapseq …`. To rerun one sequence by name, give its
+id, `pnpm snapseq pricing`, or a quoted glob for a folder, `pnpm snapseq 'campaign/*'`.
+To run every sequence regardless of failures, pass `--max-failures 0`.
 
 ## 12. A backend that rejects every request
 
