@@ -324,6 +324,23 @@ writeFileSync(${JSON.stringify(join(dir, "scenario.json"))}, "{}");
     expect(summary(g.result)).toEqual([`${LAUNCH}/desktop reused`, `${LAUNCH}/mobile`]);
   });
 
+  it("reshoots a sibling that passed when the retry shoots against another env", async () => {
+    const dir = project({ [LAUNCH]: { devices: { mobile: { status: "failed" } } } });
+    const r = await orchestrate(
+      dir,
+      `try { await run("${LAUNCH}"); } catch {}
+const { writeFileSync } = await import("node:fs");
+writeFileSync(${JSON.stringify(join(dir, "scenario.json"))}, "{}");
+(globalThis as any).result = await run("${LAUNCH}", { env: "uat" });`,
+      ["--run", "r1"],
+    );
+    expect(r.code, r.out).toBe(0);
+    // dev's desktop must not ride along with uat's mobile.
+    expect(r.calls.map(devicesOf)).toEqual([["desktop", "mobile"], ["desktop", "mobile"]]);
+    expect(summary(g.result)).toEqual([`${LAUNCH}/desktop`, `${LAUNCH}/mobile`]);
+    expect((g.result as { host: string }[]).map((c) => c.host)).toEqual(["https://uat.example", "https://uat.example"]);
+  });
+
   it("reshoots a sibling that passed when its files are gone by the retry", async () => {
     const dir = project({ [LAUNCH]: { devices: { mobile: { status: "failed" } } } });
     const r = await orchestrate(

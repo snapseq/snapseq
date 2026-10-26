@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { PDFDocument } from "@cantoo/pdf-lib";
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, decodePDFRawStream } from "@cantoo/pdf-lib";
 import sharp from "sharp";
 import type { Capture, CaptureShot } from "snapseq";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +38,44 @@ async function pageSizes(file: string) {
   return doc.getPages().map((p) => [p.getWidth(), p.getHeight()]);
 }
 
+/**
+ * Per page, the pixel size of each image its content draws (a `Do` of an image XObject), and after it the transform it is
+ * drawn with when that does not lay it exactly over the page: a page can hold an image it never shows, or shows elsewhere.
+ */
+async function drawnImages(file: string) {
+  const doc = await PDFDocument.load(await readFile(file));
+  return doc.getPages().map((page) => {
+    const contents = page.node.Contents();
+    const streams = contents instanceof PDFArray ? contents.asArray().map((ref) => doc.context.lookup(ref) as PDFRawStream) : contents ? [contents as PDFRawStream] : [];
+    const ops = streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream).decode())).join("\n");
+    const xobjects = page.node.Resources()?.lookupMaybe(PDFName.of("XObject"), PDFDict);
+    const fills = [page.getWidth(), 0, 0, page.getHeight(), 0, 0];
+    const drawn: unknown[] = [];
+    const saved: number[][] = [];
+    let ctm = [1, 0, 0, 1, 0, 0];
+    let operands: string[] = [];
+    for (const token of ops.split(/\s+/).filter(Boolean)) {
+      if (/^[-+.\d]/.test(token) || token.startsWith("/")) {
+        operands.push(token);
+        continue;
+      }
+      if (token === "q") saved.push(ctm);
+      else if (token === "Q") ctm = saved.pop()!;
+      else if (token === "cm") {
+        const [a, b, c, d, e, f] = operands.slice(-6).map(Number) as [number, number, number, number, number, number];
+        const [A, B, C, D, E, F] = ctm as [number, number, number, number, number, number];
+        ctm = [a * A + b * C, a * B + b * D, c * A + d * C, c * B + d * D, e * A + f * C + E, e * B + f * D + F];
+      } else if (token === "Do") {
+        const image = (doc.context.lookup(xobjects?.get(PDFName.of(operands.at(-1)!.slice(1)))) as PDFRawStream).dict;
+        const pixels = [image.lookup(PDFName.of("Width"), PDFNumber).asNumber(), image.lookup(PDFName.of("Height"), PDFNumber).asNumber()];
+        drawn.push(ctm.every((v, i) => Math.abs(v - fills[i]!) < 1e-6) ? pixels : [...pixels, ctm]);
+      }
+      operands = [];
+    }
+    return drawn;
+  });
+}
+
 describe("pdf", () => {
   // The page is read back from the PDF, so the pages must come out whole after embed().
   it("writes one page per shot across captures, in capture order, and returns the file", async () => {
@@ -57,6 +95,7 @@ describe("pdf", () => {
       [75, 75],
     ];
     expect(await pageSizes(file)).toEqual(sizes);
+    expect(await drawnImages(file)).toEqual([[[400, 300]], [[400, 900]], [[300, 250]], [[800, 200]], [[100, 100]]]);
 
     // Reversing the captures reverses the groups, not the shots inside them.
     const reversed = join(root, "reversed.pdf");
@@ -90,6 +129,7 @@ describe("pdf", () => {
       [292.5, 633],
       [300, 225],
     ]);
+    expect(await drawnImages(file)).toEqual([[[780, 1688]], [[400, 300]]]);
   });
 
   it("embeds JPEG shots next to PNG ones", async () => {
@@ -105,6 +145,7 @@ describe("pdf", () => {
       [300, 225],
       [150, 600],
     ]);
+    expect(await drawnImages(file)).toEqual([[[400, 300]], [[200, 800]]]);
   });
 
   it("scales a page whose longer side would pass 14400 pt, keeping the aspect ratio", async () => {
@@ -118,6 +159,8 @@ describe("pdf", () => {
       [36, 14400],
       [300, 225],
     ]);
+    // Scaled on the page, not in the file: every pixel is still drawn.
+    expect(await drawnImages(file)).toEqual([[[100, 40000]], [[400, 300]]]);
   });
 
   it("throws, and writes nothing, for an empty list or captures without shots", async () => {

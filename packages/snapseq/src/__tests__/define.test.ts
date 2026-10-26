@@ -189,6 +189,15 @@ describe("defineConfig", () => {
         expect(name(...flags), flags.join(" ")).toBe("list");
       }
     });
+
+    it("takes the list reporter in CI, on a dumb terminal and under PWDEBUG, each alone", () => {
+      for (const [key, on, off] of [["CI", "1", ""], ["TERM", "dumb", "xterm-256color"], ["PWDEBUG", "1", ""]]) {
+        vi.stubEnv(key!, on);
+        expect(name(), `${key}=${on}`).toBe("list");
+        vi.stubEnv(key!, off);
+      }
+      expect(name()).toMatch(/reporter\.js$/);
+    });
   });
 
   it("carries stabilize to the fixtures: on with its defaults unless set, its options, or false", () => {

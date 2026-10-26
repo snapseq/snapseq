@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -15,16 +16,39 @@ import { checkRun } from "../orchestration/validate.js";
 import { canonical, fileWord, matchSequence, missHints, selectSequences } from "../sequence-id.js";
 
 // node:fs as it is, except that while `fail.write` is set writeFileSync is a full disk: the file is created, the bytes fail.
+// A function in `race` runs once just before the call it is named after, as another process would.
 const fail = vi.hoisted(() => ({ write: false }));
+const race = vi.hoisted((): { renameSync?: () => void; linkSync?: () => void } => ({}));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
+  const first = (name: keyof typeof race): void => {
+    const run = race[name];
+    race[name] = undefined;
+    run?.();
+  };
   return {
     ...fs,
+    renameSync: (...args: Parameters<typeof fs.renameSync>) => (first("renameSync"), fs.renameSync(...args)),
+    linkSync: (...args: Parameters<typeof fs.linkSync>) => (first("linkSync"), fs.linkSync(...args)),
     writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
       if (!fail.write) return fs.writeFileSync(...args);
       const [target, , options] = args;
       if (typeof target === "string") fs.closeSync(fs.openSync(target, (options as { flag?: string } | undefined)?.flag ?? "w"));
       throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+    },
+  };
+});
+
+// node:child_process as it is, except that a function in `child.next` makes the next spawn's child instead.
+const child = vi.hoisted((): { next?: () => unknown } => ({}));
+vi.mock("node:child_process", async (original) => {
+  const cp = await original<typeof import("node:child_process")>();
+  return {
+    ...cp,
+    spawn: (...args: Parameters<typeof cp.spawn>) => {
+      const make = child.next;
+      child.next = undefined;
+      return make ? make() : cp.spawn(...args);
     },
   };
 });
@@ -392,6 +416,27 @@ describe("lockRun", () => {
     expect(readdirSync(dirname(file))).toEqual(["r1.lock"]); // the takeover left nothing behind
   });
 
+  it("puts back a live lock that replaced the dead one just before the takeover moved it", () => {
+    const file = join(tmp(), "runs", "r1.json");
+    const lock = join(dirname(file), "r1.lock");
+    write(lock, String(spawnSync(process.execPath, ["-e", ""]).pid));
+    race.renameSync = () => writeFileSync(lock, String(process.ppid));
+    expect(() => lockRun(file)).toThrow(`another snapseq (pid ${process.ppid}) is writing this run`);
+    expect(readFileSync(lock, "utf8")).toBe(String(process.ppid));
+    expect(readdirSync(dirname(file))).toEqual(["r1.lock"]);
+  });
+
+  it("leaves a newer lock in place of the live one it moved, instead of putting that one back over it", () => {
+    const file = join(tmp(), "runs", "r1.json");
+    const lock = join(dirname(file), "r1.lock");
+    write(lock, String(spawnSync(process.execPath, ["-e", ""]).pid));
+    race.renameSync = () => writeFileSync(lock, String(process.ppid));
+    race.linkSync = () => writeFileSync(lock, String(process.pid));
+    expect(() => lockRun(file)).toThrow(`another snapseq (pid ${process.ppid}) is writing this run`);
+    expect(readFileSync(lock, "utf8")).toBe(String(process.pid));
+    expect(readdirSync(dirname(file))).toEqual(["r1.lock"]);
+  });
+
   it("counts a lock that is empty or not a pid as busy: another process may be writing it", () => {
     const file = join(tmp(), "runs", "r1.json");
     const lock = join(dirname(file), "r1.lock");
@@ -419,6 +464,36 @@ describe("spawnChild", () => {
   it("keeps why a child could not start", async () => {
     const closed = await spawnChild([join(tmp(), "no-such-node")], {}).closed;
     expect(closed).toMatchObject({ code: null, error: expect.stringContaining("ENOENT") });
+  });
+
+  it("insists on a child that ignores Ctrl-C and SIGTERM: SIGINT, 10 s, SIGTERM, 5 s, SIGKILL", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: string[] = [];
+      const fake = Object.assign(new EventEmitter(), {
+        stdio: [null, null, null, new EventEmitter()],
+        kill: (signal: string) => signals.push(signal) > 0,
+      });
+      child.next = () => fake;
+      const { stop, closed } = spawnChild(["playwright"], {});
+      let settled = false;
+      const stopped = stop().then(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(signals).toEqual(["SIGINT"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signals).toEqual(["SIGINT", "SIGTERM"]);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(signals).toEqual(["SIGINT", "SIGTERM"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signals).toEqual(["SIGINT", "SIGTERM", "SIGKILL"]);
+      // Settled by the close, not by the kill: the next run must not start beside a child still going.
+      expect(settled).toBe(false);
+      fake.emit("close", null, "SIGKILL");
+      await stopped;
+      expect(await closed).toEqual({ code: null, signal: "SIGKILL" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
