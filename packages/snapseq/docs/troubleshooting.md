@@ -280,9 +280,11 @@ that device.
 ## `snapseq: refusing to wipe …: not inside …`
 
 **Cause.** A `describe` or test title with `..` in it points the sequence's
-directory outside the screenshots dir. That directory is wiped when the sequence
+directory outside the screenshots dir, or a symlink inside the screenshots dir
+(`a symlink leads it to …`) does. That directory is wiped when the sequence
 starts, so snapseq refuses.
-**Fix.** Plain titles, no `..`.
+**Fix.** Plain titles, no `..`. Replace the symlink with a real folder; the
+screenshots dir itself may be a symlink.
 
 ## `snapseq: refusing to wipe …: … writes inside it; rename one of the sequences`
 
@@ -291,7 +293,8 @@ device `mobile` writes `home/mobile/`; `home/mobile.seq.ts` on `desktop`
 writes `home/mobile/desktop/`, and so does every sequence under `home/mobile/`.
 A sequence's directory is wiped when it starts, so snapseq refuses first,
 naming the id of the sequence that writes inside it (`home/mobile`), and nothing
-is deleted. A subfolder a step made in it, such as `labelled/`, is wiped with the
+is deleted. On a file system that ignores case (macOS, Windows), `home/Mobile.seq.ts`
+writes into the same folder once its output exists, and is named the same way. A subfolder a step made in it, such as `labelled/`, is wiped with the
 rest.
 **Fix.** Rename one of the sequences so its name is not a device's, such as
 `home/mobile-menu.seq.ts`.

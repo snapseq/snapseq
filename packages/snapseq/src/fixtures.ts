@@ -10,7 +10,9 @@ import {
 import {
   existsSync,
   mkdirSync,
+  lstatSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -148,12 +150,22 @@ export const test = base.extend<SequenceFixtures, WorkerFixtures>({
     }
     // `home.seq.ts` on mobile wipes `home/mobile/`, where `home/mobile.seq.ts` on any device and every sequence under
     // `home/mobile/` write too. A sequence file since deleted is not looked for; its output goes with the wipe.
+    // A name the file system takes for the device's (home/Mobile beside mobile where case is ignored) is found by
+    // its folder: the same one on disk as the one to wipe. A link there is only unlinked, so it holds nothing.
     const device = testInfo.project.name;
-    const inside = sequenceIds(join(testInfo.project.testDir, id)).find((s) => s === device || s.startsWith(`${device}/`));
+    const root = resolve(configDirOf(testInfo.config), meta.screenshotsDir);
+    const folder = lstatSync(join(root, meta.run, id, device), { throwIfNoEntry: false });
+    const mine = folder?.isDirectory() ? folder : undefined;
+    const same = (name: string): boolean => {
+      const theirs = mine && statSync(join(root, meta.run, id, name), { throwIfNoEntry: false });
+      return !!theirs && theirs.dev === mine.dev && theirs.ino === mine.ino;
+    };
+    const inside = sequenceIds(join(testInfo.project.testDir, id)).find(
+      (s) => s === device || s.startsWith(`${device}/`) || same(s.split("/")[0]!),
+    );
     if (inside) {
       throw new Error(`snapseq: refusing to wipe ${join(meta.run, id, device)}: ${id}/${inside} writes inside it; rename one of the sequences`);
     }
-    const root = resolve(configDirOf(testInfo.config), meta.screenshotsDir);
     mkdirSync(root, { recursive: true });
     const ignore = join(root, ".gitignore");
     if (!existsSync(ignore)) writeFileSync(ignore, "*\n");

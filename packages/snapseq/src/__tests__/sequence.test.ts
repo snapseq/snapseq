@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -153,6 +153,33 @@ describe("createSequence", () => {
     expect(() => createSequence(page, out, join("..", "outside", "cap", "desktop"))).toThrow("not inside");
     expect(() => createSequence(page, out, "")).toThrow("not inside");
     expect(existsSync(join(outside, "keep.txt"))).toBe(true);
+  });
+
+  // The wipe follows a linked folder to what it points at; the root itself may be a link.
+  it("refuses to wipe through a symlink that leads outside its root, and takes a root that is one", () => {
+    const outside = join(root, "outside", "desktop");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "keep.txt"), "keep");
+    const out = join(root, "out", "run1");
+    mkdirSync(out, { recursive: true });
+    symlinkSync(join(root, "outside"), join(out, "pricing"));
+    const { page } = makePageStub();
+    expect(() => createSequence(page, out, join("pricing", "desktop"))).toThrow("not inside");
+    expect(existsSync(join(outside, "keep.txt"))).toBe(true);
+    symlinkSync(out, join(root, "linked-run"));
+    expect(() => createSequence(page, join(root, "linked-run"), join("home", "desktop"))).not.toThrow();
+    // A link above that leads back to the root itself: the whole screenshots dir.
+    symlinkSync(join(root, "out"), join(out, "loop"));
+    expect(() => createSequence(page, out, join("loop", "run1"))).toThrow("not inside");
+    expect(existsSync(join(out, "pricing"))).toBe(true);
+    // The device folder itself a link: the wipe removes the link, not what it points at.
+    const archive = join(root, "archive", "desktop");
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(join(archive, "keep.txt"), "keep");
+    mkdirSync(join(out, "about"));
+    symlinkSync(archive, join(out, "about", "desktop"));
+    expect(() => createSequence(page, out, join("about", "desktop"))).not.toThrow();
+    expect(existsSync(join(archive, "keep.txt"))).toBe(true);
   });
 
   it("records a readiness cap on the shot and warns, and says nothing otherwise; beforeSnap sees no notes either way", async () => {

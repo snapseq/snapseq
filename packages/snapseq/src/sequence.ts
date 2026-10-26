@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync } from "node:fs";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import type { Page, PageScreenshotOptions } from "@playwright/test";
-import { within } from "./sequence-id.js";
+import { canonical, within } from "./sequence-id.js";
 import type { Stabilizer } from "./stabilize.js";
 
 /**
@@ -446,6 +446,13 @@ export function createSequence(
   // with ".." in it would otherwise take something else with it.
   if (!relative(root, full) || !within(root, full)) {
     throw new Error(`snapseq: refusing to wipe ${full}: not inside ${root}`);
+  }
+  // And through symlinks: the wipe follows a linked folder above it to what it points at (the last name, a link
+  // itself, is only unlinked). Strictly inside, as above: a link back to the root would take every run with it.
+  const real = join(canonical(dirname(full)), basename(full));
+  const realRoot = canonical(root);
+  if (!relative(realRoot, real) || !within(realRoot, real)) {
+    throw new Error(`snapseq: refusing to wipe ${full}: a symlink leads it to ${real}, not inside ${root}`);
   }
   // Whole, anything else written inside included: the fixture has refused a directory another sequence writes into.
   rmSync(full, { recursive: true, force: true });
