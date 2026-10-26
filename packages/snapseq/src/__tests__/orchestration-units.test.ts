@@ -7,7 +7,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { type RunCache, loadCache, lockRun, reusable, saveCache } from "../orchestration/cache.js";
 import { describeFilters, matches } from "../orchestration/run.js";
 import { parseFlags, splitName } from "../orchestration/main.js";
-import { callSite, target } from "../orchestration/run.js";
+import { callSite, target, throwSite } from "../orchestration/run.js";
 import { spawnChild } from "../orchestration/spawn.js";
 import { partLine } from "../orchestration/run.js";
 import type { ResolvedSnapseqConfig } from "../orchestration/types.js";
@@ -361,6 +361,13 @@ describe("callSite", () => {
     expect(callSite("Error\n    at main (/My App/b.orchestration.ts:7:1)")).toBe("b.orchestration.ts:7");
     expect(callSite("Error\n    at main (/My (App)/c.orchestration.ts:8:1)")).toBe("c.orchestration.ts:8");
     expect(callSite(`Error\n    at run (${own}:1:1)\n    at node:internal/x:1:1`)).toBeUndefined();
+  });
+
+  it("passes over a package's frames to the consumer's line, and names no site for an error snapseq threw", () => {
+    const step = "Error: nothing to bind\n    at pdf (/app/node_modules/@snapseq/pdf/dist/index.js:30:9)\n    at async _default (/app/snapseq/a.orchestration.ts:5:3)";
+    expect(callSite(step)).toBe("a.orchestration.ts:5");
+    expect(throwSite(step)).toBe("a.orchestration.ts:5");
+    expect(throwSite(`Error: x\n    at execute (${own}:300:11)\n    at async _default (/app/snapseq/a.orchestration.ts:5:3)`)).toBeUndefined();
   });
 });
 

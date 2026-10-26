@@ -76,8 +76,22 @@ interface Call {
 // snapseq's own frames: the bundle in dist/, or this folder in the sources.
 const OWN = dirname(fileURLToPath(import.meta.url)) + sep;
 
-/** `spring.orchestration.ts:9`: the first frame of `stack` outside snapseq's own files. */
+/** `spring.orchestration.ts:9`: the first frame of `stack` in the consumer's own files, not snapseq's or a package's. */
 export function callSite(stack: string | undefined): string | undefined {
+  // A package's frame (a step such as @snapseq/pdf, jiti) is not where the consumer's code is.
+  const at = frames(stack).find(([file]) => !file.startsWith(OWN) && !file.split(sep).includes("node_modules"));
+  return at && `${basename(at[0])}:${at[1]}`;
+}
+
+/** callSite for an error snapseq did not throw itself; snapseq's own (a run() rejection) say where already. */
+export function throwSite(stack: string | undefined): string | undefined {
+  const first = frames(stack)[0];
+  return first && !first[0].startsWith(OWN) ? callSite(stack) : undefined;
+}
+
+/** A stack's frames that name a file by its absolute path, innermost first, as [file, line]; Node's own are left out. */
+function frames(stack: string | undefined): [string, string][] {
+  const found: [string, string][] = [];
   for (const line of (stack ?? "").split("\n").slice(1)) {
     const text = line.trim();
     if (!text.startsWith("at ")) continue;
@@ -86,9 +100,9 @@ export function callSite(stack: string | undefined): string | undefined {
     const m = /^(.*):(\d+):\d+$/.exec(at);
     if (!m) continue;
     const file = m[1]!.startsWith("file://") ? fileURLToPath(m[1]!) : m[1]!;
-    if (isAbsolute(file) && !file.startsWith(OWN)) return `${basename(file)}:${m[2]}`;
+    if (isAbsolute(file)) found.push([file, m[2]!]);
   }
-  return undefined;
+  return found;
 }
 
 /**
@@ -215,6 +229,10 @@ export function createRunner(s: Session) {
     hit: new Set<string>(),
     shots: 0,
     tally: {} as Record<string, number>,
+    /** A capture went into the run's cache: a repair has something to reuse. */
+    cached: false,
+    /** The last call whose child failed: its file, its devices without a capture, and the error it rejected with. */
+    failed: undefined as { file: string; devices: string[]; error: Error } | undefined,
   };
   let requests = 0;
 
@@ -314,10 +332,15 @@ export function createRunner(s: Session) {
       for (const t of report?.tests ?? []) state.tally[t.status] = (state.tally[t.status] ?? 0) + 1;
       // Whole, and even when a sibling failed: a retry of this call reshoots only what failed.
       for (const [device, capture] of accepted) cache.entries[keyOf(device)] = { ...origin, capture };
-      if (accepted.size > 0) saveCache(s.cacheFile, cache);
+      if (accepted.size > 0) {
+        saveCache(s.cacheFile, cache);
+        state.cached = true;
+      }
       if (problem !== undefined) {
         for (const device of accepted.keys()) held.set(keyOf(device), fingerprint(device));
-        throw new Error(`${problem}${where}`);
+        const error = new Error(`${problem}${where}`);
+        state.failed = { file: checked.file, devices: order.filter((d) => !accepted.has(d)), error };
+        throw error;
       }
       for (const [device, capture] of accepted) result.set(device, { ...capture, reused: false });
     }

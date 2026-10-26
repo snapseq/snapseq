@@ -179,6 +179,23 @@ describe("a full run", () => {
     expect(r.out).toContain(`  reshoot one part: snapseq ${r.file} -c ${join(dir, "snapseq.config.ts")} --run r1 <sequence> --device <device>\n`);
   });
 
+  it("repeats an inherited env and host as flags in the reshoot hint, so a copy in another shell shoots the same place", async () => {
+    const dir = project();
+    process.env.SNAPSEQ_ENV = "uat";
+    process.env.SNAPSEQ_HOST = "https://preview.example";
+    const r = await orchestrate(dir, `await run("${LAUNCH}");`, ["--run", "r1"]);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain(` --env uat --host https://preview.example --run r1 <sequence> --device <device>\n`);
+    // Cleared for this run: the copy clears them too, or the shell that has them would shoot elsewhere.
+    const cleared = await orchestrate(dir, `await run("${OFFER}");`, ["--run", "r2", "--env", ""]);
+    expect(cleared.code, cleared.out).toBe(0);
+    expect(cleared.out).toContain(` --env '' --run r2 <sequence> --device <device>\n`);
+    delete process.env.SNAPSEQ_ENV;
+    const host = await orchestrate(dir, `await run("nested/pricing");`, ["--run", "r3", "--host", ""]);
+    expect(host.code, host.out).toBe(0);
+    expect(host.out).toContain(` --host '' --run r3 <sequence> --device <device>\n`);
+  });
+
   it("sends the run's options with device names resolved and env and host left to the environment", async () => {
     const dir = project();
     const r = await orchestrate(
@@ -367,6 +384,51 @@ describe("filters", () => {
   const repair = (dir: string, filters: string[], name = "repair") =>
     orchestrate(dir, `(globalThis as any).result = [...(await run("${LAUNCH}")), ...(await run("${OFFER}"))];`, ["--run", "r1", ...filters], name);
 
+  it("after a full run a child failed in, print the command that picks it up: the failed part shot, the rest reused or built", async () => {
+    const dir = project({ [OFFER]: { devices: { mobile: { status: "failed" } } } });
+    const cfg = join(dir, "snapseq.config.ts");
+    const r = await orchestrate(dir, `await run("${LAUNCH}");\nawait run("${OFFER}");\nawait run("nested/pricing");`, ["--run", "r1", "--env", "uat"]);
+    expect(r.code).toBe(1);
+    // The file, not the id: an id may read as a glob ([ab]) or a flag (-offer); a file selects its own part only.
+    const offer = relative(process.cwd(), join(dir, `snapseq/${OFFER}.seq.ts`));
+    expect(r.out).toContain(`  resume: snapseq ${r.file} -c ${cfg} --env uat --run r1 ${offer} --device mobile\n`);
+    expect(r.out).not.toContain("reshoot one part");
+    writeFileSync(join(dir, "scenario.json"), "{}");
+    const again = await invoke(dir, [r.file, "-c", cfg, "--env", "uat", "--run", "r1", offer, "--device", "mobile"]);
+    expect(again.code, again.out).toBe(0);
+    expect(again.calls.map((c) => [c.request.sequence, devicesOf(c)])).toEqual([[OFFER, ["mobile"]], ["nested/pricing", ["desktop", "mobile"]]]);
+  });
+
+  it("prints no resume after a failed full run that cached nothing", async () => {
+    const dir = project({ [LAUNCH]: { devices: { desktop: { status: "failed" }, mobile: { status: "failed" } } } });
+    const r = await orchestrate(dir, `await run("${LAUNCH}");`, ["--run", "r1", "--max-failures", "0"]);
+    expect(r.code).toBe(1);
+    expect(r.out).not.toContain("resume:");
+  });
+
+  it("prints no resume when the run ended on another error than a child's failure, a caught and retried one included", async () => {
+    const dir = project({ [LAUNCH]: { devices: { mobile: { status: "failed" } } } });
+    const r = await orchestrate(
+      dir,
+      `try { await run("${LAUNCH}"); } catch {}
+const { writeFileSync } = await import("node:fs");
+writeFileSync(${JSON.stringify(join(dir, "scenario.json"))}, "{}");
+await run("${LAUNCH}");
+throw new Error("pdf: nothing to bind");`,
+      ["--run", "r1"],
+    );
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("failed  pdf: nothing to bind");
+    expect(r.out).not.toContain("resume:");
+    // Ended by a rejection with no reason; the child stopped after it fails too, but did not end the run.
+    write(join(dir, "scenario.json"), JSON.stringify({ [OFFER]: { hang: true } }));
+    const body = `await run("nested/pricing");\nvoid Promise.reject();\nawait run("${OFFER}");`;
+    const stopped = await orchestrate(dir, body, ["--run", "r2"], "stopped"); // its own file: this process keeps the first loaded
+    expect(stopped.code).toBe(1);
+    expect(stopped.out).toContain("failed  undefined");
+    expect(stopped.out).not.toContain("resume:");
+  });
+
   it("reshoot the matching parts, reuse the rest from the run's cache, and drop the shot entries before the child starts", async () => {
     const dir = project();
     await full(dir);
@@ -527,11 +589,36 @@ while (!existsSync(${JSON.stringify(join(dir, "started"))})) await new Promise((
     }
   });
 
-  it("exits 1 with the message of an error the script threw", async () => {
+  it("exits 1 with the message of an error the script threw, and where it threw it", async () => {
     const dir = project();
     const r = await orchestrate(dir, `await run("${LAUNCH}");\nthrow new Error("label: no shots");`, ["--run", "r1"]);
     expect(r.code).toBe(1);
-    expect(r.out).toContain("\n  failed  label: no shots\n  2 passed  4 shots");
+    expect(r.out).toContain("\n  failed  label: no shots (spring.orchestration.ts:3)\n  2 passed  4 shots");
+  });
+
+  it("names where in the consumer's files an error was thrown: a helper's line, or where a package's step was called", async () => {
+    const dir = project();
+    write(join(dir, "snapseq/steps/check.ts"), `export function check(n: number) {\n  if (n < 1) throw new Error("check: nothing");\n}\n`);
+    write(join(dir, "node_modules/fake-step/package.json"), JSON.stringify({ name: "fake-step", type: "module", exports: "./index.js" }));
+    write(join(dir, "node_modules/fake-step/index.js"), `export async function step() {\n  await null;\n  throw new Error("fake-step: nothing to bind");\n}\n`);
+    const file = join(dir, "snapseq/spring.orchestration.ts");
+    const cfg = join(dir, "snapseq.config.ts");
+    write(file, `import { check } from "./steps/check.js";\nexport default async () => {\n  check(0);\n};\n`);
+    const helper = await invoke(dir, [file, "-c", cfg, "--run", "r1"]);
+    expect(helper.code).toBe(1);
+    expect(helper.out).toContain("\n  failed  check: nothing (check.ts:2)\n");
+    const other = join(dir, "snapseq/bind.orchestration.ts"); // its own file: this process keeps the first one loaded
+    write(other, `import { step } from "fake-step";\nexport default async () => {\n  await step();\n};\n`);
+    const pkg = await invoke(dir, [other, "-c", cfg, "--run", "r2"]);
+    expect(pkg.code).toBe(1);
+    expect(pkg.out).toContain("\n  failed  fake-step: nothing to bind (bind.orchestration.ts:3)\n");
+  });
+
+  it("names a call still running when the script threw, without blaming a missing await", async () => {
+    const dir = project({ [LAUNCH]: { hang: true } });
+    const r = await orchestrate(dir, `run("${LAUNCH}");\nthrow new Error("boom");`, ["--run", "r1"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`failed  boom (spring.orchestration.ts:3); run("${LAUNCH}") was still running (spring.orchestration.ts:2)\n`);
   });
 
   it("stops the child on Ctrl-C and exits 130 without starting another", async () => {
@@ -838,6 +925,14 @@ describe("the command line", () => {
         expect(r.status, r.out).toBe(0);
       }
       expect(given(dir)).toEqual(lines.map((args) => [...base, ...args]));
+    });
+
+    it("says where a config that throws as it loads threw", async () => {
+      const dir = sequences();
+      write(join(dir, "snapseq.config.ts"), 'const ready = false;\nif (!ready) throw new Error("config broke");\n');
+      const r = await bin(dir, ["ira"]).closed;
+      expect(r.status).toBe(1);
+      expect(r.out).toContain("config broke (snapseq.config.ts:2)\n");
     });
 
     it("stops a word with no sequence before the lock and the cache of --run are touched", async () => {

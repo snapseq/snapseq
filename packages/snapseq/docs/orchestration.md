@@ -369,7 +369,14 @@ Things to know:
 - Two snapseq processes cannot write one run: the second stops with
   `snapseq: another snapseq (pid N) is writing this run`.
 - The reshoot hint prints after a full run that passed. It does not print after a repair.
-  It repeats how the run started: `-o spring` for a run started by name, the file's path for a run started by file.
+  It repeats how the run started: `-o spring` for a run started by name, the file's path for a run started by file,
+  then `-c`, and the env and host it shot against as `--env` and `--host`, whether they came from flags or from
+  `SNAPSEQ_ENV` and `SNAPSEQ_HOST`.
+- A full run that ended on a child's failure (not caught) prints a resume line instead, when the run cached any
+  capture: `resume: snapseq -o spring --run review-1 snapseq/12346-spring-offer.seq.ts --device mobile`. It names
+  the sequence by its file, which selects that part only. It shoots the part that failed, reuses the parts that
+  passed, and shoots the parts the run never reached (`building, no capture yet`). An env or host this run left out
+  although the shell has one comes out empty, `--env ''`, so the copy leaves it out too.
 
 ## What the terminal shows
 
@@ -414,7 +421,9 @@ Ctrl-C stops the child the way it stops a plain run, then ends the run: no furth
 
 `run()` rejects with a message that ends with the call site, like
 `(spring.orchestration.ts:9)`. Catch it to carry on, or leave it: an error nothing
-catches ends the run with `failed  <message>` and exit code 1.
+catches ends the run with `failed  <message>` and exit code 1. Any other error ends
+with where it was thrown in your files, a helper's line like `(manifest.ts:12)`, or for
+a step from a package the line that called it.
 
 Before any child starts, nothing is shot. Each message follows `<sequence>: `, except the last three:
 
@@ -466,9 +475,9 @@ Ending the run:
 
 | Message | Cause |
 | ------- | ----- |
-| `run("x") was not awaited; the orchestration finished first` | The function returned with a call still going. The child is stopped. |
+| `run("x") was not awaited; the orchestration finished first` | The function returned with a call still going. The child is stopped. When the function threw instead, its error comes first: `<message>; run("x") was still running`. |
 | `no part matched "zzz"` | A repair in which a sequence word matched no part (one entry for each such word), or the `--device` names matched none; reported after the file and its steps ran. Lines under it say what a word may have meant (a folder, an orchestration, similar ids, else the ids in the config's `sequencesDir`). |
-| `<the step's message>` | A step threw, e.g. `@snapseq/pdf: nothing to bind`. |
+| `<the step's message>` | A step threw, e.g. `@snapseq/pdf: nothing to bind (spring.orchestration.ts:14)`. |
 
 Before the file runs, the command itself refuses what cannot work, with a message that
 starts `snapseq:`: a filter without `--run`, a filter whose `--run` names no folder, a

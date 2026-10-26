@@ -2,13 +2,13 @@
 // runs the function with run(), and turns how it ended into the last lines and an exit code: 0; 1 for a script error,
 // a missing `await` or no filter match; 130 for Ctrl-C.
 import { existsSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Jiti } from "jiti";
 import { openRun } from "../open.js";
 import { ORDER, type OutStream, shotCount } from "../reporter.js";
 import { ORCHESTRATION_FILE, fileWord, missHints, selectSequences, sequenceFiles, sequenceIds } from "../sequence-id.js";
 import { lockRun, runCacheFile } from "./cache.js";
-import { type Filters, type Target, createRunner, describeFilters, filtering } from "./run.js";
+import { type Filters, type Target, createRunner, describeFilters, filtering, throwSite } from "./run.js";
 import type { Orchestration, ResolvedSnapseqConfig } from "./types.js";
 import { assertDirName, isDirName, isHttpUrl, runStamp } from "./validate.js";
 
@@ -47,7 +47,12 @@ interface Args {
   pass: string[];
 }
 
-export const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+/** An error's message, then where in the consumer's files it was thrown (a step's error: where the step was called). */
+export const messageOf = (error: unknown): string => {
+  if (!(error instanceof Error)) return String(error);
+  const site = throwSite(error.stack);
+  return site ? `${error.message} (${site})` : error.message;
+};
 
 /** snapseq's own flags, a plain run's and an orchestration's alike; everything else, positionals included, in `rest` in order. */
 export function parseFlags(argv: readonly string[]): {
@@ -270,13 +275,28 @@ function footer(out: OutStream, tally: Readonly<Record<string, number>>, shots: 
 const quote = (s: string): string => (/^[\w./@%+=:,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
 /**
- * After a full run, once: how to reshoot one part and rebuild the rest from the run's cache. The file as given, or
- * `-o <name>`; a name that starts with `-` only reads as a name after `--orchestration=`.
+ * The command that started this run, for the lines after a full run that reshoot parts of it: the file as given, or
+ * `-o <name>` (a name that starts with `-` only reads as a name after `--orchestration=`), and the env and host it shot
+ * against, so a repair copied from another shell goes to the same place.
  */
-function hint(out: OutStream, file: string, name: string | undefined, config: string | undefined, run: string): void {
+function again(file: string, name: string | undefined, config: string | undefined, to: Target, run: string): string {
   const how = name === undefined ? quote(file) : name.startsWith("-") ? `--orchestration=${quote(name)}` : `-o ${quote(name)}`;
-  const c = config === undefined ? "" : ` -c ${quote(config)}`;
-  out.write(`  reshoot one part: snapseq ${how}${c} --run ${quote(run)} <sequence> --device <device>\n`);
+  // Empty where this run left an inherited SNAPSEQ_ENV or SNAPSEQ_HOST out, so the copy leaves it out too; an --env
+  // without --host already leaves the host out.
+  const env = to.env ?? (process.env.SNAPSEQ_ENV ? "" : undefined);
+  const host = to.host ?? (env === undefined && process.env.SNAPSEQ_HOST ? "" : undefined);
+  const flags = [
+    config === undefined ? "" : ` -c ${quote(config)}`,
+    env === undefined ? "" : ` --env ${quote(env)}`,
+    host === undefined ? "" : ` --host ${quote(host)}`,
+  ];
+  return `snapseq ${how}${flags.join("")} --run ${quote(run)}`;
+}
+
+/** A sequence file as a word for the command line: the file selects its own part only, whatever its id spells. */
+function fileArg(file: string): string {
+  const rel = relative(process.cwd(), file) || file;
+  return quote(rel.startsWith("-") ? `.${sep}${rel}` : rel);
 }
 
 export async function main(argv: readonly string[], options: Options): Promise<number> {
@@ -325,11 +345,14 @@ export async function main(argv: readonly string[], options: Options): Promise<n
   const cacheFile = runCacheFile(configDir, run);
   const release = lockRun(cacheFile);
   // One way to end, whichever comes first: the script settling, Ctrl-C, or an error nothing caught.
-  let halt!: (code: number, message?: string) => void;
-  const halted = new Promise<{ code: number; message?: string }>((done) => (halt = (code, message) => done({ code, message })));
+  // With the error that ended it, for the resume line: only a child's failure is picked up from where it stopped.
+  let halt!: (code: number, message?: string, cause?: unknown) => void;
+  const halted = new Promise<{ code: number; message?: string; cause?: unknown }>(
+    (done) => (halt = (code, message, cause) => done({ code, message, cause })),
+  );
   const untrap = trap(
     () => halt(130),
-    (error) => halt(1, messageOf(error)),
+    (error) => halt(1, messageOf(error), error),
   );
   try {
     const start = now();
@@ -348,8 +371,8 @@ export async function main(argv: readonly string[], options: Options): Promise<n
     const script = Promise.resolve()
       .then(() => fn({ run: runner.run, config, dir }))
       .then(
-        () => ({ error: undefined as string | undefined }),
-        (error: unknown) => ({ error: messageOf(error) }),
+        () => ({ error: undefined as string | undefined, cause: undefined as unknown }),
+        (error: unknown) => ({ error: messageOf(error), cause: error }),
       );
     const ended = await Promise.race([script, halted.then(() => undefined)]);
     if (ended) {
@@ -358,8 +381,13 @@ export async function main(argv: readonly string[], options: Options): Promise<n
       const pending = runner.state.active;
       if (pending) {
         const site = pending.site ? ` (${pending.site})` : "";
-        halt(1, ended.error ?? `run("${pending.sequence}") was not awaited; the orchestration finished first${site}`);
-      } else if (ended.error !== undefined) halt(1, ended.error);
+        halt(
+          1,
+          ended.error === undefined
+            ? `run("${pending.sequence}") was not awaited; the orchestration finished first${site}`
+            : `${ended.error}; run("${pending.sequence}") was still running${site}`,
+        );
+      } else if (ended.error !== undefined) halt(1, ended.error, ended.cause);
       else {
         const missed = filtering(filters) ? noPart(filters, runner.state, sequencesDir) : undefined;
         if (missed !== undefined) halt(1, missed);
@@ -367,7 +395,7 @@ export async function main(argv: readonly string[], options: Options): Promise<n
       }
     }
     await runner.stop();
-    const { code, message } = await halted;
+    const { code, message, cause } = await halted;
     if (code === 130) {
       out.write(`\n  interrupted  ${runDir}\n`);
       return code;
@@ -375,7 +403,15 @@ export async function main(argv: readonly string[], options: Options): Promise<n
     if (message === undefined) out.write("\n");
     else out.write(`\n  failed  ${message}\n`);
     footer(out, runner.state.tally, runner.state.shots, now() - start, runDir);
-    if (code === 0 && !filtering(filters)) hint(out, file, name, args.config, run);
+    // After a full run: how to reshoot one part; after one a child failed, the command that picks it up from there.
+    if (!filtering(filters)) {
+      const { failed, cached } = runner.state;
+      const command = again(file, name, args.config, invocation, run);
+      if (code === 0) out.write(`  reshoot one part: ${command} <sequence> --device <device>\n`);
+      else if (failed && cached && cause === failed.error) {
+        out.write(`  resume: ${command} ${fileArg(failed.file)}${failed.devices.map((d) => ` --device ${quote(d)}`).join("")}\n`);
+      }
+    }
     openRun(out, dir);
     return code;
   } finally {
