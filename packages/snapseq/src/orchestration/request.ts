@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DeviceConfig, SnapseqConfig } from "../define.js";
-import { within } from "../sequence-id.js";
+import { canonical, within } from "../sequence-id.js";
 import { CACHE_DIR, cacheDir } from "./cache.js";
 
 /** What the parent asks of one child. */
@@ -45,7 +45,11 @@ export function readRequest(): Request | undefined {
 
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const overlap = (a: string, b: string): boolean => within(a, b) || within(b, a);
+/** By the paths as given and through symlinks too: Playwright's emptying follows a linked folder to what it points at. */
+const overlap = (a: string, b: string): boolean => {
+  const [ra, rb] = [canonical(a), canonical(b)];
+  return within(a, b) || within(b, a) || within(ra, rb) || within(rb, ra);
+};
 
 // Playwright empties outputDir before a run, so it must neither hold nor sit inside the parent's run cache, its requests
 // or the screenshots. Resolved as Playwright resolves it, against the config's folder.
