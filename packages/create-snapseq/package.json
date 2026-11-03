@@ -1,0 +1,46 @@
+{
+  "name": "create-snapseq",
+  "version": "0.7.0",
+  "description": "Scaffold a snapseq repo: one site, or a pnpm workspace with a package per site.",
+  "license": "ISC",
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/snapseq/snapseq.git",
+    "directory": "packages/create-snapseq"
+  },
+  "homepage": "https://github.com/snapseq/snapseq/tree/main/packages/create-snapseq#readme",
+  "bugs": {
+    "url": "https://github.com/snapseq/snapseq/issues"
+  },
+  "keywords": [
+    "snapseq",
+    "create",
+    "scaffold",
+    "playwright",
+    "screenshot"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "bin": {
+    "create-snapseq": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsup",
+    "prepare": "pnpm build",
+    "typecheck": "tsc --noEmit",
+    "test": "pnpm build && vitest run",
+    "prepublishOnly": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsup": "^8.5.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}

@@ -1,7 +1,7 @@
 {
   "changelog": "@changesets/cli/changelog",
   "commit": false,
-  "fixed": [],
+  "fixed": [["snapseq", "create-snapseq"]],
   "linked": [],
   "access": "public",
   "baseBranch": "main",
