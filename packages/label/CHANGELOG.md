@@ -1,5 +1,18 @@
 # @snapseq/label
 
+## 0.3.0
+
+### Minor Changes
+
+- aae34c6: `label()` is now a step over captures, run from an orchestration file: `label(captures, options)` writes a `labelled/` folder next to the raw shots and returns the captures pointing at it. Every shot is there, with its strip when `snap()` was given a `label` and as a plain copy when not; the raw shots are never changed. Each labelled file is written beside its name and renamed into place, so a step cut short never leaves half an image under the name. The plugin form is gone, so `label()` no longer goes in `plugins`. It needs snapseq 0.7 or later.
+
+### Patch Changes
+
+- Updated dependencies [5d561a2]
+- Updated dependencies [6e621fd]
+- Updated dependencies [8cff50f]
+  - snapseq@0.7.0
+
 ## 0.2.1
 
 ### Patch Changes

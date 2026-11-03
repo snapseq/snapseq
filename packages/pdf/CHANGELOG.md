@@ -1,5 +1,18 @@
 # @snapseq/pdf
 
+## 0.3.0
+
+### Minor Changes
+
+- aae34c6: `pdf()` is now a step over captures, run from an orchestration file: `pdf(captures, file)` binds any captures, in any order, into one file and resolves to `file`. The plugin form is gone, and so are the per-device `.pdf` and `.partial.pdf` that were written beside the shots folder. An empty list, or captures with no shots, throws `@snapseq/pdf: nothing to bind`. It needs snapseq 0.7 or later.
+
+### Patch Changes
+
+- Updated dependencies [5d561a2]
+- Updated dependencies [6e621fd]
+- Updated dependencies [8cff50f]
+  - snapseq@0.7.0
+
 ## 0.2.1
 
 ### Patch Changes

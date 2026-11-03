@@ -1,6 +1,6 @@
 {
   "name": "snapseq",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Scripted screenshot sequences on Playwright Test, and orchestration files that run them.",
   "license": "ISC",
   "repository": {
