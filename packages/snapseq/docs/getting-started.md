@@ -3,6 +3,29 @@
 From an empty app to a screenshot. Every step here uses the defaults; the
 other pages cover what to change.
 
+## Quick start
+
+```bash
+npm create snapseq@latest -- my-shots --site https://www.example.com
+```
+
+(`pnpm create snapseq my-shots --site …` and `yarn create snapseq …` take the
+flags without the `--`.) It writes a config, a `home` sequence that shoots the
+viewport and the whole page, and a `pdf` orchestration that labels the shots
+and binds one PDF per device, then installs the dependencies and Chromium.
+Run it:
+
+```bash
+cd my-shots
+npx snapseq -o pdf
+```
+
+For several sites in one pnpm workspace, add `--multisite` and one `--site`
+per site. [`create-snapseq`](https://github.com/snapseq/snapseq/tree/main/packages/create-snapseq)
+lists the flags and the files.
+
+Or by hand:
+
 ## 1. Install
 
 In the app that owns the pages. In a monorepo, each app gets its own install
