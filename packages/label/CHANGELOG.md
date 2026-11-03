@@ -1,5 +1,11 @@
 # @snapseq/label
 
+## 0.3.1
+
+### Patch Changes
+
+- d71ffc8: A shot that fails to label names itself: `@snapseq/label: <sequence>/<device>/<name>: <reason>`. sharp's errors, such as `Input image exceeds pixel limit` for a page some 140,000 px tall, said nothing of which shot.
+
 ## 0.3.0
 
 ### Minor Changes
