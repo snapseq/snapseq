@@ -102,8 +102,11 @@ A shot without a label is copied byte for byte.
   `Math.max`, a 1x shot gets 6 px text. A scale that
   is not a finite number above 0, or is under 1/48 so the strip would be
   under 1 px, makes `label` throw.
-- Shots are labelled one at a time. A failure stops the step; files already
-  written stay in `labelled/`. Each file is written beside its name and then
+- Shots are labelled one at a time. A failure stops the step with the shot it
+  was on, `@snapseq/label: <sequence>/<device>/<name>: <reason>`; files already
+  written stay in `labelled/`. A shot over about 268 megapixels (1920 px wide
+  and some 140,000 px tall) is too big for the image library:
+  `Input image exceeds pixel limit`. Shoot less of that page. Each file is written beside its name and then
   renamed into place, so one cut short (a failure, Ctrl-C) leaves the file that
   was there before, never half an image. A run killed outright can leave a
   `<id>.tmp` in `labelled/`.
