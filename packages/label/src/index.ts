@@ -106,7 +106,9 @@ export async function label(captures: readonly Capture[], options: LabelOptions 
         await rename(tmp, path);
       } catch (err) {
         await rm(tmp, { force: true });
-        throw err;
+        // Name the shot: sharp's own errors ("Input image exceeds pixel limit") say nothing of which file.
+        const reason = (err instanceof Error ? err.message : String(err)).replace(/^@snapseq\/label: /, "");
+        throw new Error(`@snapseq/label: ${capture.sequence}/${capture.device}/${shot.name}: ${reason}`, { cause: err });
       }
       shots.push({ ...shot, path });
     }
